@@ -18,6 +18,13 @@
 /android/app/profile
 /android/app/release
 
+android/key.properties                 你的签名配置，包含密码
+android/app/gtreader-release.jks        你的正式签名密钥
+android/local.properties               本机 SDK 路径
+android/.gradle/
+android/.kotlin/
+android/build/
+
 # Widget Preview related
 .widget_preview/
 
