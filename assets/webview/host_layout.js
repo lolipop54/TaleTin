@@ -1,0 +1,292 @@
+/* WebView 宿主页内部的分栏、测量与页序能力。 */
+(function () {
+  'use strict';
+  var internal = window.__gtHost = window.__gtHost || {};
+  var state = internal.state;
+  var relocateTimer = null;
+  var turnEffect = 'slide';
+  var pageProbes = new Map();
+
+  // 分栏时已校正页数，章内翻页直接查范围；末页纠错每次排版只探测一次。
+  function probePage(page) {
+    if (!pageProbes.has(page)) {
+      pageProbes.set(page, hasContentAt(page * state.width));
+    }
+    return pageProbes.get(page);
+  }
+
+  function hasPage(page) {
+    return page >= 0 && (page < state.pages || probePage(page));
+  }
+
+  // 视口坐标换算为不受当前页平移影响的内容坐标。
+  function toContentX(clientX) {
+    return clientX + state.page * state.width;
+  }
+
+  function columnStep() {
+    var blocks = document.body.querySelectorAll('p,h1,h2,h3,h4,h5,h6,div,li');
+    var first = -1;
+    for (var i = 0; i < blocks.length; i++) {
+      var rect = blocks[i].getBoundingClientRect();
+      if (!rect || !rect.width) continue;
+      var left = toContentX(rect.left);
+      if (first < 0) { first = left; continue; }
+      var delta = left - first;
+      if (delta > 10) return Math.round(delta);
+    }
+    return 0;
+  }
+
+  function updateTransformHint() {
+    if (document.body) document.body.style.setProperty(
+      'will-change', turnEffect === 'slide' ? 'transform' : 'auto');
+  }
+
+  function setupColumns() {
+    var body = document.body;
+    var root = document.documentElement;
+    if (!body) return;
+    var margin = Math.max(0, state.margin || 0);
+    state.columnWidth = Math.max(1, state.width - margin * 2);
+    var width = state.columnWidth + 'px';
+    var gap = (margin * 2) + 'px';
+    root.style.setProperty('height', '100%');
+    root.style.setProperty('overflow', 'hidden');
+    root.style.setProperty('--gt-content-height',
+      'calc(100vh - ' + window.__gtInformation.insets() + 'px)');
+    body.style.setProperty('height',
+      'calc(100% - ' + window.__gtInformation.insets() + 'px)', 'important');
+    body.style.setProperty('position', 'relative', 'important');
+    body.style.setProperty('top', window.__gtInformation.top() + 'px', 'important');
+    body.style.setProperty('box-sizing', 'content-box', 'important');
+    body.style.setProperty('width', width, 'important');
+    body.style.setProperty('padding-left', margin + 'px', 'important');
+    body.style.setProperty('padding-top', '0px', 'important');
+    body.style.setProperty('padding-bottom', '0px', 'important');
+    body.style.setProperty('padding-right', '0px', 'important');
+    body.style.setProperty('margin', '0');
+    body.style.setProperty('overflow', 'visible');
+    body.style.setProperty('transform-origin', '0 0');
+    updateTransformHint();
+    body.style.setProperty('column-width', width);
+    body.style.setProperty('-webkit-column-width', width);
+    body.style.setProperty('column-gap', gap);
+    body.style.setProperty('-webkit-column-gap', gap);
+    body.style.setProperty('column-fill', 'auto');
+    body.style.setProperty('-webkit-column-fill', 'auto');
+  }
+
+  function contentWidth() {
+    var maxRight = 0;
+    var blocks = document.body.querySelectorAll(
+      'p,h1,h2,h3,h4,h5,h6,li,div,img,table,pre,blockquote,figure,section,article');
+    for (var i = 0; i < blocks.length; i++) {
+      var rect = blocks[i].getBoundingClientRect();
+      if (!rect || (!rect.width && !rect.height)) continue;
+      var right = toContentX(rect.right);
+      if (right > maxRight) maxRight = right;
+    }
+    try {
+      var range = document.createRange();
+      range.selectNodeContents(document.body);
+      var bounds = range.getBoundingClientRect();
+      if (bounds && bounds.width) {
+        var rangeRight = toContentX(bounds.right);
+        if (rangeRight > maxRight) maxRight = rangeRight;
+      }
+    } catch (error) {
+      // Range 不可用时使用块级测量结果。
+    }
+    return maxRight;
+  }
+
+  function hasContentAt(contentX) {
+    var pageEnd = contentX + state.width;
+    try {
+      var walker = document.createTreeWalker(
+        document.body, NodeFilter.SHOW_TEXT, null);
+      var node;
+      while ((node = walker.nextNode())) {
+        if (!node.nodeValue || !node.nodeValue.trim()) continue;
+        var range = document.createRange();
+        range.selectNodeContents(node);
+        var rects = range.getClientRects();
+        for (var i = 0; i < rects.length; i++) {
+          var rect = rects[i];
+          if (!rect.width && !rect.height) continue;
+          var left = toContentX(rect.left);
+          var right = toContentX(rect.right);
+          if (left >= contentX && left < pageEnd) return true;
+          if (left < contentX && right > contentX) return true;
+        }
+      }
+      var media = document.body.querySelectorAll(
+        'img,svg,video,table,hr,figure');
+      for (var j = 0; j < media.length; j++) {
+        var mediaRect = media[j].getBoundingClientRect();
+        if (!mediaRect || (!mediaRect.width && !mediaRect.height)) continue;
+        var mediaLeft = toContentX(mediaRect.left);
+        var mediaRight = toContentX(mediaRect.right);
+        if (mediaLeft >= contentX && mediaLeft < pageEnd) return true;
+        if (mediaLeft < contentX && mediaRight > contentX) return true;
+      }
+    } catch (error) {
+      // 探测失败时由宽度估算兜底。
+    }
+    return false;
+  }
+
+  function textMaxRight() {
+    var maxRight = 0;
+    try {
+      var walker = document.createTreeWalker(
+        document.body, NodeFilter.SHOW_TEXT, null);
+      var node;
+      while ((node = walker.nextNode())) {
+        if (!node.nodeValue || !node.nodeValue.trim()) continue;
+        var range = document.createRange();
+        range.selectNodeContents(node);
+        var rects = range.getClientRects();
+        for (var i = 0; i < rects.length; i++) {
+          if (!rects[i].width && !rects[i].height) continue;
+          var right = toContentX(rects[i].right);
+          if (right > maxRight) maxRight = right;
+        }
+      }
+      var media = document.body.querySelectorAll(
+        'img,svg,video,table,hr,figure');
+      for (var j = 0; j < media.length; j++) {
+        var rect = media[j].getBoundingClientRect();
+        if (!rect || (!rect.width && !rect.height)) continue;
+        var mediaRight = toContentX(rect.right);
+        if (mediaRight > maxRight) maxRight = mediaRight;
+      }
+    } catch (error) {
+      // 取不到时由其它测量方式兜底。
+    }
+    return maxRight;
+  }
+
+  function renderProbe() {
+    var style = window.getComputedStyle(document.body);
+    var first = document.body.firstElementChild;
+    var image = document.images.length ? document.images[0] : null;
+    var imageInfo = 'none';
+    if (image) {
+      var rect = image.getBoundingClientRect();
+      imageInfo = image.naturalWidth + 'x' + image.naturalHeight +
+        '→' + Math.round(rect.width) + 'x' + Math.round(rect.height);
+    }
+    return 'vis=' + style.visibility +
+      ' display=' + style.display +
+      ' children=' + document.body.children.length +
+      ' first=' + (first ? first.tagName : '') +
+      ' img=' + imageInfo;
+  }
+
+  function applyTransform(animate, duration) {
+    duration = duration || 200;
+    animate = animate && turnEffect === 'slide';
+    if (animate) window.gtReaderPerf?.motion('original.slide');
+    var body = document.body;
+    if (!body) return;
+    body.style.setProperty('transition', animate
+      ? 'transform ' + duration + 'ms cubic-bezier(0.215, 0.61, 0.355, 1)'
+      : 'none');
+    body.style.setProperty(
+      'transform', 'translateX(' + (-state.page * state.width) + 'px)');
+    window.__gtInformation.move(state, 0, animate, duration);
+    if (internal.highlight) internal.highlight.move(0, animate, duration);
+    if (window.__gtTts) window.__gtTts.paint();
+  }
+
+  function pageAtFraction(fraction) {
+    return Math.max(0, Math.min(
+      state.pages - 1, Math.floor(fraction * state.pages + 1e-7)));
+  }
+
+  function clearRelocate() {
+    clearTimeout(relocateTimer);
+  }
+
+  function setPage(page, animate, reportPosition, duration) {
+    duration = duration || 200;
+    // 无动画没有 CSS 过渡，立即提交位置，不能仍等平移的 220ms 定时器。
+    animate = animate !== false && turnEffect === 'slide';
+    state.page = Math.max(0, Math.min(page, state.pages - 1));
+    applyTransform(animate, duration);
+    if (!animate) {
+      clearRelocate();
+      if (reportPosition !== false) internal.dom.reportRelocate();
+      return;
+    }
+    internal.post('page', { page: state.page, pages: state.pages });
+    clearRelocate();
+    relocateTimer = setTimeout(internal.dom.reportRelocate, duration + 20);
+  }
+
+  function measure() {
+    var body = document.body;
+    if (!body || !state.width) return;
+    pageProbes.clear();
+    if (window.__gtInformation.invalidateBookmarks) window.__gtInformation.invalidateBookmarks();
+    state.scrollWidth = body.scrollWidth;
+    state.contentWidth = Math.max(
+      body.scrollWidth, contentWidth(), textMaxRight());
+    var pages = Math.max(1, Math.round(state.contentWidth / state.width));
+    while (pages < 500 && probePage(pages)) pages++;
+    while (pages > 1 && !probePage(pages - 1)) pages--;
+    state.pages = pages;
+    if (state.page > state.pages - 1) state.page = state.pages - 1;
+    if (state.page < 0) state.page = 0;
+    applyTransform(false);
+  }
+
+  function relayout(preservePosition, changeGeometry, savedAnchor, savedProgress) {
+    var anchor = savedProgress === undefined
+      ? (preservePosition ? internal.dom.captureAnchor() : null)
+      : savedAnchor;
+    if (changeGeometry) changeGeometry();
+    measure();
+    var restored = false;
+    if (anchor) {
+      var x = internal.dom.anchorOffsetX(anchor);
+      if (x > 0 || savedProgress === 0) {
+        state.page = Math.max(
+          0, Math.min(Math.floor(x / state.width), state.pages - 1));
+        restored = true;
+      }
+    }
+    if (!restored && savedProgress !== undefined) {
+      state.page = pageAtFraction(savedProgress);
+    }
+    applyTransform(false);
+    // 字号、主题、页边距、图片就绪都会走到这里：文字位置变了，高亮要重新量一遍
+    if (internal.highlight) internal.highlight.render();
+    internal.dom.reportRelocate();
+  }
+
+  function setTurnEffect(value) {
+    turnEffect = value || 'slide';
+    updateTransformHint();
+  }
+
+  internal.layout = {
+    applyTransform: applyTransform,
+    clearRelocate: clearRelocate,
+    columnStep: columnStep,
+    contentWidth: contentWidth,
+    hasContentAt: hasContentAt,
+    hasPage: hasPage,
+    measure: measure,
+    pageAtFraction: pageAtFraction,
+    relayout: relayout,
+    renderProbe: renderProbe,
+    setPage: setPage,
+    setTurnEffect: setTurnEffect,
+    setupColumns: setupColumns,
+    textMaxRight: textMaxRight,
+    toContentX: toContentX
+  };
+})();

@@ -1,0 +1,118 @@
+/* 原书排版模式的框架样式（W3 骨架）。
+ *
+ * 原则：不动原书的样式，只保证内容在 WebView 视口里正常显示。
+ * 分栏分页的样式在 W4 加进来。选择器都用元素级，避免命中原书的 class。 */
+
+html,
+body {
+  /* 原书常给 body 设大边距或负边距；页面边距统一由外层（列容器）控制 */
+  margin: 0 !important;
+  padding: 0 !important;
+  /* 视口高度就是列高，一列一屏 */
+  height: 100% !important;
+}
+
+/* 裁剪只在 html 上做：body 是多栏容器，第 2 页以后的内容是它的「溢出内容」，
+   给 body 加 overflow:hidden 会把后面所有页裁掉（翻页只剩空白）。
+   视口外的列由 html 裁掉，翻页靠平移 body 实现。 */
+html {
+  overflow: hidden !important;
+}
+
+body {
+  overflow: visible !important;
+}
+
+body {
+  /* 系统字号缩放由我们的设置接管，禁止 WebView 自动放大文字 */
+  -webkit-text-size-adjust: 100% !important;
+  /* 长英文单词不撑破屏幕 */
+  overflow-wrap: break-word !important;
+  word-wrap: break-word !important;
+}
+
+/* 图片与内嵌对象不超出可用宽度，**高度也不超过一页**。
+   后者是必需的：多栏布局里放不进一列的块会被推到下一列，漫画/图文书那种
+   竖版大图（列宽缩放下高过一屏）会让前面留出整页空白。
+   高度再留一点余量（32px ≈ 两行字）：图片自带 margin 时，「图 + 边距」正好
+   等于一页高仍会被判定放不下，同样会推后一列、让前一页空着。 */
+img,
+svg,
+video {
+  max-width: 100% !important;
+  max-height: calc(var(--gt-content-height, 100vh) - 32px) !important;
+  width: auto !important;
+  height: auto !important;
+}
+
+/* 纯图片段落不能沿用正文首行缩进：否则满列宽图片会被推到右侧裁掉。 */
+p[data-gt-image-only] {
+  text-indent: 0 !important;
+}
+
+p[data-gt-image-only] img {
+  display: block !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+
+/* 部分 EPUB 用负边距把章题背景撑出手机页宽；只收紧被标记的标题。 */
+[data-gt-fit-heading] {
+  box-sizing: border-box !important;
+  max-width: 100% !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+  white-space: normal !important;
+  overflow-wrap: anywhere !important;
+}
+
+/* 表格占满当前正文列。用真实换行和分页，不能 transform 缩图后裁掉右侧。 */
+table {
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  table-layout: fixed !important;
+  border-collapse: collapse !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+  box-sizing: border-box !important;
+}
+table, tbody, thead, tfoot, tr, td, th {
+  break-inside: auto !important;
+  page-break-inside: auto !important;
+  height: auto !important;
+  max-height: none !important;
+  overflow: visible !important;
+}
+td, th {
+  width: auto !important;
+  min-width: 0 !important;
+  padding: 4px !important;
+  vertical-align: top !important;
+}
+col, colgroup { width: auto !important; }
+/* 固定最小内容宽度、段落缩进和两端对齐都会把窄单元格撑破。 */
+body table, body table * {
+  white-space: normal !important;
+  overflow-wrap: anywhere !important;
+  word-break: normal !important;
+  text-indent: 0 !important;
+  letter-spacing: normal !important;
+  text-align: left !important;
+  text-align-last: auto !important;
+  line-height: 1.4 !important;
+}
+body table p { margin: 0 0 .3em !important; }
+thead, tfoot { display: table-row-group !important; }
+body table img { max-width: 100% !important; }
+
+/* 不画任何滚动条。
+   翻页是整块平移（transform），不是滚动；而多栏内容天然比视口宽、书里常自带
+   比一栏高的块，浏览器据此判定「可滚动」就会画出一条可拖动的滚动条，混在正文
+   边上（真机实测：某章底部出现一条横向灰条）。书里若自带 overflow:auto 的元素
+   （表格、代码块），它的滚动条同样是多余的——触摸全归 Flutter 手势层，WebView
+   里的滚动从来用不上。 */
+::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+}

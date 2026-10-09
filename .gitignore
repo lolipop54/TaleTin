@@ -1,0 +1,30 @@
+# The .vscode folder contains launch configuration and tasks you configure in
+# VS Code which you may wish to be included in version control, so this line
+# is commented out by default.
+#.vscode/
+
+# Flutter/Dart/Pub related
+**/doc/api/
+**/ios/Flutter/.last_build_id
+.dart_tool/
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+/build/
+/coverage/
+
+# Android Studio will place build artifacts here
+/android/app/debug
+/android/app/profile
+/android/app/release
+
+# Widget Preview related
+.widget_preview/
+
+
+# Gradle 的根项目构建目录（只有问题报告等产物）
+/android/build/
+
+# 本地插件的 Gradle 缓存与构建报告
+/third_party/flutter_inappwebview_android/android/.gradle/
+/third_party/flutter_inappwebview_android/android/build/

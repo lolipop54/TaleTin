@@ -1,0 +1,101 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <!-- 原书排版模式用 WebView 渲染（flutter_inappwebview）。插件创建 WebView 时会调用
+         setBlockNetworkLoads(false)，这个方法要求应用声明 INTERNET 权限，否则抛
+         SecurityException、WebView 建不起来，表现就是「原书排版一直转圈」。
+         debug/profile 的 manifest 自带这条（Flutter 模板为热重载加的），release 没有，
+         所以这个坑只在正式包里出现：2026-09-24 用户在真机（正式包）上实测定位。
+         声明权限不等于会联网：正文与资源都从本地读，外部资源仍然不加载（设计文档 2.4）。 -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+
+    <!-- 离线听书的前台媒体服务（docs/离线听书实现计划.md 第 9 节）。
+         WAKE_LOCK：播放期间持锁，锁屏后还能继续合成下一句；
+         FOREGROUND_SERVICE + FOREGROUND_SERVICE_MEDIA_PLAYBACK：targetSdk 34 起，
+         声明 mediaPlayback 类型的前台服务必须同时申请这两条，否则启动服务抛
+         SecurityException。这里不声明 POST_NOTIFICATIONS：媒体会话通知在 Android 13+
+         有豁免，能否显示按 A3b 真机结果确认，不用申请通知权限来掩盖问题。 -->
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="29"/>
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29"/>
+    <application
+        android:requestLegacyExternalStorage="true"
+        android:allowBackup="false"
+        android:label="TaleTin"
+        android:name="${applicationName}"
+        android:icon="@mipmap/ic_launcher">
+        <!-- 设计文档 3.2：中文相邻字形叠压问题未定位，排查期间保守关闭 Impeller（不视为修复） -->
+        <meta-data
+            android:name="io.flutter.embedding.android.EnableImpeller"
+            android:value="false" />
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:taskAffinity=""
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize">
+            <!-- Specifies an Android theme to apply to this Activity as soon as
+                 the Android process has started. This theme is visible to the user
+                 while the Flutter UI initializes. After that, this theme continues
+                 to determine the Window background behind the Flutter UI. -->
+            <meta-data
+              android:name="io.flutter.embedding.android.NormalTheme"
+              android:resource="@style/NormalTheme"
+              />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+        <!-- Don't delete the meta-data below.
+             This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2" />
+
+        <!-- audio_service 的前台媒体服务：MediaSession 与媒体通知的宿主。
+             业务逻辑不在这里，它只转发命令到 Dart 控制器（离线听书实现计划 第 9 节）。
+             tools:ignore="Instantiatable" 是官方要求的：这个类由插件提供，
+             构建期看不到源码，缺了会报「Instantiatable」警告。 -->
+        <service
+            android:name="com.ryanheise.audioservice.AudioService"
+            android:foregroundServiceType="mediaPlayback"
+            android:exported="true"
+            tools:ignore="Instantiatable">
+            <intent-filter>
+                <action android:name="android.media.browse.MediaBrowserService" />
+            </intent-filter>
+        </service>
+
+        <!-- 耳机线控与蓝牙按键的媒体按钮接收器 -->
+        <receiver
+            android:name="com.ryanheise.audioservice.MediaButtonReceiver"
+            android:exported="true"
+            tools:ignore="Instantiatable">
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </receiver>
+    </application>
+    <!-- Required to query activities that can process text, see:
+         https://developer.android.com/training/package-visibility and
+         https://developer.android.com/reference/android/content/Intent#ACTION_PROCESS_TEXT.
+
+         In particular, this is used by the Flutter engine in io.flutter.plugin.text.ProcessTextPlugin. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.PROCESS_TEXT"/>
+            <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- Android 11 起默认看不到其他应用的组件。听书要枚举系统里装了哪些 TTS 引擎
+             （含第三方引擎），必须声明这条，否则 TextToSpeech 只能拿到系统默认引擎。 -->
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE"/>
+        </intent>
+    </queries>
+</manifest>
