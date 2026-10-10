@@ -103,8 +103,8 @@ class PanelTts extends ConsumerWidget {
                               onPressed: canPlay ? commands.toggle : null,
                               customBorder: const CircleBorder(),
                               child: Container(
-                                width: 60,
-                                height: 60,
+                                width: 48,
+                                height: 48,
                                 decoration: BoxDecoration(
                                   shape: BoxShape.circle,
                                   color: canPlay
@@ -153,7 +153,7 @@ class PanelTts extends ConsumerWidget {
                   Container(height: 1, color: colors.borderSubtle),
                   ListeningSettingsControls(bookId: id),
                   ListeningTimerControl(bookId: id, state: speech),
-                  const SizedBox(height: GtSpacing.s5),
+                  const SizedBox(height: GtSpacing.s1),
                 ],
               ),
             ),

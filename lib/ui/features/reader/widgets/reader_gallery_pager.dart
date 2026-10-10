@@ -51,6 +51,25 @@ class _ReaderGalleryPagerState extends State<ReaderGalleryPager>
     _prefetch();
   }
 
+  @override
+  void didUpdateWidget(ReaderGalleryPager oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.count == widget.count &&
+        oldWidget.initialIndex == widget.initialIndex) {
+      return;
+    }
+    // 首图打开时只有自己；后台找到前面的图片后只移动编号，不重建首图或缩放状态。
+    final shift = widget.initialIndex - oldWidget.initialIndex;
+    _index += shift;
+    final shifted = {
+      for (final entry in _frames.entries) entry.key + shift: entry.value,
+    };
+    _frames
+      ..clear()
+      ..addAll(shifted);
+    _prefetch();
+  }
+
   void _prefetch() {
     _load(_index - 1);
     _load(_index + 1);

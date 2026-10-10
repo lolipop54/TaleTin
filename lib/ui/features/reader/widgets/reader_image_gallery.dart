@@ -3,13 +3,14 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../app/di/app_providers.dart';
+import '../../../../domain/models/locator.dart';
 import '../../../../domain/services/reader_image_sequence.dart';
 import '../../../core/widgets/gt_button.dart';
 import '../view_models/reader_session_view_model.dart';
 import 'reader_gallery_frame.dart';
 import 'reader_gallery_pager.dart';
 
-/// 单张插图沿用旧查看器；连续图片使用画廊，关闭前回到最后看的图片。
+/// 先显示点击的图片，再后台查找连续图片；关闭前回到最后看的图片。
 Future<bool> tryReaderImageGallery(
   BuildContext context,
   WidgetRef ref,
@@ -17,36 +18,53 @@ Future<bool> tryReaderImageGallery(
   String resourcePath, {
   String? chapterId,
   String? blockId,
+  Future<ReaderGalleryFrame> Function(String, BuildContext) loadFrame =
+      ReaderGalleryFrame.load,
 }) async {
   final session = ref.read(readerSessionProvider(bookId)).requireValue;
-  final sequence = await readerImageSequence(
-    contents: ref.read(chapterContentRepositoryProvider),
+  final contents = ref.read(chapterContentRepositoryProvider);
+  final notifier = ref.read(readerSessionProvider(bookId).notifier);
+  Future<ReaderImageSequence?> sequence({
+    bool currentOnly = false,
+    bool Function()? isActive,
+  }) => readerImageSequence(
+    contents: contents,
     book: session.book,
     chapters: session.chapters,
     chapterId: chapterId ?? session.chapter.id,
     resourcePath: resourcePath,
     blockId: blockId,
+    currentOnly: currentOnly,
+    isActive: isActive,
   );
-  if (sequence == null || sequence.images.length < 2) return false;
+  final initial = await sequence(currentOnly: true);
+  if (initial == null) return false;
   if (!context.mounted) return true;
-  final first = await ReaderGalleryFrame.load(
-    sequence.images[sequence.initialIndex].path,
-    context,
-  );
+  ReaderGalleryFrame first;
+  try {
+    first = await loadFrame(initial.images.single.path, context);
+  } catch (_) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('图片无法打开，请重试')));
+    }
+    return true;
+  }
   if (!context.mounted) {
     first.dispose();
     return true;
   }
-  final notifier = ref.read(readerSessionProvider(bookId).notifier);
   final route = DialogRoute<void>(
     context: context,
     useSafeArea: false,
     barrierDismissible: false,
     barrierColor: Colors.black,
     builder: (_) => ReaderImageGallery(
-      sequence: sequence,
+      sequence: initial,
       first: first,
-      onClose: (index) => notifier.goToImage(sequence.images[index].locator),
+      loadSequence: (isActive) => sequence(isActive: isActive),
+      loadFrame: loadFrame,
+      onClose: notifier.goToImage,
     ),
   );
   await Navigator.of(context, rootNavigator: true).push(route);
@@ -64,26 +82,60 @@ class ReaderImageGallery extends StatefulWidget {
     required this.sequence,
     required this.first,
     required this.onClose,
+    this.loadSequence,
     this.loadFrame = ReaderGalleryFrame.load,
   });
   final ReaderImageSequence sequence;
   final ReaderGalleryFrame first;
-  final Future<void> Function(int index) onClose;
+  final Future<void> Function(Locator locator) onClose;
+  final Future<ReaderImageSequence?> Function(bool Function() isActive)?
+  loadSequence;
   final Future<ReaderGalleryFrame> Function(String, BuildContext) loadFrame;
   @override
   State<ReaderImageGallery> createState() => _ReaderImageGalleryState();
 }
 
 class _ReaderImageGalleryState extends State<ReaderImageGallery> {
+  late ReaderImageSequence _sequence = widget.sequence;
   late int _index = widget.sequence.initialIndex;
+  late bool _discovering = widget.loadSequence != null;
   bool _loading = false, _closing = false;
   String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    // 当前图先画出来，整段图片数量和邻图准备都不参与窗口首次打开的等待。
+    WidgetsBinding.instance.addPostFrameCallback((_) => _discover());
+  }
+
+  Future<void> _discover() async {
+    final load = widget.loadSequence;
+    if (load == null || !mounted) return;
+    try {
+      final complete = await load(() => mounted);
+      if (!mounted) return;
+      if (complete == null) throw StateError('图片顺序无法读取');
+      setState(() {
+        _sequence = complete;
+        _index = complete.initialIndex;
+        _discovering = false;
+      });
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _discovering = false;
+          _error = '其他图片读取失败，请重新打开重试';
+        });
+      }
+    }
+  }
 
   Future<void> _close() async {
     if (_closing || _loading) return;
     setState(() => _closing = true);
     try {
-      await widget.onClose(_index);
+      await widget.onClose(_sequence.images[_index].locator);
       if (mounted) Navigator.of(context).pop();
     } catch (_) {
       if (mounted) setState(() => _error = '正文定位失败，请重试关闭图片');
@@ -114,12 +166,10 @@ class _ReaderImageGalleryState extends State<ReaderImageGallery> {
                   absorbing: _closing,
                   child: ReaderGalleryPager(
                     first: widget.first,
-                    initialIndex: widget.sequence.initialIndex,
-                    count: widget.sequence.images.length,
-                    load: (index, context) => widget.loadFrame(
-                      widget.sequence.images[index].path,
-                      context,
-                    ),
+                    initialIndex: _sequence.initialIndex,
+                    count: _sequence.images.length,
+                    load: (index, context) =>
+                        widget.loadFrame(_sequence.images[index].path, context),
                     onChanged: (index) => setState(() {
                       _index = index;
                       _error = null;
@@ -143,18 +193,24 @@ class _ReaderImageGalleryState extends State<ReaderImageGallery> {
                     icon: const Icon(Icons.close),
                   ),
                 ),
-                Positioned(
-                  bottom: 16,
-                  left: 0,
-                  right: 0,
-                  child: IgnorePointer(
-                    child: Text(
-                      '${_index + 1} / ${widget.sequence.images.length}',
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(color: Colors.white, fontSize: 14),
+                if (_discovering || _sequence.images.length > 1)
+                  Positioned(
+                    bottom: 16,
+                    left: 0,
+                    right: 0,
+                    child: IgnorePointer(
+                      child: Text(
+                        _discovering
+                            ? '正在准备其他图片…'
+                            : '${_index + 1} / ${_sequence.images.length}',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                        ),
+                      ),
                     ),
                   ),
-                ),
                 if (_error != null)
                   Positioned(
                     bottom: 44,

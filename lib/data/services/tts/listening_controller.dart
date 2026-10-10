@@ -270,6 +270,9 @@ class ListeningController implements ListeningService {
       ListeningState(
         status: TtsStatus.preparing,
         desiredPlaying: playImmediately,
+        // 音色和语速属于应用配置；准备新会话时保留已确认值，避免面板闪回空值。
+        voice: snapshot.voice,
+        speed: snapshot.speed,
         bookId: bookId,
         resumeLocator: locator,
         sessionEpoch: epoch,

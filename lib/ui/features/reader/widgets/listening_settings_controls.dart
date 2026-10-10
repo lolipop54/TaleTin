@@ -45,7 +45,9 @@ class _SettingsState extends ConsumerState<ListeningSettingsControls> {
             format: (v) => '${v.toStringAsFixed(1)}×',
             save: voice == null ? null : commands.rate,
           ),
+          const SizedBox(height: 6),
           ListTile(
+            minTileHeight: 56,
             contentPadding: EdgeInsets.zero,
             title: const Text('音色', style: TextStyle(fontSize: 14)),
             subtitle: Text(

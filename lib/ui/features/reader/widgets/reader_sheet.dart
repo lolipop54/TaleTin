@@ -98,7 +98,7 @@ class ReaderSheet extends StatelessWidget {
           ),
           Flexible(child: child),
           ?footer,
-          SizedBox(height: media.padding.bottom + GtSpacing.s2),
+          SizedBox(height: media.padding.bottom + GtSpacing.s1),
         ],
       ),
     );

@@ -37,6 +37,7 @@ class ListeningTimerControl extends ConsumerWidget {
     return Material(
       type: MaterialType.transparency,
       child: GtListButton(
+        minTileHeight: 56,
         contentPadding: EdgeInsets.zero,
         title: const Text('睡眠定时', style: TextStyle(fontSize: 14)),
         subtitle: Text(

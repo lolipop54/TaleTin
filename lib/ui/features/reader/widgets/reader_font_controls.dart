@@ -78,7 +78,7 @@ class ReaderFontControls extends StatelessWidget {
         );
     return Row(
       children: [
-        Padding(padding: const EdgeInsets.only(right: 12),
+        Padding(padding: const EdgeInsets.only(right: 8),
           child: Text('字号', style: TextStyle(fontSize: 14, color: colors.textPrimary))),
         SizedBox(
           width: stepWidth,
