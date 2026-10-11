@@ -47,7 +47,7 @@ final progressTitlesProvider = FutureProvider.autoDispose
               (c) => c.href != null && (names[c.id]?.length ?? 0) > 1,
             );
         final source = needsAnchors
-            ? ref
+            ? await ref
                   .read(epubSourceRepositoryProvider)
                   .open(
                     bookId: bookId,
@@ -101,7 +101,7 @@ final progressTitlesProvider = FutureProvider.autoDispose
           await repository.writeTocProgress(bookId, signature, result);
           return result;
         } finally {
-          source?.close();
+          await source?.close();
         }
       }),
     );

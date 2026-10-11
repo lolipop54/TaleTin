@@ -20,11 +20,18 @@ abstract final class EnglishHyphenation {
     if (_dictionary != null) return Future.value();
     return _preparing ??= _load();
   }
+
   static Future<void> _load() async {
     final bytes = await rootBundle.load('assets/hyphenation/hyph_en_US.dic');
-    _dictionary = Hyphen.fromDictionaryBytes(
+    prepareFromBytes(
       bytes.buffer.asUint8List(bytes.offsetInBytes, bytes.lengthInBytes),
     );
+  }
+
+  /// 后台原书会话使用主线程读取的词典字节，在自己的 isolate 内解析。
+  /// 与普通 prepare 共用同一个词典和断字算法，不改变软连字符的位置。
+  static void prepareFromBytes(Uint8List bytes) {
+    _dictionary ??= Hyphen.fromDictionaryBytes(bytes);
   }
 
   static HyphenatedText display(String source) {

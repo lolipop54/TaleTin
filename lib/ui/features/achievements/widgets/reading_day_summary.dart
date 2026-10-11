@@ -3,6 +3,9 @@ import 'package:flutter/material.dart';
 import '../../../core/theme/gt_tokens.dart';
 import '../../../core/widgets/gt_icon.dart';
 
+/// 更改寄语后运行 tools/fonts/generate_quote.py，字库只保留这些字形。
+const readingDayQuote = '每一段专注的时光，\n都是在靠近更好的自己。';
+
 /// 附件中的淡绿时长卡片：大数字、手写寄语和轻微倾斜的下划线。
 class ReadingDaySummary extends StatelessWidget {
   const ReadingDaySummary({super.key, required this.totalMs});
@@ -103,7 +106,7 @@ class ReadingDaySummary extends StatelessWidget {
                 child: Column(
                   children: [
                     Text(
-                      '每一段专注的时光，\n都是在靠近更好的自己。',
+                      readingDayQuote,
                       style: TextStyle(
                         fontFamily: 'ReadingQuote',
                         fontSize: 14,

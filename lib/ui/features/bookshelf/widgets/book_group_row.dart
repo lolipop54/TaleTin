@@ -54,7 +54,7 @@ class BookGroupRow extends StatelessWidget {
               tooltip: '删除分组$name',
               onPressed: onDelete,
               icon: Image.asset(
-                'assets/icons_used/删除.png',
+                'assets/icons_used/删除.webp',
                 width: 22,
                 height: 22,
                 cacheWidth: 88,

@@ -164,7 +164,10 @@ OriginalHostEvent? parseHostEvent(
     case 'link':
       return HostLink(chapterIndex: chapterIndex, href: stringOf('href'));
     case 'error':
-      return HostError(chapterIndex: chapterIndex, message: stringOf('message'));
+      return HostError(
+        chapterIndex: chapterIndex,
+        message: stringOf('message'),
+      );
   }
   return null;
 }
@@ -184,7 +187,8 @@ class OriginalLayoutController {
     if (uri == null || source.entryPathOf(uri) == null) return null;
     final resource = await source.resourceFor(uri);
     return resource?.contentType.startsWith('image/') == true
-        ? resource!.bytes : null;
+        ? resource!.bytes
+        : null;
   }
 
   // source 已隔离 bookId/contentVersion；映射规则版本参与键，最多保留三个资源。
@@ -217,7 +221,8 @@ class OriginalLayoutController {
     String href,
     ChapterContent content,
     Locator locator,
-  ) async => (await positionMap(index, href, content, locator)).displayPoint(locator);
+  ) async =>
+      (await positionMap(index, href, content, locator)).displayPoint(locator);
 
   /// 章节按钮先保留当前画面，再执行定位；由正文区注册和释放。
   Future<void> Function(Future<void> Function() jump)? holdPageDuringJump;
@@ -234,8 +239,7 @@ class OriginalLayoutController {
   OriginalHostEvent? handle(
     Map<String, Object?> raw, {
     required int chapterIndex,
-  }) =>
-      parseHostEvent(raw, chapterIndex: chapterIndex);
+  }) => parseHostEvent(raw, chapterIndex: chapterIndex);
 
   /// 定位到章内比例（分栏完成后的落点、目录跳转）
   Future<void> goToFraction(double fraction) async {
@@ -270,38 +274,46 @@ class OriginalLayoutController {
     await _host?.applyStyle(fontSizePx: fontSizePx, colors: colors);
   }
 
-  void dispose() => source.close();
+  void dispose() => unawaited(source.close());
 }
 
 /// 原书排版模式的一次阅读会话（按书隔离）。
 ///
 /// 打开 `source.epub` 并封好桥；打开失败（源文件缺失、与章节索引对不上）时这里抛错，
 /// 由阅读页降级回简化排版并说明原因（计划 3.1）。
-final originalLayoutProvider =
-    FutureProvider.autoDispose.family<OriginalLayoutController, String>(
-  (ref, bookId) async {
-    // 只跟「书 + 章列表」走：会话状态每次翻页都会变，不能让它重建控制器
-    // （重建会重新打开一次归档）
-    final target = ref.watch(
-      readerSessionProvider(bookId).select(
-        (session) => (session.value?.book, session.value?.chapters),
-      ),
-    );
-    final book = target.$1;
-    final chapters = target.$2;
-    if (book == null || chapters == null || chapters.isEmpty) {
-      throw const ReaderFailure('正文还没准备好，稍后再试');
-    }
-    if (book.format != BookFormat.epub) {
-      throw const ReaderFailure('只有 EPUB 能按原书样式排版');
-    }
-    final source = ref.watch(epubSourceRepositoryProvider).open(
-          bookId: bookId,
-          contentVersion: book.contentVersion,
-          chapters: chapters,
-        );
-    final controller = OriginalLayoutController(bookId: bookId, source: source);
-    ref.onDispose(controller.dispose);
-    return controller;
-  },
-);
+final originalLayoutProvider = FutureProvider.autoDispose
+    .family<OriginalLayoutController, String>((ref, bookId) async {
+      // 只跟「书 + 章列表」走：会话状态每次翻页都会变，不能让它重建控制器
+      // （重建会重新打开一次归档）
+      final target = ref.watch(
+        readerSessionProvider(
+          bookId,
+        ).select((session) => (session.value?.book, session.value?.chapters)),
+      );
+      final book = target.$1;
+      final chapters = target.$2;
+      if (book == null || chapters == null || chapters.isEmpty) {
+        throw const ReaderFailure('正文还没准备好，稍后再试');
+      }
+      if (book.format != BookFormat.epub) {
+        throw const ReaderFailure('只有 EPUB 能按原书样式排版');
+      }
+      final source = await ref
+          .watch(epubSourceRepositoryProvider)
+          .open(
+            bookId: bookId,
+            contentVersion: book.contentVersion,
+            chapters: chapters,
+          );
+      // FutureProvider 等待期间可能退出阅读页，不能留下迟到的后台会话。
+      if (!ref.mounted) {
+        await source.close();
+        throw const ReaderFailure('阅读页已关闭');
+      }
+      final controller = OriginalLayoutController(
+        bookId: bookId,
+        source: source,
+      );
+      ref.onDispose(controller.dispose);
+      return controller;
+    });

@@ -144,6 +144,14 @@ flutter build apk --release --split-per-abi
 
 连接 Android 设备后，也可以使用 `flutter run` 调试。
 
+排除内置字体：
+```bash
+flutter build apk --release --split-per-abi --dart-define=GT_INCLUDE_PRESET_FONTS=false
+```
+
+
+
+
 ### 构建说明
 
 - 保留 `pubspec.lock`，优先使用已锁定的依赖版本。

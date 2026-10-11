@@ -69,18 +69,32 @@ mixin _ReaderScrollPosition on AsyncNotifier<ReaderSession> {
       _scrollAnchors[key] = held;
       return held.locatorOfAnchor(fragment);
     }
-    final source = ref.read(epubSourceRepositoryProvider).open(bookId: bookId,
-      contentVersion: session.book.contentVersion, chapters: session.chapters);
+    final source = await ref
+        .read(epubSourceRepositoryProvider)
+        .open(
+          bookId: bookId,
+          contentVersion: session.book.contentVersion,
+          chapters: session.chapters,
+        );
     try {
       final html = await source.chapterDocument(index);
       if (html == null || !ref.mounted) return null;
       final chapter = session.chapters[index];
-      final map = ChapterAnchorMap.parse(sanitizedHtml: html, resourceHref: chapter.href!,
-        bookId: bookId, contentVersion: session.book.contentVersion, chapterId: chapter.id);
+      final map = ChapterAnchorMap.parse(
+        sanitizedHtml: html,
+        resourceHref: chapter.href!,
+        bookId: bookId,
+        contentVersion: session.book.contentVersion,
+        chapterId: chapter.id,
+      );
       _scrollAnchors[key] = map;
-      while (_scrollAnchors.length > 3) { _scrollAnchors.remove(_scrollAnchors.keys.first); }
+      while (_scrollAnchors.length > 3) {
+        _scrollAnchors.remove(_scrollAnchors.keys.first);
+      }
       return map.locatorOfAnchor(fragment);
-    } finally { source.close(); }
+    } finally {
+      await source.close();
+    }
   }
 
   Future<void> setScrolling(bool enabled) async {
@@ -97,7 +111,11 @@ mixin _ReaderScrollPosition on AsyncNotifier<ReaderSession> {
     if (!enabled && anchor != null) await goToLocator(anchor, manual: false);
   }
 
-  bool reportScrollPosition(ChapterContent content, Locator anchor, {int? jumpToken}) {
+  bool reportScrollPosition(
+    ChapterContent content,
+    Locator anchor, {
+    int? jumpToken,
+  }) {
     final session = state.value;
     if (session == null || !session.scrolling) return false;
     if (jumpToken != session.scrollJump?.token) return false;

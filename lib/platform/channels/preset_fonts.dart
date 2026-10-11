@@ -8,7 +8,15 @@ import 'preset_font_previews.dart';
 /// 部分 Bold 文件内部仍标成 400，不能用 FontLoader 猜测其字重。
 /// 增删步骤见 docs/内置字体维护说明.md；这里的条目顺序就是字体页的内置顺序。
 abstract final class PresetFonts {
-  static const families = <String, ({String name, String file, String? bold})>{
+  /// Android 打包同时按此参数排除完整字体和名称预览，默认仍包含内置字体。
+  static const included = bool.fromEnvironment(
+    'GT_INCLUDE_PRESET_FONTS',
+    defaultValue: true,
+  );
+  static const families = included
+      ? catalog
+      : <String, ({String name, String file, String? bold})>{};
+  static const catalog = <String, ({String name, String file, String? bold})>{
     'gt-preset-cangeryumo': (
       name: '仓耳与墨',
       file: '仓耳与墨/仓耳与墨.ttf',
@@ -24,12 +32,6 @@ abstract final class PresetFonts {
       file: '仓耳舒圆体/仓耳舒圆体.ttf',
       bold: '仓耳舒圆体/仓耳舒圆体-Bold.ttf',
     ),
-    'gt-preset-cangerfeibai': (
-      name: '仓耳非白',
-      file: '仓耳非白/仓耳非白.ttf',
-      bold: '仓耳非白/仓耳非白-Bold.ttf',
-    ),
-    'gt-preset-cangerwanzi': (name: '仓耳小丸子', file: '仓耳小丸子.ttf', bold: null),
     'gt-preset-jingnanbobo': (name: '荆南波波黑', file: '荆南波波黑.ttf', bold: null),
     'gt-preset-screenserif': (name: '思源屏显臻宋', file: '思源屏显臻宋.ttf', bold: null),
     'gt-preset-lxgwwenkai': (
@@ -39,7 +41,6 @@ abstract final class PresetFonts {
     ),
     'gt-preset-lxgwmanhei': (name: '霞鹜漫黑', file: '霞鹜漫黑.ttf', bold: null),
     'gt-preset-lxgwzhenkai': (name: '霞鹜臻楷', file: '霞鹜臻楷.ttf', bold: null),
-    'gt-preset-homefelt': (name: '宅在家麥克筆', file: '宅在家麥克筆.ttf', bold: null),
     'gt-preset-homepencil': (name: '宅在家自動筆', file: '宅在家自動筆.ttf', bold: null),
     'gt-preset-ideals': (name: '自由理想体', file: '自由理想体.ttf', bold: null),
   };

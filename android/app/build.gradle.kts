@@ -1,6 +1,20 @@
 import java.io.FileInputStream
 import java.util.Properties
 import java.util.zip.ZipFile
+import java.util.Base64
+import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
+import com.android.build.api.artifact.SingleArtifact
+import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.file.FileSystemOperations
+import org.gradle.api.provider.Property
+import org.gradle.api.tasks.Input
+import org.gradle.api.tasks.InputDirectory
+import org.gradle.api.tasks.OutputDirectory
+import org.gradle.api.tasks.PathSensitive
+import org.gradle.api.tasks.PathSensitivity
+import org.gradle.api.tasks.TaskAction
+import javax.inject.Inject
 
 plugins {
     id("com.android.application")
@@ -91,6 +105,67 @@ flutter {
     source = "../.."
 }
 
+// 在 Android 合并资产后生成独立副本，不修改 pubspec 或 Flutter 的共享产物。
+// 使用同一个 dart-define 控制界面与 APK；切回默认构建时字体自动恢复打包。
+abstract class FilterReadingFontAssets : DefaultTask() {
+    @get:InputDirectory
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val mergedAssets: DirectoryProperty
+    @get:OutputDirectory
+    abstract val filteredAssets: DirectoryProperty
+    @get:Input
+    abstract val includePresetFonts: Property<Boolean>
+    @get:Inject
+    abstract val fileOperations: FileSystemOperations
+
+    @TaskAction
+    fun filter() {
+        val include = includePresetFonts.get()
+        fileOperations.sync {
+            from(mergedAssets)
+            into(filteredAssets)
+            if (!include) {
+                exclude("flutter_assets/assets/fonts/preset/**")
+                exclude("flutter_assets/assets/fonts/preview/**")
+            }
+        }
+        if (!include) {
+            val manifest = filteredAssets.file("flutter_assets/FontManifest.json").get().asFile
+            val fonts = JsonSlurper().parse(manifest) as List<*>
+            val kept = fonts.filter { entry ->
+                val family = (entry as Map<*, *>)["family"] as String
+                return@filter !family.startsWith("gt-preset-") && !family.startsWith("gt-preview-")
+            }
+            manifest.writeText(JsonOutput.toJson(kept), Charsets.UTF_8)
+        }
+    }
+}
+
+val includeReadingFonts = providers.gradleProperty("dart-defines").map { encoded ->
+    val value = encoded.split(',').map {
+        String(Base64.getDecoder().decode(it), Charsets.UTF_8)
+    }.lastOrNull { it.startsWith("GT_INCLUDE_PRESET_FONTS=") }
+        ?.substringAfter('=') ?: "true"
+    require(value == "true" || value == "false") {
+        "GT_INCLUDE_PRESET_FONTS 只能填写 true 或 false"
+    }
+    value == "true"
+}.orElse(true)
+
+androidComponents.onVariants { variant ->
+    val filterTask = tasks.register<FilterReadingFontAssets>(
+        "filter${variant.name.replaceFirstChar { it.uppercase() }}ReadingFontAssets"
+    ) {
+        // Flutter 额外向合并资产目录写入文件；必须等它复制完成再过滤。
+        dependsOn("copyFlutterAssets${variant.name.replaceFirstChar { it.uppercase() }}")
+        includePresetFonts.set(includeReadingFonts)
+        filteredAssets.set(layout.buildDirectory.dir("filtered_font_assets/${variant.name}"))
+    }
+    variant.artifacts.use(filterTask)
+        .wiredWithDirectories(FilterReadingFontAssets::mergedAssets, FilterReadingFontAssets::filteredAssets)
+        .toTransform(SingleArtifact.ASSETS)
+}
+
 // 检查最终 APK，而非只看编译是否成功：曾出现 ARM 的启动库未装进包、
 // Gradle 却报告成功的情况。这里也覆盖 SQLite 库，避免启动后打不开数据库。
 val releaseAbiByPlatform = mapOf(
@@ -127,6 +202,24 @@ val verifyReleaseApk = tasks.register("verifyReleaseApk") {
                 check(missing.isEmpty()) {
                     "${apk.name} 缺少启动必需文件：${missing.joinToString()}。" +
                         "请确认没有构建期间清理缓存，并重新构建。"
+                }
+                // 检查真正装进包的文件，避免开关仅隐藏字体列表却没减少包体。
+                val presetFiles = zip.entries().asSequence().filter {
+                    it.name.startsWith("assets/flutter_assets/assets/fonts/preset/") ||
+                        it.name.startsWith("assets/flutter_assets/assets/fonts/preview/")
+                }.toList()
+                check(if (includeReadingFonts.get()) presetFiles.isNotEmpty() else presetFiles.isEmpty()) {
+                    "${apk.name} 的内置字体资源与 GT_INCLUDE_PRESET_FONTS 参数不一致"
+                }
+                val manifest = zip.getInputStream(zip.getEntry("assets/flutter_assets/FontManifest.json"))
+                    .bufferedReader().use { JsonSlurper().parseText(it.readText()) as List<*> }
+                val presetEntries = manifest.filter {
+                    ((it as Map<*, *>)["family"] as String).let { family ->
+                        family.startsWith("gt-preset-") || family.startsWith("gt-preview-")
+                    }
+                }
+                check(if (includeReadingFonts.get()) presetEntries.isNotEmpty() else presetEntries.isEmpty()) {
+                    "${apk.name} 的字体注册清单与打包参数不一致"
                 }
             }
             logger.lifecycle("release APK 启动文件完整：${apk.name} (${abis.joinToString()})")

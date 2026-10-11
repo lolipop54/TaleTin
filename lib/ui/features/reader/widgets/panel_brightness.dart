@@ -74,13 +74,13 @@ class PanelBrightness extends ConsumerWidget {
                   .read(brightnessPreviewProvider(bookId).notifier)
                   .set,
               leading: Image.asset(
-                'assets/icons_used/亮度-.png',
+                'assets/icons_used/亮度-.webp',
                 width: 24,
                 height: 24,
                 color: colors.textSecondary,
               ),
               trailing: Image.asset(
-                'assets/icons_used/亮度+.png',
+                'assets/icons_used/亮度+.webp',
                 width: 24,
                 height: 24,
                 color: colors.textSecondary,

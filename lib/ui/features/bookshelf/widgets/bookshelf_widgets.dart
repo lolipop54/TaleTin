@@ -254,7 +254,7 @@ class _SelectionDot extends StatelessWidget {
   }
 }
 
-/// 第一行独立展示分类与分组；第二行排序靠左、显示方式靠右。
+/// 横向展示分类与分组；排序与布局放在标题栏的更多菜单。
 class ShelfFilterBar extends ConsumerWidget {
   const ShelfFilterBar({super.key});
 
@@ -274,94 +274,32 @@ class ShelfFilterBar extends ConsumerWidget {
     final groups = ref.watch(bookGroupsProvider).value ?? const [];
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: GtSize.shelfPagePadding),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          SingleChildScrollView(
-            key: const ValueKey('shelf-filter-scroll'),
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: [
-                for (final tab in tabs) ...[
-                  _FilterTab(
-                    key: ValueKey('shelf-tab-${tab.value}'),
-                    label: tab.value,
-                    selected: state.groupId == null && state.filter == tab.key,
-                    onTap: () => vm.setFilter(tab.key),
-                  ),
-                  if (tab != tabs.last || groups.isNotEmpty)
-                    _tabDivider(colors),
-                ],
-                for (final group in groups) ...[
-                  _FilterTab(
-                    key: ValueKey('shelf-group-${group.id}'),
-                    label: group.name,
-                    selected: state.groupId == group.id,
-                    onTap: () => vm.setGroup(group.id),
-                  ),
-                  if (group != groups.last) _tabDivider(colors),
-                ],
-              ],
-            ),
-          ),
-          const SizedBox(height: GtSpacing.s2),
-          Row(
-            key: const ValueKey('shelf-sort-view-row'),
-            children: [
-              GtButton.raw(
-                key: const ValueKey('shelf-sort'),
-                onPressed: state.savingSort ? null : () async {
-                  try { await vm.cycleSort(); }
-                  catch (_) {
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('排序设置未保存，请重试')));
-                    }
-                  }
-                },
-                borderRadius: BorderRadius.circular(GtRadius.control),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: GtSpacing.s1,
-                    vertical: GtSpacing.s1,
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      GtIcon(
-                        GtIcons.sort,
-                        size: 16,
-                        color: colors.textSecondary,
-                      ),
-                      const SizedBox(width: GtSpacing.s1),
-                      Text(
-                        state.sortLabel,
-                        style: GtText.caption(colors.textSecondary)
-                            .copyWith(fontSize: 12.5),
-                      ),
-                    ],
-                  ),
-                ),
+      child: SingleChildScrollView(
+        key: const ValueKey('shelf-filter-scroll'),
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            for (final tab in tabs) ...[
+              _FilterTab(
+                key: ValueKey('shelf-tab-${tab.value}'),
+                label: tab.value,
+                selected: state.groupId == null && state.filter == tab.key,
+                onTap: () => vm.setFilter(tab.key),
               ),
-              const Spacer(),
-              _ViewToggle(
-                icon: GtIcons.grid,
-                selected: state.gridView,
-                onTap: () {
-                  if (!state.gridView) vm.toggleViewMode();
-                },
-              ),
-              const SizedBox(width: GtSpacing.s1),
-              _ViewToggle(
-                icon: GtIcons.list,
-                selected: !state.gridView,
-                onTap: () {
-                  if (state.gridView) vm.toggleViewMode();
-                },
-              ),
+              if (tab != tabs.last || groups.isNotEmpty)
+                _tabDivider(colors),
             ],
-          ),
-        ],
+            for (final group in groups) ...[
+              _FilterTab(
+                key: ValueKey('shelf-group-${group.id}'),
+                label: group.name,
+                selected: state.groupId == group.id,
+                onTap: () => vm.setGroup(group.id),
+              ),
+              if (group != groups.last) _tabDivider(colors),
+            ],
+          ],
+        ),
       ),
     );
   }
@@ -417,35 +355,6 @@ class _FilterTab extends StatelessWidget {
             ),
           ),
         ],
-      ),
-    );
-  }
-}
-
-class _ViewToggle extends StatelessWidget {
-  const _ViewToggle({
-    required this.icon,
-    required this.selected,
-    required this.onTap,
-  });
-
-  final String icon;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = context.gtColors;
-    return GtButton.raw(
-      onPressed: onTap,
-      borderRadius: BorderRadius.circular(GtRadius.control),
-      child: Padding(
-        padding: const EdgeInsets.all(GtSpacing.s1),
-        child: GtIcon(
-          icon,
-          size: 19,
-          color: selected ? colors.actionPrimary : colors.textMuted,
-        ),
       ),
     );
   }

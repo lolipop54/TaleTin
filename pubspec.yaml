@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.4+49
+version: 1.0.5+50
 
 environment:
   sdk: ^3.13.2
@@ -101,11 +101,11 @@ flutter:
   assets:
     - assets/icons/
     - assets/icons_used/
-    - assets/pics/无动画.png
-    - assets/pics/平移翻页.png
-    - assets/pics/覆盖翻页.png
-    - assets/pics/仿真翻页.png
-    - assets/pics/滚动.png
+    - assets/pics/无动画.webp
+    - assets/pics/平移翻页.webp
+    - assets/pics/覆盖翻页.webp
+    - assets/pics/仿真翻页.webp
+    - assets/pics/滚动.webp
     - assets/achievements/
     - assets/hyphenation/
     - assets/fonts/reading_quote/OFL.txt
@@ -132,16 +132,6 @@ flutter:
           weight: 400
         - asset: assets/fonts/preset/仓耳舒圆体/仓耳舒圆体-Bold.ttf
           weight: 700
-    - family: gt-preset-cangerfeibai
-      fonts:
-        - asset: assets/fonts/preset/仓耳非白/仓耳非白.ttf
-          weight: 400
-        - asset: assets/fonts/preset/仓耳非白/仓耳非白-Bold.ttf
-          weight: 700
-    - family: gt-preset-cangerwanzi
-      fonts:
-        - asset: assets/fonts/preset/仓耳小丸子.ttf
-          weight: 400
     - family: gt-preset-jingnanbobo
       fonts:
         - asset: assets/fonts/preset/荆南波波黑.ttf
@@ -163,10 +153,6 @@ flutter:
     - family: gt-preset-lxgwzhenkai
       fonts:
         - asset: assets/fonts/preset/霞鹜臻楷.ttf
-          weight: 400
-    - family: gt-preset-homefelt
-      fonts:
-        - asset: assets/fonts/preset/宅在家麥克筆.ttf
           weight: 400
     - family: gt-preset-homepencil
       fonts:
@@ -196,16 +182,6 @@ flutter:
           weight: 400
         - asset: assets/fonts/preview/gt-preview-cangershuyuan-700.ttf
           weight: 700
-    - family: gt-preview-cangerfeibai
-      fonts:
-        - asset: assets/fonts/preview/gt-preview-cangerfeibai-400.ttf
-          weight: 400
-        - asset: assets/fonts/preview/gt-preview-cangerfeibai-700.ttf
-          weight: 700
-    - family: gt-preview-cangerwanzi
-      fonts:
-        - asset: assets/fonts/preview/gt-preview-cangerwanzi-400.ttf
-          weight: 400
     - family: gt-preview-jingnanbobo
       fonts:
         - asset: assets/fonts/preview/gt-preview-jingnanbobo-400.ttf
@@ -227,10 +203,6 @@ flutter:
     - family: gt-preview-lxgwzhenkai
       fonts:
         - asset: assets/fonts/preview/gt-preview-lxgwzhenkai-400.ttf
-          weight: 400
-    - family: gt-preview-homefelt
-      fonts:
-        - asset: assets/fonts/preview/gt-preview-homefelt-400.ttf
           weight: 400
     - family: gt-preview-homepencil
       fonts:

@@ -18,7 +18,7 @@ class AchievementRule {
   final AchievementMetric metric;
   final int target;
   int get version => achievementRuleVersion;
-  String get asset => 'assets/achievements/$art.png';
+  String get asset => 'assets/achievements/$art.webp';
 }
 
 /// 新版规则重新计算解锁记录；已解锁的新勋章不随普通撤销读完记录回收。

@@ -18,7 +18,8 @@ String selectedFontChoice(
     // 旧版打开字体面板时可能已保存当前系统字体的具体编号。
     : settings.fontFamily == null ||
           settings.fontFamily == 'sans-serif' ||
-          settings.fontFamily == ReadingFonts.resolve('sans-serif')
+          ReadingFonts.resolve(settings.fontFamily) ==
+              ReadingFonts.resolve('sans-serif')
     ? 'sans-serif'
     : ReadingFonts.resolve(settings.fontFamily)!;
 
@@ -34,8 +35,7 @@ Map<String, String> readingFontChoices(
   for (final id in PresetFonts.families.keys)
     if (fonts.containsKey(id)) id: fonts[id] ?? id,
   for (final entry in fonts.entries)
-    if (entry.key != 'sans-serif' &&
-        !PresetFonts.families.containsKey(entry.key))
+    if (entry.key != 'sans-serif' && !entry.key.startsWith('gt-preset-'))
       entry.key: entry.value ?? entry.key,
 };
 

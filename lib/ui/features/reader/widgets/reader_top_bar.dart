@@ -126,7 +126,7 @@ class _TopBar extends ConsumerWidget {
                   icon: ColorFiltered(
                     colorFilter: iconTint,
                     child: Image.asset(
-                      'assets/icons_used/已读.png',
+                      'assets/icons_used/已读.webp',
                       width: 36,
                       height: 36,
                       cacheWidth: (24 * MediaQuery.devicePixelRatioOf(context))

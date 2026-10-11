@@ -52,7 +52,7 @@ Future<List<ListeningTarget>> _loadTargetsInWorker({
       cacheRoot: cacheRoot,
       hyphenateText: false,
     );
-    final session = source.open(
+    final session = await source.open(
       bookId: bookId,
       contentVersion: version,
       chapters: files,
@@ -62,7 +62,7 @@ Future<List<ListeningTarget>> _loadTargetsInWorker({
         files.indexWhere((c) => c.id == file.id),
       );
     } finally {
-      session.close();
+      await session.close();
     }
   }
   return resolveListeningTargets(
@@ -91,7 +91,10 @@ Future<List<SpeechUnit>> buildListeningUnits({
     maxUnitLength: maxLength,
   );
   final units = assignLogicalChapters(
-    index.units, content, targets, initialChapterId,
+    index.units,
+    content,
+    targets,
+    initialChapterId,
   );
   return addListeningTitles(units, content, targets, maxLength);
 });

@@ -10,19 +10,17 @@
 /// 3. **图片优先用导入时的落盘副本**（`content/<版本>/res/`），既不读归档也不占缓存。
 library;
 
-import 'dart:convert';
+import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:path/path.dart' as p;
-import 'book_source_path.dart';
+import 'package:flutter/services.dart';
+
+import 'epub_source_worker.dart';
 
 import '../../../domain/models/book_document.dart';
 import '../../../domain/repositories/chapter_content_repository.dart';
-import '../../engine/normalization/text_decoding.dart';
 import '../../engine/parsers/epub/epub_archive.dart';
-import '../../engine/parsers/epub/epub_sanitizer.dart';
-import '../../engine/layout/english_hyphenation.dart';
 import '../../engine/parsers/epub/epub_source_reader.dart';
 
 /// 虚拟源域名：不解析、不可达，纯粹给 WebView 一个稳定的同源基准。
@@ -54,8 +52,19 @@ class EpubSourceRepository {
   final String cacheRoot;
   final _sessions = <EpubSourceSession>{};
   final _changing = <String>{};
+  final _opening = <Future<EpubSourceSession>, String>{};
   bool _closed = false;
-  Set<String> get activeBookIds => _sessions.map((s) => s.bookId).toSet();
+  Set<String> get activeBookIds => {
+    ..._sessions.map((s) => s.bookId),
+    ..._opening.values,
+  };
+  Future<void> _waitOpening([String? bookId]) async {
+    await Future.wait(
+      _opening.entries
+          .where((e) => bookId == null || e.value == bookId)
+          .map((e) => e.key.then<void>((_) {}, onError: (Object _) {})),
+    );
+  }
 
   /// 检查与重命名之间不让出事件循环，新会话从干净路径重新准备。
   /// 只挪走没有会话的缓存，已打开归档读过的条目仍能继续使用。
@@ -84,45 +93,66 @@ class EpubSourceRepository {
 
   Future<void Function()> prepareContentChange(String bookId) async {
     if (!_changing.add(bookId)) throw StateError('这本书正在更新正文');
+    await _waitOpening(bookId);
     for (final session in _sessions.where((s) => s.bookId == bookId).toList()) {
-      await session._drainAndClose();
+      await session.close();
     }
     return () => _changing.remove(bookId);
   }
 
   Future<void> close() async {
     _closed = true;
+    await _waitOpening();
     for (final session in _sessions.toList()) {
-      await session._drainAndClose();
+      await session.close();
     }
   }
 
   /// 打开一本书的原书内容。
   ///
   /// 源文件缺失或与章节索引对不上时抛 [ContentFailure]，由调用方降级回简化模式。
-  EpubSourceSession open({
+  Future<EpubSourceSession> open({
     required String bookId,
     required int contentVersion,
     required List<Chapter> chapters,
   }) {
     if (_closed) throw StateError('原书服务已关闭');
     if (_changing.contains(bookId)) throw StateError('这本书正在更新正文');
-    final reader = EpubSourceReader.open(
-      bookSourcePath(p.join(libraryRoot, bookId), 'epub'),
-    );
-    final mismatch = reader.mismatchWith(chapters);
-    if (mismatch != null) {
-      reader.close();
-      throw ContentFailure(
-        ContentErrorCode.corrupted,
-        '原书文件与章节索引不一致：$mismatch',
-      );
-    }
-    final session = EpubSourceSession._(
-      repository: this,
+    // 打开期间也保护缓存与源文件，恢复/重导入必须等待后台归档关闭。
+    final opening = _open(bookId, contentVersion, chapters);
+    _opening[opening] = bookId;
+    return opening.whenComplete(() => _opening.remove(opening));
+  }
+
+  Future<EpubSourceSession> _open(
+    String bookId,
+    int contentVersion,
+    List<Chapter> chapters,
+  ) async {
+    // 平台资源只读取字节，词典解析留给后台；缓存命中时不解析词典。
+    final dictionary = hyphenateText
+        ? await rootBundle.load('assets/hyphenation/hyph_en_US.dic')
+        : null;
+    final worker = await EpubSourceWorker.open(
+      libraryRoot: libraryRoot,
+      cacheRoot: cacheRoot,
       bookId: bookId,
       contentVersion: contentVersion,
-      reader: reader,
+      chapters: chapters,
+      dictionary: dictionary?.buffer.asUint8List(
+        dictionary.offsetInBytes,
+        dictionary.lengthInBytes,
+      ),
+    );
+    if (_closed || _changing.contains(bookId)) {
+      await worker.close();
+      throw StateError('原书会话在打开期间已关闭');
+    }
+    final session = EpubSourceSession._(
+      this,
+      worker,
+      bookId: bookId,
+      contentVersion: contentVersion,
     );
     _sessions.add(session);
     return session;
@@ -131,17 +161,14 @@ class EpubSourceRepository {
 
 /// 一本书的原书内容会话。界面离开阅读页时 [close]。
 class EpubSourceSession {
-  EpubSourceSession._({
-    required EpubSourceRepository repository,
+  EpubSourceSession._(
+    this._repository,
+    this._worker, {
     required this.bookId,
     required this.contentVersion,
-    required EpubSourceReader reader,
-  }) : _repository = repository,
-       _libraryRoot = repository.libraryRoot,
-       _cacheRoot = repository.cacheRoot,
-       _reader = reader {
-    for (var i = 0; i < reader.chapterCount; i++) {
-      final entry = reader.entryPathAt(i);
+  }) {
+    for (var i = 0; i < _worker.entries.length; i++) {
+      final entry = _worker.entries[i];
       _chapterEntries.add(entry);
       _ordinalOfEntry[entry] = i;
     }
@@ -150,9 +177,7 @@ class EpubSourceSession {
   final String bookId;
   final EpubSourceRepository _repository;
   final int contentVersion;
-  final EpubSourceReader _reader;
-  final String _libraryRoot;
-  final String _cacheRoot;
+  final EpubSourceWorker _worker;
 
   /// spine 条目（这些进 WebView 前要净化）
   final _chapterEntries = <String>{};
@@ -160,27 +185,27 @@ class EpubSourceSession {
   /// 归档内路径 → 章序（书内链接换章时要用它反查目标章）
   final _ordinalOfEntry = <String, int>{};
 
-  /// 同一个条目的并发请求（图片常被同时请求多张）：读归档的机会只有一次，
-  /// 必须串行化，否则第二次会撞上「已读过一次」的保护。
-  final _pending = <String, Future<Uint8List?>>{};
+  // 等到资源完整返回并落盘，才允许恢复/清理接管这本书的文件。
+  final _pending = <Future<Object?>>{};
+  Future<void>? _closing;
 
   bool _closed = false;
 
   /// 章节数
-  int get chapterCount => _reader.chapterCount;
+  int get chapterCount => _worker.entries.length;
 
   /// `/bookId/版本/` 这一段 URL 前缀（不含主机），拦截器用它快速筛掉不属于本书的请求
   String get pathPrefix => '/$bookId/$contentVersion/';
 
   /// 第 [ordinal] 章的虚拟源 URL（WebView 的文档地址）
-  Uri chapterUrl(int ordinal) => urlOf(_reader.entryPathAt(ordinal));
+  Uri chapterUrl(int ordinal) => urlOf(_worker.entries[ordinal]);
 
   /// 某条目的虚拟源 URL（相对引用由 WebView 按标准 URL 算法自行解析）
   Uri urlOf(String entryPath) =>
       Uri.parse('https://$kEpubSourceHost$pathPrefix$entryPath');
 
   /// 第 [ordinal] 章的归档内路径
-  String chapterEntryPath(int ordinal) => _reader.entryPathAt(ordinal);
+  String chapterEntryPath(int ordinal) => _worker.entries[ordinal];
 
   /// 该条目是否是 spine 里的章节文档（章节要净化并在进 WebView 前注入框架资源）
   bool isChapterEntry(String entryPath) => _chapterEntries.contains(entryPath);
@@ -215,20 +240,20 @@ class EpubSourceSession {
   Future<EpubResource?> resourceFor(Uri url) async {
     final entryPath = entryPathOf(url);
     if (entryPath == null) return null;
-    final bytes = await _load(entryPath);
-    if (bytes == null) return null;
-    return EpubResource(bytes: bytes, contentType: _contentTypeOf(entryPath));
+    final result = await _read(() => _worker.resource(entryPath));
+    if (result == null) return null;
+    return EpubResource(bytes: result.bytes, contentType: result.contentType);
   }
 
   /// 第 [ordinal] 章的净化文档（HTML 字符串）；条目缺失返回 null。
   Future<String?> chapterDocument(int ordinal) async {
-    final bytes = await _load(_reader.entryPathAt(ordinal));
-    if (bytes == null) return null;
-    return decodeTextBytes(bytes);
+    return _read(() => _worker.document(_worker.entries[ordinal]));
   }
 
   /// 换章时重置归档的解压总量预算（见 [EpubSourceReader.resetBudget]）。
-  void resetBudget() => _reader.resetBudget();
+  void resetBudget() {
+    if (!_closed) _worker.resetBudget();
+  }
 
   /// 预取某一章：解出并落盘，换章时不用现解（相邻章在阅读时提前做，见计划 3.1）。
   ///
@@ -236,133 +261,39 @@ class EpubSourceSession {
   Future<void> prefetchChapter(int ordinal) async {
     if (ordinal < 0 || ordinal >= chapterCount) return;
     try {
-      await _load(_reader.entryPathAt(ordinal));
+      await _read<void>(() => _worker.prefetch(_worker.entries[ordinal]));
     } on Object {
       // 预取失败不影响阅读
     }
   }
 
-  /// 关闭归档句柄。重复调用安全。
-  void close() {
-    if (_closed) return;
+  /// 立即停止接受新请求，已有资源落盘后关闭后台归档。重复调用共用结果。
+  Future<void> close() {
     _closed = true;
-    _reader.close();
-    if (_pending.isEmpty) _repository._sessions.remove(this);
+    return _closing ??= _drainAndClose();
   }
 
   Future<void> _drainAndClose() async {
-    // 阻止新资源读取，已有请求完成后再释放归档；旧会话之后只能返回 404。
-    final pending = _pending.values.toList();
-    await Future.wait(
-      pending.map((f) => f.then<void>((_) {}, onError: (Object _) {})),
-    );
-    close();
+    try {
+      await Future.wait(
+        _pending.toList().map(
+          (f) => f.then<void>((_) {}, onError: (Object _) {}),
+        ),
+      );
+      await _worker.close();
+    } finally {
+      _repository._sessions.remove(this);
+    }
   }
 
-  /// 取条目的字节：导入落盘副本 → 会话缓存 → 归档（每个条目只有这一次机会）。
-  Future<Uint8List?> _load(String entryPath) {
+  Future<T?> _read<T>(Future<T?> Function() read) {
     if (_closed ||
         _repository._closed ||
         _repository._changing.contains(bookId)) {
       return Future.value(null);
     }
-    final pending = _pending[entryPath];
-    if (pending != null) return pending;
-    final future = _loadUncached(entryPath);
-    _pending[entryPath] = future;
-    return future.whenComplete(() {
-      _pending.remove(entryPath);
-      if (_closed && _pending.isEmpty) _repository._sessions.remove(this);
-    });
-  }
-
-  Future<Uint8List?> _loadUncached(String entryPath) async {
-    if (!_reader.containsEntry(entryPath)) return null;
-    if (_chapterEntries.contains(entryPath) && _repository.hyphenateText) {
-      await EnglishHyphenation.prepare();
-    }
-
-    // 1. 图片：导入时已落盘的副本（设计文档 6.1），不读归档也不占缓存
-    final imported = File(
-      p.join(
-        _libraryRoot,
-        bookId,
-        'content',
-        '$contentVersion',
-        'res',
-        entryPath,
-      ),
-    );
-    if (await imported.exists()) return imported.readAsBytes();
-
-    // 2. 本会话（或上次会话）解出的缓存
-    final cached = File(_cachePathOf(entryPath));
-    if (await cached.exists()) {
-      try {
-        return await cached.readAsBytes();
-      } on FileSystemException {
-        // 缓存读坏了就当没有，走归档重来
-      }
-    }
-
-    // 3. 归档：读过即消费，所以必须先落盘再返回
-    final raw = _reader.readEntry(entryPath);
-    if (raw == null) return null;
-    final bytes = _transform(entryPath, raw);
-    if (bytes.length <= EpubArchive.maxEntryBytes) {
-      await _writeCache(cached, bytes);
-    }
-    return bytes;
-  }
-
-  /// 章节净化、字体解混淆，其余（CSS、图片）原样。
-  Uint8List _transform(String entryPath, Uint8List raw) {
-    if (_chapterEntries.contains(entryPath)) {
-      final sanitized = EpubSanitizer.sanitize(decodeTextBytes(raw)).html;
-      return Uint8List.fromList(
-        utf8.encode(
-          _repository.hyphenateText
-              ? EnglishHyphenation.document(sanitized)
-              : sanitized,
-        ),
-      );
-    }
-    final algorithm = _reader.fonts.algorithmOf(entryPath);
-    if (algorithm != null) {
-      return _reader.fonts
-          .deobfuscate(entryPath, raw, _reader.uniqueIdentifier)
-          .bytes;
-    }
-    return raw;
-  }
-
-  /// 缓存路径：`cache/original/<bookId>/<版本>/<归档内路径>`。
-  String _cachePathOf(String entryPath) => p.join(
-    _cacheRoot,
-    'original',
-    bookId,
-    '$contentVersion',
-    _repository.hyphenateText ? 'hyphen1' : 'source1',
-    entryPath,
-  );
-
-  Future<void> _writeCache(File file, Uint8List bytes) async {
-    try {
-      await file.parent.create(recursive: true);
-      await file.writeAsBytes(bytes, flush: false);
-    } on FileSystemException {
-      // 缓存写不进去不影响这次阅读（下次再解一遍）
-    }
-  }
-
-  /// 响应头的 Content-Type。
-  ///
-  /// 净化后的章节按 `text/html` 给出：产物是 HTML 序列化结果，用 XHTML 的
-  /// `application/xhtml+xml` 会让浏览器走严格 XML 解析器，反而容易报错。
-  String _contentTypeOf(String entryPath) {
-    if (_chapterEntries.contains(entryPath)) return 'text/html; charset=utf-8';
-    final declared = _reader.mediaTypeOf(entryPath);
-    if (declared.startsWith('text/')) return '$declared; charset=utf-8';
-    return declared;
+    final future = read();
+    _pending.add(future);
+    return future.whenComplete(() => _pending.remove(future));
   }
 }

@@ -23,10 +23,11 @@ import '../widgets/invalid_book_dialog.dart';
 import '../view_models/bookshelf_view_model.dart';
 import '../view_models/shelf_sort_controller.dart';
 import '../widgets/bookshelf_widgets.dart';
+import '../widgets/shelf_header.dart';
 import '../../import/widgets/shelf_import_tile.dart';
 
 /// 书架页（参考图 01）：
-/// 标题栏（品牌名 + 导入）→ 搜索 → 筛选 → 自适应网格。
+/// 标题栏（品牌名 + 搜索／导入／更多）→ 可展开搜索 → 筛选 → 书籍。
 ///
 /// 长按书籍进入多选模式，可多选后一次删除（设计文档 2.1「书籍管理」）。
 /// 书籍来自数据库流；数据未就绪时显示稳定加载态，不先闪一个空书架。
@@ -67,8 +68,8 @@ class BookshelfView extends ConsumerWidget {
     final visible = library.value == null
         ? const <Book>[]
         : shelf.apply(library.value!);
-    // 普通标题和多选工具栏共用行高；大字号按标题／导入文字预留空间。
-    // 图标按钮的48dp点击范围不会再在进入多选时把搜索框往下推。
+    // 普通标题和多选工具栏共用行高；多选工具栏仍需 48dp 内容区，
+    // 顶部三个普通按钮缩至 36dp，进入多选也不推移搜索框。
     final scaler = MediaQuery.textScalerOf(context);
     final headerHeight =
         GtSpacing.s4 +
@@ -91,14 +92,12 @@ class BookshelfView extends ConsumerWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              SizedBox(
-                key: const ValueKey('shelf-header'),
+              ShelfHeader(
                 height: headerHeight,
-                child: shelf.selectionMode
+                selectionHeader: shelf.selectionMode
                     ? _buildSelectionHeader(context, ref, colors, visible)
-                    : _buildHeader(context, colors),
+                    : null,
               ),
-              _buildSearch(context, ref, colors),
               const SizedBox(height: GtSpacing.s2),
               const ShelfFilterBar(),
               const SizedBox(height: GtSpacing.s4),
@@ -301,105 +300,6 @@ class BookshelfView extends ConsumerWidget {
       icon: GtIcons.search,
       title: query.isEmpty ? '没有符合条件的书籍' : '没有找到「$query」',
       message: query.isEmpty ? '换个筛选条件试试' : '换个关键词试试',
-    );
-  }
-
-  /// 标题行：「TaleTin」品牌名 + 右侧导入入口。
-  ///
-  /// 品牌名从原左侧竖排栏移到标题位；这里不再显示书籍总数（数量由筛选页签
-  /// 与网格本身体现，标题留给品牌）。
-  Widget _buildHeader(BuildContext context, GtColors colors) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(
-        GtSize.shelfPagePadding,
-        GtSpacing.s4,
-        GtSpacing.s4,
-        0,
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          Expanded(
-            child: FittedBox(
-              fit: BoxFit.scaleDown,
-              alignment: Alignment.centerLeft,
-              child: Text(
-                'TaleTin',
-                style: GtText.pageTitle(colors.textPrimary)
-                    .copyWith(fontSize: 24),
-              ),
-            ),
-          ),
-          GtButton.raw(
-            onPressed: () => context.push(AppRoutes.import),
-            borderRadius: BorderRadius.circular(GtRadius.control),
-            child: Padding(
-              padding: const EdgeInsets.all(GtSpacing.s2),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  GtIcon(GtIcons.plus, size: 22, color: colors.textPrimary),
-                  const SizedBox(width: GtSpacing.s1),
-                  Text('导入书籍', style: GtText.body(colors.textPrimary)),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// 搜索框。
-  ///
-  /// 放大镜用 icon.small（18），并把默认的最小尺寸放开：
-  /// InputDecoration 会把 prefixIcon 撑到至少 48×48（触摸目标口径），
-  /// SVG 随之被放大填满，实际画出来约 35dp，看起来比提示文字大一圈。
-  /// 这里的前缀图标只作装饰、本身不可点，所以让它保持图标原尺寸。
-  Widget _buildSearch(BuildContext context, WidgetRef ref, GtColors colors) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(
-        GtSize.shelfPagePadding,
-        GtSpacing.s3,
-        GtSize.shelfPagePadding,
-        0,
-      ),
-      child: TextField(
-        onChanged: (v) => ref.read(bookshelfProvider.notifier).setQuery(v),
-        style: GtText.body(colors.textPrimary),
-        textAlignVertical: TextAlignVertical.center,
-        decoration: InputDecoration(
-          hintText: '搜索本地书籍',
-          hintStyle: GtText.body(colors.textMuted),
-          // 左 12 让图标离框边不贴、右 8 拉开图标与提示文字的间距
-          prefixIcon: Padding(
-            padding: const EdgeInsets.only(
-              left: GtSpacing.s3,
-              right: GtSpacing.s2,
-            ),
-            child: GtIcon(
-              GtIcons.search,
-              size: GtSize.iconSmall,
-              color: colors.textMuted,
-            ),
-          ),
-          prefixIconConstraints: const BoxConstraints(
-            minWidth: 0,
-            minHeight: 0,
-          ),
-          filled: true,
-          fillColor: colors.subtle,
-          isDense: true,
-          contentPadding: const EdgeInsets.symmetric(
-            horizontal: GtSpacing.s3,
-            vertical: GtSpacing.s3,
-          ),
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(GtRadius.control),
-            borderSide: BorderSide.none,
-          ),
-        ),
-      ),
     );
   }
 

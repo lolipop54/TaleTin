@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/services.dart';
+
 import 'preset_fonts.dart';
 
 /// 内置字体与平台确认的设备字体：预览、Flutter 正文和 WebView 共用。
@@ -23,12 +24,20 @@ abstract final class ReadingFonts {
   /// 阅读只准备实际选择的字体；完整名单和所有预览留到字体选择页。
   static Future<String?> loadSelected(String? family) async {
     if (family == null || family == 'sans-serif') return loadSystem();
+    // 升级删掉字体，或安装不带内置字体的版本时，先准备真实系统字体。
+    // 保留原保存编号，之后换回包含该字体的版本仍能恢复选择。
+    if (family.startsWith('gt-preset-') &&
+        !PresetFonts.families.containsKey(family)) {
+      return loadSystem();
+    }
     if (PresetFonts.families.containsKey(family)) {
       PresetFonts.prepare(family);
       return family;
     }
     final selected = resolve(family)!;
-    if (!_paths.containsKey(selected)) await _load('selected', family: selected);
+    if (!_paths.containsKey(selected)) {
+      await _load('selected', family: selected);
+    }
     return resolve(family);
   }
 
@@ -46,11 +55,17 @@ abstract final class ReadingFonts {
     await loadSystem();
   }
 
-  static Future<Map<String, String?>> _load(String method, {String? family}) async {
+  static Future<Map<String, String?>> _load(
+    String method, {
+    String? family,
+  }) async {
     try {
       final entries =
           await const MethodChannel('gtreader/reading_fonts')
-              .invokeListMethod<dynamic>(method, family == null ? null : {'family': family}) ??
+              .invokeListMethod<dynamic>(
+                method,
+                family == null ? null : {'family': family},
+              ) ??
           [];
       final names = <String, String?>{};
       final loading = <Future<void>>[];
@@ -87,15 +102,23 @@ abstract final class ReadingFonts {
   }
 
   /// 兼容旧的 serif/KaiTi 设置；只映射平台已确认的回退关系。
-  static String? resolve(String? family) =>
-      _aliases[family ?? 'sans-serif'] ?? family;
+  static String? resolve(String? family) {
+    final available =
+        family != null &&
+            family.startsWith('gt-preset-') &&
+            !PresetFonts.families.containsKey(family)
+        ? 'sans-serif'
+        : family;
+    return _aliases[available ?? 'sans-serif'] ?? available;
+  }
 
   static String cssFor(String? family) {
     if (family == null || family.isEmpty) return '';
     final id = resolve(family);
     if (PresetFonts.families.containsKey(id)) return PresetFonts.cssFor(id!);
     return _paths.containsKey(id)
-        ? '@font-face{font-family:"$id";src:url("/__gt_fonts/$id");}' : '';
+        ? '@font-face{font-family:"$id";src:url("/__gt_fonts/$id");}'
+        : '';
   }
 
   static Future<Uint8List?> bytes(String id) async {

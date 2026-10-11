@@ -18,7 +18,7 @@ class ReaderTurnChoices extends StatelessWidget {
 
   static ImageProvider image(PageTurnEffect effect, double pixelRatio) =>
       ResizeImage(
-        AssetImage('assets/pics/${effect.label}.png'),
+        AssetImage('assets/pics/${effect.label}.webp'),
         width: (80 * pixelRatio).ceil(),
       );
 

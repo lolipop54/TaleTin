@@ -17,7 +17,7 @@ Future<void> prepareAchievementArt(BuildContext context) => Future.wait(
       .toSet()
       .map(
         (art) => precacheImage(
-          ResizeImage(AssetImage('assets/achievements/$art.png'), width: 256),
+          ResizeImage(AssetImage('assets/achievements/$art.webp'), width: 256),
           context,
         ),
       ),

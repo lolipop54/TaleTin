@@ -18,9 +18,9 @@ class MainNavigationBar extends ConsumerWidget {
   static const branches = [1, 0, 2]; // 成就、书架、设置；启动书架居中。
   static const labels = ['成就', '书架', '设置'];
   static const icons = [
-    'assets/icons_used/成就tab.png',
-    'assets/icons_used/书架tab.png',
-    'assets/icons_used/设置tab.png',
+    'assets/icons_used/成就tab.webp',
+    'assets/icons_used/书架tab.webp',
+    'assets/icons_used/设置tab.webp',
   ];
 
   /// 与实际渲染用相同的解码尺寸；三个图标在首页出现前一起准备好。
