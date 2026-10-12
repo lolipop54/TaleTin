@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.5+50
+version: 1.1.0+52
 
 environment:
   sdk: ^3.13.2
@@ -66,6 +66,9 @@ dependencies:
 # Android 实现包打了一行 AGP 9 兼容补丁后放在 third_party/，
 # 原因与移除时机见 third_party/flutter_inappwebview_android/README.gt.md
 dependency_overrides:
+  # 原形状绘制曲线和圆钮的轻微阴影；保留上游动画与交互。
+  curved_navigation_bar:
+    path: third_party/curved_navigation_bar
   flutter_inappwebview_android:
     path: third_party/flutter_inappwebview_android
 
@@ -116,22 +119,16 @@ flutter:
     # 明确字重：部分 Bold 文件的内部标签仍是 400，以文件夹配对为准。
     - family: gt-preset-cangeryumo
       fonts:
-        - asset: assets/fonts/preset/仓耳与墨/仓耳与墨.ttf
+        - asset: assets/fonts/preset/仓耳与墨.ttf
           weight: 400
-        - asset: assets/fonts/preset/仓耳与墨/仓耳与墨-Bold.ttf
-          weight: 700
     - family: gt-preset-cangeryuyang
       fonts:
-        - asset: assets/fonts/preset/仓耳渔阳体/仓耳渔阳体.ttf
+        - asset: assets/fonts/preset/仓耳渔阳体.ttf
           weight: 400
-        - asset: assets/fonts/preset/仓耳渔阳体/仓耳渔阳体-Bold.ttf
-          weight: 700
     - family: gt-preset-cangershuyuan
       fonts:
-        - asset: assets/fonts/preset/仓耳舒圆体/仓耳舒圆体.ttf
+        - asset: assets/fonts/preset/仓耳舒圆体.ttf
           weight: 400
-        - asset: assets/fonts/preset/仓耳舒圆体/仓耳舒圆体-Bold.ttf
-          weight: 700
     - family: gt-preset-jingnanbobo
       fonts:
         - asset: assets/fonts/preset/荆南波波黑.ttf
@@ -140,12 +137,14 @@ flutter:
       fonts:
         - asset: assets/fonts/preset/思源屏显臻宋.ttf
           weight: 400
+    - family: gt-preset-jiangcheng
+      fonts:
+        - asset: assets/fonts/preset/江城圆体.ttf
+          weight: 400
     - family: gt-preset-lxgwwenkai
       fonts:
-        - asset: assets/fonts/preset/霞鹜文楷/霞鹜文楷.ttf
+        - asset: assets/fonts/preset/霞鹜文楷.ttf
           weight: 400
-        - asset: assets/fonts/preset/霞鹜文楷/霞鹜文楷-Bold.ttf
-          weight: 700
     - family: gt-preset-lxgwmanhei
       fonts:
         - asset: assets/fonts/preset/霞鹜漫黑.ttf
@@ -168,20 +167,14 @@ flutter:
       fonts:
         - asset: assets/fonts/preview/gt-preview-cangeryumo-400.ttf
           weight: 400
-        - asset: assets/fonts/preview/gt-preview-cangeryumo-700.ttf
-          weight: 700
     - family: gt-preview-cangeryuyang
       fonts:
         - asset: assets/fonts/preview/gt-preview-cangeryuyang-400.ttf
           weight: 400
-        - asset: assets/fonts/preview/gt-preview-cangeryuyang-700.ttf
-          weight: 700
     - family: gt-preview-cangershuyuan
       fonts:
         - asset: assets/fonts/preview/gt-preview-cangershuyuan-400.ttf
           weight: 400
-        - asset: assets/fonts/preview/gt-preview-cangershuyuan-700.ttf
-          weight: 700
     - family: gt-preview-jingnanbobo
       fonts:
         - asset: assets/fonts/preview/gt-preview-jingnanbobo-400.ttf
@@ -190,12 +183,14 @@ flutter:
       fonts:
         - asset: assets/fonts/preview/gt-preview-screenserif-400.ttf
           weight: 400
+    - family: gt-preview-jiangcheng
+      fonts:
+        - asset: assets/fonts/preview/gt-preview-jiangcheng-400.ttf
+          weight: 400
     - family: gt-preview-lxgwwenkai
       fonts:
         - asset: assets/fonts/preview/gt-preview-lxgwwenkai-400.ttf
           weight: 400
-        - asset: assets/fonts/preview/gt-preview-lxgwwenkai-700.ttf
-          weight: 700
     - family: gt-preview-lxgwmanhei
       fonts:
         - asset: assets/fonts/preview/gt-preview-lxgwmanhei-400.ttf

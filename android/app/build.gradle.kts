@@ -153,6 +153,10 @@ val includeReadingFonts = providers.gradleProperty("dart-defines").map { encoded
 }.orElse(true)
 
 androidComponents.onVariants { variant ->
+    // APK 增量更新会留下被移除模型的空槽，ZIP 清单虽然干净，包体仍然偏大。
+    // 禁用这一最终任务的增量输入，重新生成紧凑 APK；前面的编译与资产处理仍复用缓存。
+    tasks.matching { it.name == "package${variant.name.replaceFirstChar { it.uppercase() }}" }
+        .configureEach { outputs.upToDateWhen { false } }
     val filterTask = tasks.register<FilterReadingFontAssets>(
         "filter${variant.name.replaceFirstChar { it.uppercase() }}ReadingFontAssets"
     ) {
@@ -203,6 +207,13 @@ val verifyReleaseApk = tasks.register("verifyReleaseApk") {
                     "${apk.name} 缺少启动必需文件：${missing.joinToString()}。" +
                         "请确认没有构建期间清理缓存，并重新构建。"
                 }
+                // 内置端侧 TTS 已退役，最终包不得残留模型或推理库。
+                val retiredTts = zip.entries().asSequence().filter {
+                    it.name.startsWith("assets/matcha/") || it.name.startsWith("assets/piper/") ||
+                        it.name.endsWith(".onnx") || it.name.endsWith("/libonnxruntime.so") ||
+                        it.name.endsWith("/libsherpa-onnx-jni.so")
+                }.map { it.name }.toList()
+                check(retiredTts.isEmpty()) { "${apk.name} 仍包含已移除的内置 TTS 资源：${retiredTts.joinToString()}" }
                 // 检查真正装进包的文件，避免开关仅隐藏字体列表却没减少包体。
                 val presetFiles = zip.entries().asSequence().filter {
                     it.name.startsWith("assets/flutter_assets/assets/fonts/preset/") ||

@@ -5,6 +5,7 @@ const presetFontPreviewNames = <String, String>{
   'gt-preset-cangershuyuan': '仓耳舒圆体（内置）',
   'gt-preset-jingnanbobo': '荆南波波黑（内置）',
   'gt-preset-screenserif': '思源屏显臻宋（内置）',
+  'gt-preset-jiangcheng': '江城圆体（内置）',
   'gt-preset-lxgwwenkai': '霞鹜文楷（内置）',
   'gt-preset-lxgwmanhei': '霞鹜漫黑（内置）',
   'gt-preset-lxgwzhenkai': '霞鹜臻楷（内置）',

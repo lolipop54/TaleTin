@@ -17,28 +17,18 @@ abstract final class PresetFonts {
       ? catalog
       : <String, ({String name, String file, String? bold})>{};
   static const catalog = <String, ({String name, String file, String? bold})>{
-    'gt-preset-cangeryumo': (
-      name: '仓耳与墨',
-      file: '仓耳与墨/仓耳与墨.ttf',
-      bold: '仓耳与墨/仓耳与墨-Bold.ttf',
-    ),
-    'gt-preset-cangeryuyang': (
-      name: '仓耳渔阳体',
-      file: '仓耳渔阳体/仓耳渔阳体.ttf',
-      bold: '仓耳渔阳体/仓耳渔阳体-Bold.ttf',
-    ),
-    'gt-preset-cangershuyuan': (
-      name: '仓耳舒圆体',
-      file: '仓耳舒圆体/仓耳舒圆体.ttf',
-      bold: '仓耳舒圆体/仓耳舒圆体-Bold.ttf',
-    ),
+    'gt-preset-cangeryumo': (name: '仓耳与墨', file: '仓耳与墨.ttf', bold: null),
+    'gt-preset-cangeryuyang': (name: '仓耳渔阳体', file: '仓耳渔阳体.ttf', bold: null),
+    'gt-preset-cangershuyuan': (name: '仓耳舒圆体', file: '仓耳舒圆体.ttf', bold: null),
     'gt-preset-jingnanbobo': (name: '荆南波波黑', file: '荆南波波黑.ttf', bold: null),
     'gt-preset-screenserif': (name: '思源屏显臻宋', file: '思源屏显臻宋.ttf', bold: null),
-    'gt-preset-lxgwwenkai': (
-      name: '霞鹜文楷',
-      file: '霞鹜文楷/霞鹜文楷.ttf',
-      bold: '霞鹜文楷/霞鹜文楷-Bold.ttf',
-    ),
+    // 'gt-preset-jiangcheng': (
+    //   name: '江城圆体',
+    //   file: '江城圆体/江城圆体.ttf',
+    //   bold: "江城圆体/江城圆体-Bold.ttf",
+    // ),
+    'gt-preset-jiangcheng': (name: '江城圆体', file: '江城圆体.ttf', bold: null),
+    'gt-preset-lxgwwenkai': (name: '霞鹜文楷', file: '霞鹜文楷.ttf', bold: null),
     'gt-preset-lxgwmanhei': (name: '霞鹜漫黑', file: '霞鹜漫黑.ttf', bold: null),
     'gt-preset-lxgwzhenkai': (name: '霞鹜臻楷', file: '霞鹜臻楷.ttf', bold: null),
     'gt-preset-homepencil': (name: '宅在家自動筆', file: '宅在家自動筆.ttf', bold: null),

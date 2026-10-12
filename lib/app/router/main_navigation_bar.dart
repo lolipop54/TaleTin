@@ -46,7 +46,7 @@ class MainNavigationBar extends ConsumerWidget {
         : GtPalette.navigationBackground;
     final reduced = MediaQuery.disableAnimationsOf(context);
     return AnnotatedRegion<SystemUiOverlayStyle>(
-      // 系统三键栏与TabBar共用底色；透明边到边模式由下方ColoredBox铺满安全区。
+      // 系统三键栏与TabBar共用底色；边到边模式只在下方安全区铺底。
       // 关闭系统额外的对比度蒙层，避免原底面被另加一层灰或白。
       value: SystemUiOverlayStyle(
         systemNavigationBarColor: barColor,
@@ -57,18 +57,19 @@ class MainNavigationBar extends ConsumerWidget {
             ? Brightness.light
             : Brightness.dark,
       ),
-      child: ColoredBox(
-        color: barColor,
-        child: Padding(
-          padding: EdgeInsets.only(
-            bottom: MediaQuery.paddingOf(context).bottom,
-          ),
-          child: CurvedNavigationBar(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          CurvedNavigationBar(
             index: branches.indexOf(branchIndex),
             height: GtSize.bottomNavHeight,
             color: barColor,
             buttonBackgroundColor: barColor,
-            backgroundColor: colors.canvas,
+            // 轻阴影直接沿曲线与圆钮绘制，凹口其余区域保持透明。
+            elevation: 2,
+            shadowColor: Theme.of(context).shadowColor.withValues(alpha: 0.18),
+            backgroundColor: Colors.transparent,
             animationDuration: reduced
                 ? Duration.zero
                 : const Duration(milliseconds: 320),
@@ -104,7 +105,11 @@ class MainNavigationBar extends ConsumerWidget {
                 ),
             ],
           ),
-        ),
+          ColoredBox(
+            color: barColor,
+            child: SizedBox(height: MediaQuery.paddingOf(context).bottom),
+          ),
+        ],
       ),
     );
   }

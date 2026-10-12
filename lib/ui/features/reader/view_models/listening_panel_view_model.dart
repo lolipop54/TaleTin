@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../app/di/app_providers.dart';
 import '../../../../domain/models/tts_state.dart';
 import '../view_models/reader_session_view_model.dart';
+import 'original_layout_controller.dart';
 import 'reader_view_model.dart';
 
 /// 面板只准备选项，播放状态始终来自应用级服务。
@@ -30,27 +31,33 @@ class ListeningPanelCommands {
     final speech = service.snapshot;
     if (speech.bookId == bookId && speech.desiredPlaying) {
       await service.pause();
-    } else if (speech.bookId == bookId && speech.hasSession) {
+    } else if (speech.bookId == bookId &&
+        speech.hasSession &&
+        speech.followReading) {
       await service.play();
     } else {
       await ref.read(readerSessionProvider(bookId).future);
       if (!ref.mounted) return;
-      // 停止已经结束会话：重新开始读当前显示页的页首，而不是最后一句。
-      // 暂停后的“继续”仍走上面的 play，保留句内续播能力。
-      final restartPage =
-          speech.bookId == bookId && speech.status == TtsStatus.stopped;
-      final anchor = restartPage
-          ? ref.read(readerSessionProvider(bookId)).value?.currentAnchor
-          : speech.bookId == bookId && speech.followReading
-          ? speech.resumeLocator ??
-                ref
-                    .read(readerSessionProvider(bookId).notifier)
-                    .listeningStartAnchor
-          : ref
-                .read(readerSessionProvider(bookId).notifier)
-                .listeningStartAnchor;
-      if (anchor != null) {
-        await service.start(bookId, anchor, sentenceStart: !restartPage);
+      try {
+        final session = ref.read(readerSessionProvider(bookId)).value!;
+        final reader = ref.read(readerSessionProvider(bookId).notifier);
+        // 新开始和手动阅读后再开始都取可见页首。原书的续读/切换锚点
+        // 可能位于页中，不能拿它或文字比例代替实际分页后的第一个字。
+        var anchor = reader.listeningStartAnchor;
+        if (reader.layoutMode.isOriginal && !session.scrolling) {
+          final prepare = ref
+              .read(originalLayoutProvider(bookId))
+              .value
+              ?.visiblePageAnchor;
+          if (prepare == null) throw StateError('书页尚未就绪，请稍后再试');
+          anchor = await prepare();
+        }
+        if (!ref.mounted) return;
+        if (anchor != null) {
+          await service.start(bookId, anchor, sentenceStart: false);
+        }
+      } catch (error) {
+        if (ref.mounted) ref.read(readerProvider.notifier).showNotice('$error');
       }
     }
   }

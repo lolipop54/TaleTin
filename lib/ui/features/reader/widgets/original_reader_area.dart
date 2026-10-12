@@ -322,7 +322,7 @@ class _OriginalReaderAreaState extends ConsumerState<OriginalReaderArea>
     // 手柄却落在别的页（真机反馈的「翻页后看不到也拖不动手柄」）
     GestureBinding.instance.pointerRouter.addGlobalRoute(_onGlobalPointer);
     widget.controller.holdPageDuringJump = _holdPageDuringJump;
-    widget.controller.bookmarkAnchor = _bookmarkAnchor;
+    widget.controller.visiblePageAnchor = _visiblePageAnchor;
     _slideAnim.addListener(() {
       final tween = _slideTween;
       if (tween == null) return;
@@ -343,7 +343,7 @@ class _OriginalReaderAreaState extends ConsumerState<OriginalReaderArea>
     _speech.lifecycle.dispose();
     _speech.service.setPageBoundaries(this, const []);
     widget.controller.holdPageDuringJump = null;
-    widget.controller.bookmarkAnchor = null;
+    widget.controller.visiblePageAnchor = null;
     _jumpCover?.dispose();
     _finishCurlHandover(false);
     for (final ready in _pageReady.values) {

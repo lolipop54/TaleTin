@@ -10,6 +10,7 @@ import '../reader_sheet.dart';
 import 'bookmark_tab.dart';
 import 'book_notes_tab.dart';
 import 'contents_pager.dart';
+import 'contents_scroll_area.dart';
 import 'toc_tab.dart';
 
 /// 目录、书签与笔记的综合面板装配入口。
@@ -145,11 +146,7 @@ class _PanelContentsState extends ConsumerState<PanelContents> {
             ),
           ),
           Flexible(
-            child: ScrollConfiguration(
-              behavior: const ScrollBehavior().copyWith(
-                overscroll: false,
-                physics: const ClampingScrollPhysics(),
-              ),
+            child: ContentsScrollArea(
               child: ContentsPager(
                 key: _pagerKey,
                 index: state.contentsTab,

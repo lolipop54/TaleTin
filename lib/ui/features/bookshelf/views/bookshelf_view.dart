@@ -24,6 +24,7 @@ import '../view_models/bookshelf_view_model.dart';
 import '../view_models/shelf_sort_controller.dart';
 import '../widgets/bookshelf_widgets.dart';
 import '../widgets/shelf_header.dart';
+import '../widgets/shelf_scroll_area.dart';
 import '../../import/widgets/shelf_import_tile.dart';
 
 /// 书架页（参考图 01）：
@@ -100,7 +101,6 @@ class BookshelfView extends ConsumerWidget {
               ),
               const SizedBox(height: GtSpacing.s2),
               const ShelfFilterBar(),
-              const SizedBox(height: GtSpacing.s4),
               Expanded(
                 child: FrameFade(
                   revision: (
@@ -334,56 +334,63 @@ class BookshelfView extends ConsumerWidget {
     }
 
     final gridView = ref.watch(bookshelfProvider.select((s) => s.gridView));
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        const gap = GtSize.shelfColumnGap;
-        // 网格自身左右有页边距，列数与单元宽度都按内容宽度计算
-        final contentWidth = constraints.maxWidth - GtSize.shelfPagePadding * 2;
-        final columns =
-            ((contentWidth + gap) / (GtSize.shelfMinItemWidth + gap))
-                .floor()
-                .clamp(1, 6);
-        final itemWidth = (contentWidth - gap * (columns - 1)) / columns;
-        // 比例与 BookTile 的内容高度同源（含系统字号缩放），
-        // 避免封面被拉伸压缩或文字溢出
-        final aspectRatio =
-            itemWidth /
-            BookTile.contentHeightFor(
-              itemWidth,
-              MediaQuery.textScalerOf(context),
+    // extendBody 提供底栏加安全区的高度。只给滚动内容末尾留白，
+    // 不缩短可视区域，书籍经过曲线凹口时仍能透出来。
+    final bottomPadding = GtSpacing.s4 + MediaQuery.paddingOf(context).bottom;
+    return ShelfScrollArea(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          const gap = GtSize.shelfColumnGap;
+          // 网格自身左右有页边距，列数与单元宽度都按内容宽度计算
+          final contentWidth =
+              constraints.maxWidth - GtSize.shelfPagePadding * 2;
+          final columns =
+              ((contentWidth + gap) / (GtSize.shelfMinItemWidth + gap))
+                  .floor()
+                  .clamp(1, 6);
+          final itemWidth = (contentWidth - gap * (columns - 1)) / columns;
+          // 比例与 BookTile 的内容高度同源（含系统字号缩放），
+          // 避免封面被拉伸压缩或文字溢出
+          final aspectRatio =
+              itemWidth /
+              BookTile.contentHeightFor(
+                itemWidth,
+                MediaQuery.textScalerOf(context),
+              );
+          if (!gridView) {
+            return ListView.separated(
+              padding: EdgeInsets.fromLTRB(
+                GtSize.shelfPagePadding,
+                GtSpacing.s4,
+                GtSize.shelfPagePadding,
+                bottomPadding,
+              ),
+              itemCount: books.length,
+              separatorBuilder: (_, _) => const SizedBox(height: GtSpacing.s3),
+              itemBuilder: (context, index) => tile(index, true),
             );
-        if (!gridView) {
-          return ListView.separated(
-            padding: const EdgeInsets.fromLTRB(
+          }
+          return GridView.builder(
+            // 分类下原有的 16dp 留白放进滚动区，供书本上滑时渐隐；
+            // 另留 20dp 容纳封面顶部标签，静止时的书本位置保持一致。
+            padding: EdgeInsets.fromLTRB(
               GtSize.shelfPagePadding,
-              0,
+              GtSpacing.s4 + 20,
               GtSize.shelfPagePadding,
-              GtSpacing.s4,
+              bottomPadding,
+            ),
+            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: columns,
+              crossAxisSpacing: gap,
+              mainAxisSpacing: GtSize.shelfRowGap,
+              // 封面 2:3 + 书名两行 + 作者一行的精确比例
+              childAspectRatio: aspectRatio,
             ),
             itemCount: books.length,
-            separatorBuilder: (_, _) => const SizedBox(height: GtSpacing.s3),
-            itemBuilder: (context, index) => tile(index, true),
+            itemBuilder: (context, index) => tile(index, false),
           );
-        }
-        return GridView.builder(
-          // 顶部留 20：容纳封面标签露出封面顶部的那一截
-          padding: const EdgeInsets.fromLTRB(
-            GtSize.shelfPagePadding,
-            20,
-            GtSize.shelfPagePadding,
-            GtSpacing.s4,
-          ),
-          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: columns,
-            crossAxisSpacing: gap,
-            mainAxisSpacing: GtSize.shelfRowGap,
-            // 封面 2:3 + 书名两行 + 作者一行的精确比例
-            childAspectRatio: aspectRatio,
-          ),
-          itemCount: books.length,
-          itemBuilder: (context, index) => tile(index, false),
-        );
-      },
+        },
+      ),
     );
   }
 }

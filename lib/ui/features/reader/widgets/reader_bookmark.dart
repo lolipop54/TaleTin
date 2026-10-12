@@ -79,7 +79,7 @@ Future<void> toggleReaderBookmark(WidgetRef ref, String id) async {
         ? await ref
               .read(originalLayoutProvider(id))
               .value
-              ?.bookmarkAnchor
+              ?.visiblePageAnchor
               ?.call()
         : null;
     await repository.addBookmark(

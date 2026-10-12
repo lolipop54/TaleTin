@@ -33,6 +33,7 @@ List<TocRow> flattenTocRows(
   Set<int> expanded,
   String query, {
   required bool searching,
+  bool descending = false,
 }) {
   final rows = <TocRow>[];
   for (final index in visible) {
@@ -48,7 +49,9 @@ List<TocRow> flattenTocRows(
       }
     }
   }
-  return rows;
+  // 反转完整的可见顺序，卷、各级子目录及父项一起反转；保留条目自身的缩进和锚点。
+  // 只反转卷或叶子章节会让父项仍留在上方，无法向上展开。
+  return descending ? rows.reversed.toList() : rows;
 }
 
 /// 章节行的上下内边距。列表用 `itemExtentBuilder` 按 [TocRowMetrics] 强制每行高度，
@@ -102,9 +105,8 @@ class TocRowMetrics {
         math.max(
           22.0,
           textHeight(
-            GtText.sectionTitle(
-              colors.textPrimary,
-            ).copyWith(fontSize: volumeHeaderFontSize),
+            GtText.sectionTitle(colors.textPrimary)
+                .copyWith(fontSize: volumeHeaderFontSize),
           ),
         ) +
         volumeHeaderVerticalPadding * 2;

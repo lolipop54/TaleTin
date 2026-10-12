@@ -7,10 +7,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/theme/app_theme.dart';
 import '../../../../core/theme/gt_tokens.dart';
+import '../../../../core/widgets/frame_fade.dart';
 import '../../../../core/widgets/gt_icon.dart';
 import '../../view_models/reader_session_view_model.dart';
 import '../../view_models/reader_view_model.dart';
 import 'toc_rows.dart';
+import 'toc_scrollbar.dart';
 import '../../../../../domain/services/toc_entry_index.dart';
 import 'toc_tree.dart';
 
@@ -28,6 +30,8 @@ class TocTab extends ConsumerStatefulWidget {
 class _TocTabState extends ConsumerState<TocTab> {
   Set<int>? _expanded;
   ScrollController? _listController;
+  bool _descending = false;
+  double? _pendingScrollOffset;
 
   @override
   void dispose() {
@@ -82,11 +86,12 @@ class _TocTabState extends ConsumerState<TocTab> {
       expanded,
       query,
       searching: searching,
+      descending: _descending,
     );
     final metrics = TocRowMetrics.resolve(context, colors);
     final extents = [for (final row in rows) metrics.extentOf(row)];
 
-    if (tocAsync.isLoading && !tocAsync.hasValue) {
+    if (session == null || (tocAsync.isLoading && !tocAsync.hasValue)) {
       return const Padding(
         padding: EdgeInsets.symmetric(vertical: GtSpacing.s8),
         child: Center(
@@ -94,25 +99,76 @@ class _TocTabState extends ConsumerState<TocTab> {
         ),
       );
     }
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Flexible(
-          child: visible.isEmpty
-              ? _emptyState(context, searching)
-              : _rowList(
-                  context,
-                  notifier,
-                  rows,
-                  extents,
-                  expanded: expanded,
-                  currentChapterId: currentChapterId,
-                  currentTocTitle: currentTocTitle,
-                  currentAnchorId: currentAnchorId,
-                  colors: colors,
-                ),
+    final chapterCount = volumes.fold<int>(
+      0,
+      (sum, volume) => sum + volume.chapters.length,
+    );
+    return FrameFade(
+      revision: _descending,
+      // 淡化旧画面时必须有不透明底色，防止新旧文字透叠在一起。
+      child: ColoredBox(
+        color: colors.surface,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _orderBar(context, chapterCount),
+            Flexible(
+              // 列表边界拉伸只在列表内部绘制，不覆盖上方统计和排序按钮。
+              child: ClipRect(
+                child: visible.isEmpty
+                    ? _emptyState(context, searching)
+                    : _rowList(
+                        context,
+                        notifier,
+                        rows,
+                        extents,
+                        expanded: expanded,
+                        currentChapterId: currentChapterId,
+                        currentTocTitle: currentTocTitle,
+                        currentAnchorId: currentAnchorId,
+                        colors: colors,
+                      ),
+              ),
+            ),
+          ],
         ),
-      ],
+      ),
+    );
+  }
+
+  Widget _orderBar(BuildContext context, int chapterCount) {
+    final colors = context.gtColors;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        GtSpacing.s5,
+        0,
+        GtSpacing.s3,
+        GtSpacing.s1,
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              '共$chapterCount章',
+              style: GtText.caption(colors.textMuted).copyWith(fontSize: 12),
+            ),
+          ),
+          GtButton(
+            key: const Key('toc-order-button'),
+            style: GtButton.compactStyle,
+            onPressed: () => setState(() {
+              _descending = !_descending;
+              // 换序后的第一帧直接从新顺序的顶部显示，由 FrameFade 保留旧画面。
+              _pendingScrollOffset = 0;
+            }),
+            child: Text(
+              _descending ? '倒序' : '正序',
+              style: GtText.caption(colors.actionPrimary)
+                  .copyWith(fontSize: 12),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -137,23 +193,27 @@ class _TocTabState extends ConsumerState<TocTab> {
         final available = constraints.maxHeight.isFinite
             ? constraints.maxHeight
             : contentHeight;
-        if (_listController == null) {
-          var offset = 0.0;
-          for (var i = 0; i < rows.length; i++) {
-            final row = rows[i];
-            if (row is ChapterListRow &&
-                row.chapter.chapterId == currentChapterId &&
-                (currentAnchorId != null
-                    ? row.chapter.anchorId == currentAnchorId
-                    : currentTocTitle == null ||
-                          row.chapter.title == currentTocTitle)) {
-              break;
+        if (_listController == null || _pendingScrollOffset != null) {
+          final previousController = _listController;
+          var offset = _pendingScrollOffset ?? 0.0;
+          if (_pendingScrollOffset == null) {
+            for (var i = 0; i < rows.length; i++) {
+              final row = rows[i];
+              if (row is ChapterListRow &&
+                  row.chapter.chapterId == currentChapterId &&
+                  (currentAnchorId != null
+                      ? row.chapter.anchorId == currentAnchorId
+                      : currentTocTitle == null ||
+                            row.chapter.title == currentTocTitle)) {
+                break;
+              }
+              offset += extents[i];
             }
-            offset += extents[i];
+            if (offset >= contentHeight || widget.query.trim().isNotEmpty) {
+              offset = 0;
+            }
           }
-          if (offset >= contentHeight || widget.query.trim().isNotEmpty) {
-            offset = 0;
-          }
+          _pendingScrollOffset = null;
           _listController = ScrollController(
             keepScrollOffset: false,
             initialScrollOffset: offset.clamp(
@@ -161,32 +221,45 @@ class _TocTabState extends ConsumerState<TocTab> {
               math.max(0.0, contentHeight - available),
             ),
           );
+          // 旧列表本帧卸载后再释放；切换期间不让两个列表共用同一个控制器。
+          if (previousController != null) {
+            WidgetsBinding.instance.addPostFrameCallback(
+              (_) => previousController.dispose(),
+            );
+          }
         }
         return SizedBox(
           height: available,
-          child: ListView.builder(
-            controller: _listController,
-            // 末项底部就是滚动边界，不为“末章置顶”补出一屏空白。
-            physics: const ClampingScrollPhysics(),
-            padding: const EdgeInsets.symmetric(horizontal: GtSpacing.s4),
-            itemCount: rows.length,
-            itemExtentBuilder: (index, _) => extents[index],
-            itemBuilder: (context, index) => switch (rows[index]) {
-              VolumeHeaderRow(:final volumeIndex, :final volume) =>
-                _volumeHeader(context, volume, volumeIndex, expanded),
-              ChapterListRow(:final chapter) => _chapterRow(
-                context,
-                notifier,
-                chapter,
-                isCurrent:
-                    chapter.chapterId == currentChapterId &&
-                    (currentAnchorId != null
-                        ? chapter.anchorId == currentAnchorId
-                        : currentTocTitle == null ||
-                              chapter.title == currentTocTitle),
-                colors: colors,
+          child: TocScrollbar(
+            key: ObjectKey(_listController),
+            controller: _listController!,
+            child: ListView.builder(
+              controller: _listController,
+              // 末项底部就是滚动边界，不为“末章置顶”补出一屏空白。
+              physics: const ClampingScrollPhysics(),
+              padding: const EdgeInsets.only(
+                left: GtSpacing.s4,
+                right: TocScrollbar.gutter,
               ),
-            },
+              itemCount: rows.length,
+              itemExtentBuilder: (index, _) => extents[index],
+              itemBuilder: (context, index) => switch (rows[index]) {
+                VolumeHeaderRow(:final volumeIndex, :final volume) =>
+                  _volumeHeader(context, volume, volumeIndex, expanded),
+                ChapterListRow(:final chapter) => _chapterRow(
+                  context,
+                  notifier,
+                  chapter,
+                  isCurrent:
+                      chapter.chapterId == currentChapterId &&
+                      (currentAnchorId != null
+                          ? chapter.anchorId == currentAnchorId
+                          : currentTocTitle == null ||
+                                chapter.title == currentTocTitle),
+                  colors: colors,
+                ),
+              },
+            ),
           ),
         );
       },
@@ -202,22 +275,20 @@ class _TocTabState extends ConsumerState<TocTab> {
     final colors = context.gtColors;
     final open = expanded.contains(index);
     return GtButton.raw(
-      onPressed: () => setState(() {
-        final current = _expanded ?? expanded;
-        _expanded = current.contains(index)
-            ? ({...current}..remove(index))
-            : {...current, index};
-      }),
+      onPressed: () => _toggleVolume(volume, index, expanded),
       child: Padding(
         padding: const EdgeInsets.symmetric(
           vertical: volumeHeaderVerticalPadding,
         ),
         child: Row(
           children: [
-            GtIcon(
-              open ? GtIcons.chevronDown : GtIcons.chevronRight,
-              size: 22,
-              color: colors.textPrimary,
+            RotatedBox(
+              quarterTurns: open && _descending ? 2 : 0,
+              child: GtIcon(
+                open ? GtIcons.chevronDown : GtIcons.chevronRight,
+                size: 22,
+                color: colors.textPrimary,
+              ),
             ),
             const SizedBox(width: GtSpacing.s2),
             Expanded(
@@ -237,6 +308,23 @@ class _TocTabState extends ConsumerState<TocTab> {
         ),
       ),
     );
+  }
+
+  void _toggleVolume(TocVolume volume, int index, Set<int> expanded) {
+    final current = _expanded ?? expanded;
+    final open = current.contains(index);
+    final controller = _listController;
+    setState(() {
+      _expanded = open ? ({...current}..remove(index)) : {...current, index};
+      if (_descending &&
+          widget.query.trim().isEmpty &&
+          controller?.hasClients == true) {
+        // 倒序时章节插在卷头上方；同帧补偿新增／移除的高度，让卷头留在手指附近。
+        final metrics = TocRowMetrics.resolve(context, context.gtColors);
+        final change = volume.chapters.length * metrics.chapter;
+        _pendingScrollOffset = controller!.offset + (open ? -change : change);
+      }
+    });
   }
 
   Widget _chapterRow(

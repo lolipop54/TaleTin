@@ -234,10 +234,8 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
     );
   });
 
-  Locator? get listeningStartAnchor {
-    final anchor = state.value?.currentAnchor;
-    return anchor == null ? null : _restoredPosition(anchor)?.locator ?? anchor;
-  }
+  // 新播放取当前可见位置；历史听书点只负责恢复画面和保存，暂停续播由服务负责。
+  Locator? get listeningStartAnchor => state.value?.currentAnchor;
 
   bool _manualListening = false;
   Future<void>? _manualHandoff;

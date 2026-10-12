@@ -94,11 +94,12 @@ class _AchievementsPage extends StatelessWidget {
       body: SafeArea(
         bottom: false,
         child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(
+          padding: EdgeInsets.fromLTRB(
             GtSpacing.s5,
             GtSpacing.s5,
             GtSpacing.s5,
-            GtSpacing.s6,
+            // 页面延伸到底栏后方，末尾留白保证最后一组勋章能滚出底栏。
+            GtSpacing.s6 + MediaQuery.paddingOf(context).bottom,
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,

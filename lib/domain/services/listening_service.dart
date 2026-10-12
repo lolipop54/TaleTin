@@ -38,7 +38,7 @@ abstract class ListeningService {
   /// 已有同一本书的暂停会话、且用户没有手动移位时，接着那个会话读；
   /// 首次打开面板不会因为调用了它以外的操作就自动发声。
   /// 锚点落在图片上时，从它后面第一段可读文本开始。
-  /// [sentenceStart] 为 false 时从精确锚点开始，供停止后的当前页重读使用。
+  /// [sentenceStart] 为 false 时从精确锚点开始，供阅读页首次开始或重新开始使用。
   Future<void> start(
     String bookId,
     Locator locator, {

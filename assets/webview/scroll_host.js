@@ -80,7 +80,7 @@
     doc.head.append(base);
     installStyle(win, doc);
     win.__gtHost.style.markImageOnlyParagraphs();
-    win.__gtHost.style.markWideHeadings();
+    win.__gtHost.style.markHeadingMargins();
     win.__gtHost.style.apply(options);
     const style = doc.createElement('style');
     style.textContent = 'html,body{height:auto!important;margin:0!important;' +

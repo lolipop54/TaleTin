@@ -199,7 +199,7 @@ internal class NativeTtsEngine(
     }
 
     /**
-     * 查询已安装且提供系统 TTS 服务的引擎；不在应用内附带语音模型。
+     * 只列设备实际安装的系统 TTS 引擎。
      */
     fun listEngines(): List<TtsEngineDto> {
         return try {
@@ -279,6 +279,7 @@ internal class NativeTtsEngine(
     /** 停止发声并丢弃未播内容。原生没有真正的 pause，暂停也走这里。 */
     fun stop() {
         handler.post {
+            audioPlayer.activeId?.let { id -> emit("onStopped") { events.onStopped(id, false) } }
             tts?.stop()
             audioPlayer.stop()
         }

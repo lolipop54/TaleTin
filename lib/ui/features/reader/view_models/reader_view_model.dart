@@ -180,13 +180,20 @@ class ReaderViewModel extends Notifier<ReaderState> {
 
   /// 目录可退回进度区，其余四个工具面板关闭后直接回正文。
   void closePanel({bool collapseControls = false}) {
-    final hideControls = collapseControls || switch (state.panel) {
-      ReaderPanel.brightness || ReaderPanel.tts || ReaderPanel.auto ||
-      ReaderPanel.typography => true,
-      _ => false,
-    };
-    state = state.copyWith(panel: ReaderPanel.none, panelCovered: false,
-      controlsVisible: hideControls ? false : state.controlsVisible);
+    final hideControls =
+        collapseControls ||
+        switch (state.panel) {
+          ReaderPanel.brightness ||
+          ReaderPanel.tts ||
+          ReaderPanel.auto ||
+          ReaderPanel.typography => true,
+          _ => false,
+        };
+    state = state.copyWith(
+      panel: ReaderPanel.none,
+      panelCovered: false,
+      controlsVisible: hideControls ? false : state.controlsVisible,
+    );
   }
 
   void coverPanel() => state = state.copyWith(panelCovered: true);
@@ -275,10 +282,11 @@ class ReaderViewModel extends Notifier<ReaderState> {
       state = state.copyWith(noteCloseToken: state.noteCloseToken + 1);
 
   /// 正文区弹一句提示（全书首尾、原书排版不可用等），显示一会儿自动消失
-  void showNotice(String message) => state = state.copyWith(
-    notice: message,
-    noticeToken: state.noticeToken + 1,
-  );
+  void showNotice(String message) {
+    // 听书换章可能在退出后才完成；旧页面的提示不能再写入已释放的界面状态。
+    if (!ref.mounted) return;
+    state = state.copyWith(notice: message, noticeToken: state.noticeToken + 1);
+  }
 
   void clearNotice() => state = state.copyWith(clearNotice: true);
 
@@ -289,10 +297,12 @@ class ReaderViewModel extends Notifier<ReaderState> {
   }
 }
 
-/// 按书 family 隔离（设计文档 4.2），阶段 1 仅一本书在演示。
-final readerProvider = NotifierProvider<ReaderViewModel, ReaderState>(
-  ReaderViewModel.new,
-);
+/// 控制层、面板和选区只属于本次阅读；退出页面后释放，下次从正文开始。
+/// 阅读位置与单书设置由各自的 Provider 保存，不依赖这里的临时状态。
+final readerProvider =
+    NotifierProvider.autoDispose<ReaderViewModel, ReaderState>(
+      ReaderViewModel.new,
+    );
 
 /// 阅读页显示时间（状态栏位）的来源。
 /// 单独抽出是为了让测试能注入固定时间，避免 Golden 随当前时间抖动；

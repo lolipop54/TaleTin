@@ -83,11 +83,12 @@ class SettingsView extends ConsumerWidget {
       body: SafeArea(
         bottom: false,
         child: ListView(
-          padding: const EdgeInsets.fromLTRB(
+          padding: EdgeInsets.fromLTRB(
             GtSpacing.s5,
             GtSpacing.s5,
             GtSpacing.s5,
-            GtSpacing.s6,
+            // 只增加列表末尾留白，滚动途中仍可从底栏凹口看到设置项。
+            GtSpacing.s6 + MediaQuery.paddingOf(context).bottom,
           ),
           children: [
             _buildHeader(context, colors),

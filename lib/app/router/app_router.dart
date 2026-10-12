@@ -211,6 +211,8 @@ class _MainShellState extends ConsumerState<MainShell> {
       ready: _ready,
       isCurrent: ModalRoute.isCurrentOf(context) ?? true,
       child: Scaffold(
+        // 让页面内容画到曲线凹口背后；各页把底栏高度作为列表末尾留白。
+        extendBody: true,
         body: FrameFade(key: _fadeKey,
           revision: navigationShell.currentIndex, child: navigationShell),
         bottomNavigationBar: MainNavigationBar(

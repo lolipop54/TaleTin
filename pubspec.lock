@@ -236,10 +236,9 @@ packages:
   curved_navigation_bar:
     dependency: "direct main"
     description:
-      name: curved_navigation_bar
-      sha256: bb4ab128fcb6f4a9f0f1f72d227db531818b20218984789777f049fcbf919279
-      url: "https://pub.dev"
-    source: hosted
+      path: "third_party/curved_navigation_bar"
+      relative: true
+    source: path
     version: "1.0.6"
   dart_style:
     dependency: transitive

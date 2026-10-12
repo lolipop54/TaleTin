@@ -132,13 +132,19 @@
     }
   }
 
-  function markWideHeadings() {
-    var headings = document.body.querySelectorAll('h1,h2,h3,h4,h5,h6');
+  function markHeadingMargins() {
+    var headings = document.body.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"]');
     for (var i = 0; i < headings.length; i++) {
       var style = window.getComputedStyle(headings[i]);
-      if (parseFloat(style.marginLeft) < 0 ||
-          parseFloat(style.marginRight) < 0) {
-        headings[i].setAttribute('data-gt-fit-heading', '');
+      var negative = [];
+      // 书里的章题常用负边距扩背景或向上挪动。只归零负值，保留正值和自动对齐。
+      ['Top', 'Right', 'Bottom', 'Left'].forEach(function (side) {
+        if (parseFloat(style['margin' + side]) < 0) {
+          negative.push(side.toLowerCase());
+        }
+      });
+      if (negative.length) {
+        headings[i].setAttribute('data-gt-heading-margins', negative.join(' '));
       }
     }
   }
@@ -372,7 +378,7 @@
   internal.style = {
     apply: applyStyle,
     markImageOnlyParagraphs: markImageOnlyParagraphs,
-    markWideHeadings: markWideHeadings,
+    markHeadingMargins: markHeadingMargins,
     revealContent: revealContent,
     watchImages: watchImages,
     whenContentReady: whenContentReady,

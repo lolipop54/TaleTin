@@ -10,6 +10,7 @@ class VoiceChoices {
     this.voices,
     this.engine, {
     this.busy = false,
+    this.loadingVoices = false,
     this.message,
     this.error,
   });
@@ -17,6 +18,7 @@ class VoiceChoices {
   final List<OfflineVoice> voices;
   final String? engine;
   final bool busy;
+  final bool loadingVoices;
   final String? message;
   // 简洁设置页只显示失败信息，阅读中的试听弹层仍可显示操作提示。
   final String? error;
@@ -70,11 +72,31 @@ class ListeningVoiceChoices extends AsyncNotifier<VoiceChoices> {
     }
   }
 
-  Future<void> detect(String? engine) => _run((old) async {
+  Future<void> detect(String? engine) async {
+    final old = state.value;
+    if (old == null || old.busy) return;
+    state = AsyncData(
+      VoiceChoices(
+        old.engines,
+        const [],
+        engine,
+        busy: true,
+        loadingVoices: true,
+      ),
+    );
     final service = ref.read(listeningServiceProvider);
-    final voices = await service.detectVoices(engine);
-    return VoiceChoices(await service.listEngines(), voices, engine);
-  });
+    try {
+      final voices = await service.detectVoices(engine);
+      final engines = await service.listEngines();
+      if (ref.mounted) state = AsyncData(VoiceChoices(engines, voices, engine));
+    } catch (error) {
+      if (ref.mounted) {
+        state = AsyncData(
+          VoiceChoices(old.engines, old.voices, old.engine, error: '$error'),
+        );
+      }
+    }
+  }
 
   Future<void> choose(OfflineVoice voice) => _run((old) async {
     final service = ref.read(listeningServiceProvider);

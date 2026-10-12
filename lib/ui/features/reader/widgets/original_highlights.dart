@@ -32,16 +32,21 @@ extension _OriginalHighlights on _OriginalReaderAreaState {
     await _prepareChapterBookmarks(ordinal, host);
   }
 
-  Future<Locator> _bookmarkAnchor() async {
+  Future<Locator> _visiblePageAnchor() async {
     await _curlKey.currentState?.settleForSpeech(invalidatePages: false);
-    final session = widget.session, host = _host;
+    if (!mounted) throw StateError('阅读页已关闭');
+    final session = widget.session, host = _host, navigation = _navigation;
     if (host == null || _landing || session.content == null) throw StateError('书页尚未就绪');
-    final point = await host.currentBookmarkPoint();
-    if (!mounted || host != _host || point == null) throw StateError('无法读取当前页书签位置');
+    // 与自动阅读落页共用本页几何查询，避开跨页段落的节点首字和摘录匹配。
+    // 页首为图片时保留图片位置，听书服务会从其后的文字开始。
+    final point = await host.scanPageAnchor();
+    if (!mounted || host != _host || navigation != _navigation || point == null) {
+      throw StateError('无法读取当前页位置');
+    }
     final map = await widget.controller.positionMap(session.chapterIndex,
       session.chapter.href!, session.content!, session.currentAnchor!);
-    if (!mounted || host != _host) throw StateError('书页已切换');
-    return map.locatorOf(point);
+    if (!mounted || host != _host || navigation != _navigation) throw StateError('书页已切换');
+    return map.locatorOf(point.cast<String, dynamic>());
   }
 
   /// 书签只改页上的条带，不重新分栏；避免保存书签时撤图、重排造成闪烁。

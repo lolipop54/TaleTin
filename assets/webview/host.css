@@ -56,14 +56,29 @@ p[data-gt-image-only] img {
   margin-right: auto !important;
 }
 
-/* 部分 EPUB 用负边距把章题背景撑出手机页宽；只收紧被标记的标题。 */
-[data-gt-fit-heading] {
+/* 标题可能用 em/px 写死宽度：字号放大后连同边框越过列宽，会叠到下一页。
+   用边框盒限制最大宽度，保留原书较窄的标题、对齐和装饰；长文字正常换行。
+   CSS 随字号、页边距和窗口宽度自动生效，不依赖首次加载时的宽度判断。 */
+h1, h2, h3, h4, h5, h6, [role="heading"] {
   box-sizing: border-box !important;
+  min-width: 0 !important;
   max-width: 100% !important;
-  margin-left: 0 !important;
-  margin-right: 0 !important;
   white-space: normal !important;
   overflow-wrap: anywhere !important;
+}
+
+/* 四个方向分别标记：向上/向下越界和左右扩背景都收回，正值留白不变。 */
+[data-gt-heading-margins~="top"] {
+  margin-top: 0 !important;
+}
+[data-gt-heading-margins~="right"] {
+  margin-right: 0 !important;
+}
+[data-gt-heading-margins~="bottom"] {
+  margin-bottom: 0 !important;
+}
+[data-gt-heading-margins~="left"] {
+  margin-left: 0 !important;
 }
 
 /* 表格占满当前正文列。用真实换行和分页，不能 transform 缩图后裁掉右侧。 */

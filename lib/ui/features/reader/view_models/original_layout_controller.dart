@@ -227,8 +227,8 @@ class OriginalLayoutController {
   /// 章节按钮先保留当前画面，再执行定位；由正文区注册和释放。
   Future<void> Function(Future<void> Function() jump)? holdPageDuringJump;
 
-  /// 加书签时读取当前页真实DOM落点，避免跨页段落的文字摘录退到上一页。
-  Future<Locator> Function()? bookmarkAnchor;
+  /// 听书开始和加书签共用当前页真实 DOM 落点；不沿用恢复或切换前的锚点。
+  Future<Locator> Function()? visiblePageAnchor;
 
   /// 宿主页的命令入口；[OriginalBody] 创建 WebView 后注入
   OriginalHostController? _host;

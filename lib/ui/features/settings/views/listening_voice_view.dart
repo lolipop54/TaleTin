@@ -32,6 +32,14 @@ class _ListeningVoiceViewState extends ConsumerState<ListeningVoiceView> {
   String? _engine;
   bool _settingsOpened = false;
   OfflineVoice? _draft;
+  OfflineVoice? _pendingVoice;
+
+  Future<void> _choose(OfflineVoice voice) async {
+    setState(() => _pendingVoice = voice);
+    await ref.read(listeningVoiceChoicesProvider.notifier).choose(voice);
+    if (mounted) setState(() => _pendingVoice = null);
+  }
+
   Future<bool> _saveSelection() async {
     final data = ref.read(listeningVoiceChoicesProvider).value;
     if (data?.busy == true) return false;
@@ -75,7 +83,7 @@ class _ListeningVoiceViewState extends ConsumerState<ListeningVoiceView> {
     final vm = ref.read(listeningVoiceChoicesProvider.notifier);
     final selected = widget.sheet
         ? _draft
-        : ref.watch(listeningViewStateProvider).value?.voice;
+        : _pendingVoice ?? ref.watch(listeningViewStateProvider).value?.voice;
     // 验证状态变化不改变音色身份，仍按引擎、ID 和语言显示选中项。
     bool isSelected(OfflineVoice voice) =>
         voice.enginePackage == selected?.enginePackage &&
@@ -97,8 +105,9 @@ class _ListeningVoiceViewState extends ConsumerState<ListeningVoiceView> {
                 onPress: data!.busy
                     ? null
                     : () async {
+                        final detection = vm.detect(engine.packageName);
                         await controller.hide();
-                        await vm.detect(engine.packageName);
+                        await detection;
                       },
                 title: Row(
                   children: [
@@ -163,6 +172,8 @@ class _ListeningVoiceViewState extends ConsumerState<ListeningVoiceView> {
                             )
                           : const SizedBox.shrink(),
                     )
+                  : data.loadingVoices
+                  ? const Center(child: Text('加载音色中...'))
                   : voices.isEmpty
                   ? const Center(child: Text('暂无可用的离线音色'))
                   : LayoutBuilder(
@@ -217,7 +228,7 @@ class _ListeningVoiceViewState extends ConsumerState<ListeningVoiceView> {
                                     ? null
                                     : () => widget.sheet
                                           ? setState(() => _draft = voice)
-                                          : vm.choose(voice),
+                                          : _choose(voice),
                                 child: Row(
                                   children: [
                                     Expanded(

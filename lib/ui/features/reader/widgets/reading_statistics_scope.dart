@@ -52,6 +52,8 @@ class _StatisticsScopeState extends ConsumerState<ReadingStatisticsScope> {
       WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
     lifecycle = AppLifecycleListener(onStateChange: (state) {
       foreground = state == AppLifecycleState.resumed;
+      // 解锁或从桌面回来时重新应用阅读设置，不能依赖系统保留隐藏状态。
+      if (foreground) _bars = null;
       sync();
     });
     // WebView 的实际就绪不一定引发 Flutter 重建；只检查状态，不累计时长。
@@ -77,10 +79,10 @@ class _StatisticsScopeState extends ConsumerState<ReadingStatisticsScope> {
       !reader.controlsVisible && reader.panel == ReaderPanel.none &&
       reader.note == null && reader.selection == null;
     final controls = ref.read(readingControlsProvider).value;
-    // 阅读内的搜索、字体等弹层保持同一系统栏布局，不能在目标定位后又变正文高度。
-    // 真正退出阅读时由 dispose 恢复系统栏；计时和音量键仍只看当前路由。
-    final bars = (foreground ? controls?.statusBar ?? true : true,
-        foreground ? controls?.navigationBar ?? true : true);
+    // 锁屏、切后台和阅读内弹层都保留系统栏设置。若失去前台时显示系统栏，
+    // 回来再隐藏，正文会按临时高度重排，页首反复取整就会退到前一页。
+    // 真正退出阅读时才恢复系统栏；计时、常亮和音量键仍只在正文前台生效。
+    final bars = (controls?.statusBar ?? true, controls?.navigationBar ?? true);
     if (_bars != bars) {
       _bars = bars;
       unawaited(window.systemBars(status: bars.$1, navigation: bars.$2));

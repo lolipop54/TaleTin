@@ -69,7 +69,7 @@
       state.width = Math.max(1, Math.round(width));
       state.margin = Math.max(0, Math.round(margin || 0));
       internal.style.markImageOnlyParagraphs();
-      internal.style.markWideHeadings();
+      internal.style.markHeadingMargins();
       internal.layout.setupColumns();
       state.page = 0;
       internal.layout.applyTransform(false);

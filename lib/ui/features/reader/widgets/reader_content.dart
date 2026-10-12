@@ -59,9 +59,16 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
     ref.watch(bookSearchNavigationProvider(bookId));
     ref.watch(readerProgressReturnProvider(bookId));
     ref.listen(readerSessionProvider(bookId), (previous, next) {
-      final before = previous?.value?.currentAnchor;
-      final after = next.value?.currentAnchor;
-      if (before != null && after != null && !before.samePosition(after)) {
+      final beforeSession = previous?.value;
+      final afterSession = next.value;
+      final before = beforeSession?.currentAnchor;
+      final after = afterSession?.currentAnchor;
+      // 原书跨章会先清空旧锚点，再回填新章位置，不能只比较两个非空锚点。
+      final chapterChanged = beforeSession != null && afterSession != null &&
+          beforeSession.chapter.id != afterSession.chapter.id;
+      final anchorChanged = before != null && after != null &&
+          !before.samePosition(after);
+      if (chapterChanged || anchorChanged) {
         ref.read(readerProgressReturnProvider(bookId).notifier).pageChanged();
         ref.read(bookSearchNavigationProvider(bookId).notifier).dismiss();
       }
