@@ -53,6 +53,7 @@ import '../widgets/page_canvas.dart';
 import '../widgets/simplified_scroll_area.dart';
 import '../widgets/original_scroll_area.dart';
 import '../widgets/reader_display_transition.dart';
+import '../widgets/reader_content_viewport.dart';
 import '../widgets/reader_image_viewer.dart';
 import '../widgets/reader_image_gallery.dart';
 import '../widgets/reader_information.dart';

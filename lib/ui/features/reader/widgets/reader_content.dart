@@ -86,6 +86,7 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
     final settingsAsync = ref.watch(readerSettingsProvider(bookId));
     final loaded = settingsAsync.value;
     final session = ref.watch(readerSessionProvider(bookId)).value;
+    final showStatusBar = ref.watch(readingControlsProvider).value?.statusBar ?? true;
     if (loaded?.settings.layoutMode.isOriginal == true && session?.book.format == BookFormat.epub) {
       _keepOriginal = true;
     }
@@ -154,18 +155,25 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
             children: [
               CompletionPromptHost(bookId: bookId),
               BookSearchPageHost(key: ValueKey('search-host-$bookId'), bookId: bookId),
-              ReaderBookmarkLayer(bookId: bookId, paper: theme.background,
-                allowPull: !scrolling && !state.controlsVisible && state.selection == null && state.note == null,
-                topInset: (ref.watch(readingControlsProvider).value?.statusBar ?? true)
-                    ? MediaQuery.paddingOf(context).top : 0,
-                child: _ReadingContent(
-                state: state,
-                bookId: bookId,
-                theme: theme,
-                settings: settings,
-                // 正文首次显示前也等真实章名索引，避免旧TXT补目录后页眉跳变。
-                settingsReady: loaded != null && !progressTitles.isLoading,
-              )),
+              ReaderContentViewport(
+                child: Builder(
+                  builder: (context) => ReaderBookmarkLayer(
+                    bookId: bookId,
+                    paper: theme.background,
+                    allowPull: !scrolling && !state.controlsVisible &&
+                        state.selection == null && state.note == null,
+                    topInset: showStatusBar ? MediaQuery.paddingOf(context).top : 0,
+                    child: _ReadingContent(
+                      state: state,
+                      bookId: bookId,
+                      theme: theme,
+                      settings: settings,
+                      // 正文首次显示前也等真实章名索引，避免旧TXT补目录后页眉跳变。
+                      settingsReady: loaded != null && !progressTitles.isLoading,
+                    ),
+                  ),
+                ),
+              ),
               if (state.panel == ReaderPanel.none && !state.controlsVisible)
                 SearchReturnBar(bookId: bookId, theme: theme, paintMenu: scrolling),
               // 控制层：顶部栏 + 底部工具栏
