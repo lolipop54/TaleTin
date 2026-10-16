@@ -192,7 +192,10 @@ class OriginalLayoutController {
   }
 
   // source 已隔离 bookId/contentVersion；映射规则版本参与键，最多保留三个资源。
-  final _domMaps = <String, Future<LocatorDomMap>>{};
+  final _domMaps = <String, LocatorDomMap>{};
+  final _pendingDomMaps = <String, Future<LocatorDomMap>>{};
+  final _mapPreparation = <String, String>{};
+  String get positionPreparation => _mapPreparation.toString();
   Future<LocatorDomMap> positionMap(
     int index,
     String href,
@@ -200,20 +203,39 @@ class OriginalLayoutController {
     Locator locator,
   ) {
     final key = '1:$index:$href';
-    return _domMaps.putIfAbsent(key, () async {
+    final cached = _domMaps[key];
+    if (cached != null) return Future.value(cached);
+    return _pendingDomMaps.putIfAbsent(
+      key,
+      () => _preparePositionMap(key, index, href, content, locator)
+          .whenComplete(() {
+            _pendingDomMaps.remove(key);
+          }),
+    );
+  }
+
+  Future<LocatorDomMap> _preparePositionMap(
+    String key,
+    int index,
+    String href,
+    ChapterContent content,
+    Locator locator,
+  ) async {
+    try {
+      _mapPreparation[key] = '读取净化章节';
       final html = await source.chapterDocument(index);
       if (html == null) throw StateError('无法读取听书位置对应的原书');
-      try {
-        final result = await parseLocatorDomMap(html, href, content, locator);
-        while (_domMaps.length > 3) {
-          _domMaps.remove(_domMaps.keys.first);
-        }
-        return result;
-      } catch (_) {
-        _domMaps.remove(key);
-        rethrow;
+      _mapPreparation[key] = '后台解析位置映射';
+      final result = await parseLocatorDomMap(html, href, content, locator);
+      // 只缓存完成的映射；异步任务失败或服务更换后不能把未完成任务当作可用结果。
+      _domMaps[key] = result;
+      while (_domMaps.length > 3) {
+        _domMaps.remove(_domMaps.keys.first);
       }
-    });
+      return result;
+    } finally {
+      _mapPreparation.remove(key);
+    }
   }
 
   Future<Map<String, Object>> resolvePosition(
@@ -226,6 +248,9 @@ class OriginalLayoutController {
 
   /// 章节按钮先保留当前画面，再执行定位；由正文区注册和释放。
   Future<void> Function(Future<void> Function() jump)? holdPageDuringJump;
+
+  /// 旧页已遮盖时，允许目标网页与标准正文并行准备；不提交阅读位置。
+  void Function(int chapter, double fraction)? prepareProgressChapter;
 
   /// 听书开始和加书签共用当前页真实 DOM 落点；不沿用恢复或切换前的锚点。
   Future<Locator> Function()? visiblePageAnchor;

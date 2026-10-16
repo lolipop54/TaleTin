@@ -1,3 +1,4 @@
+import 'package:taletin/platform/channels/system_toast.dart';
 import 'package:taletin/ui/core/widgets/gt_dialog_action.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -122,8 +123,7 @@ Future<void> deleteNote(
     await repository.deleteAnnotation(note.id);
   } catch (_) {
     if (context.mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('删除失败，请重试')));
+      SystemToast.show('删除失败，请重试').ignore();
     }
   }
 }

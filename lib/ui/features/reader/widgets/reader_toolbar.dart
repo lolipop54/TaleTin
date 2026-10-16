@@ -9,6 +9,7 @@ import '../../../core/widgets/gt_button.dart';
 import '../../../core/widgets/gt_icon.dart';
 import '../view_models/reader_view_model.dart';
 import '../view_models/reader_session_view_model.dart';
+import 'reader_panel_motion.dart';
 
 /// 一级与二级面板共用工具栏；二级面板禁用所属的一级入口。
 class ReaderToolbar extends StatelessWidget {
@@ -24,7 +25,7 @@ class ReaderToolbar extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Container(
     color: theme.background,
-    height: 87,
+    height: readerToolbarHeight,
     child: Column(
       children: [
         Container(height: 1, color: theme.secondary.withValues(alpha: .18)),

@@ -22,6 +22,10 @@ analyzer:
     # 补丁，见 third_party/flutter_inappwebview_android/README.gt.md），
     # 不参与本项目的静态检查
     - third_party/**
+    # 实验模板会被复制到隔离工程并注入专用绑定，在生成后的工程检查。
+    - tools/performance_demo/device/**
+    - tools/performance_demo/host_test/**
+    - tools/selected_optimizations/device/**
 
 linter:
   # The lint rules applied to this project can be customized in the

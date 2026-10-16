@@ -1,4 +1,5 @@
 import 'dart:io';
+
 import '../data/services/backup_snapshot.dart';
 import '../data/services/backup_restore_transaction.dart';
 import '../data/services/restore_book_sources.dart';
@@ -13,7 +14,9 @@ class RestoredRuntime {
 }
 
 /// UI 负责阻止新操作并等待导入；这里负责持久快照、目录事务和运行服务交接。
-Future<RestoredRuntime> restoreRuntime(BootstrapResult current, BackupSnapshot incoming, {
+Future<RestoredRuntime> restoreRuntime(
+  BootstrapResult current,
+  BackupSnapshot incoming, {
   required Future<void> Function() releaseUi,
   required Future<void> Function(BootstrapResult) prepareUi,
   required Future<int> Function(String) availableBytes,
@@ -35,10 +38,16 @@ Future<RestoredRuntime> restoreRuntime(BootstrapResult current, BackupSnapshot i
     await current.statistics.flush();
     await current.achievements.refresh();
     progress?.call('保存恢复前的自动快照');
-    await BackupSnapshotService(database: current.database, root: root,
-      work: Directory('${root.path}/backups'), gate: current.fileGate,
-      availableBytes: availableBytes).create(BackupOperation(onProgress: (phase, _, _) => progress?.call(phase)),
-        filesAlreadyFrozen: true);
+    await BackupSnapshotService(
+      database: current.database,
+      root: root,
+      work: Directory('${root.path}/backups'),
+      gate: current.fileGate,
+      availableBytes: availableBytes,
+    ).create(
+      BackupOperation(onProgress: (phase, _, _) => progress?.call(phase)),
+      filesAlreadyFrozen: true,
+    );
     await onBoundary?.call('snapshot-ready');
     await releaseUi();
     await current.close();
@@ -50,8 +59,16 @@ Future<RestoredRuntime> restoreRuntime(BootstrapResult current, BackupSnapshot i
     await onBoundary?.call('before-initialize');
     // 原书缓存按书号和版本命名；不同备份可能同号同版但内容不同，必须丢弃。
     final originalCache = Directory('${current.cacheRoot}/original');
-    if (await originalCache.exists()) await originalCache.delete(recursive: true);
-    next = await prepareApp(supportRoot: root, cacheRoot: Directory(current.cacheRoot), recoverPending: false);
+    if (await originalCache.exists()) {
+      await originalCache.delete(recursive: true);
+    }
+    final chapterCache = Directory('${current.cacheRoot}/chapters');
+    if (await chapterCache.exists()) await chapterCache.delete(recursive: true);
+    next = await prepareApp(
+      supportRoot: root,
+      cacheRoot: Directory(current.cacheRoot),
+      recoverPending: false,
+    );
     await prepareUi(next);
     await onBoundary?.call('before-commit');
     await transaction.commit();
@@ -63,13 +80,22 @@ Future<RestoredRuntime> restoreRuntime(BootstrapResult current, BackupSnapshot i
     // 已提交记录保留新状态；未提交记录恢复原状态，和下次冷启动口径一致。
     final committed = await transaction.isCommitted();
     await transaction.recover();
-    final reopened = await prepareApp(supportRoot: root, cacheRoot: Directory(current.cacheRoot));
+    final reopened = await prepareApp(
+      supportRoot: root,
+      cacheRoot: Directory(current.cacheRoot),
+    );
     await prepareUi(reopened);
-    return RestoredRuntime(reopened, committed
-      ? '书库已恢复，清理时发生错误：$error'
-      : '恢复没有完成，已回到原书库：$error', committed);
+    return RestoredRuntime(
+      reopened,
+      committed ? '书库已恢复，清理时发生错误：$error' : '恢复没有完成，已回到原书库：$error',
+      committed,
+    );
   } finally {
-    releaseFiles?.call(); releaseMedia?.call(); releaseAutomatic();
-    if (await incoming.directory.exists()) await incoming.directory.delete(recursive: true);
+    releaseFiles?.call();
+    releaseMedia?.call();
+    releaseAutomatic();
+    if (await incoming.directory.exists()) {
+      await incoming.directory.delete(recursive: true);
+    }
   }
 }

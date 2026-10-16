@@ -7,17 +7,20 @@
 library;
 
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../../core/errors/import_error.dart';
 import '../../domain/services/import_storage.dart';
+import '../../domain/models/book_document.dart';
+import 'remove_redundant_txt_copy.dart' as txt_cleanup;
 
 class FileImportStorage implements ImportStorage {
   FileImportStorage({Directory? libraryRoot, Directory? cacheRoot})
-      : _libraryOverride = libraryRoot,
-        _cacheOverride = cacheRoot;
+    : _libraryOverride = libraryRoot,
+      _cacheOverride = cacheRoot;
 
   final Directory? _libraryOverride;
   final Directory? _cacheOverride;
@@ -52,6 +55,22 @@ class FileImportStorage implements ImportStorage {
   }
 
   @override
+  Future<int> removeRedundantTxtCopy(
+    String bookId,
+    int contentVersion,
+    List<Chapter> chapters,
+  ) async {
+    final directory = await bookDirectoryPath(bookId);
+    return Isolate.run(
+      () => txt_cleanup.removeRedundantTxtCopy(
+        directory,
+        contentVersion,
+        chapters,
+      ),
+    );
+  }
+
+  @override
   Future<int> directorySize(String path) async {
     final dir = Directory(path);
     if (!await dir.exists()) return 0;
@@ -66,6 +85,10 @@ class FileImportStorage implements ImportStorage {
     }
     return total;
   }
+
+  @override
+  Future<StorageDeletion> deleteRecursivelyWithSize(String path) =>
+      Isolate.run(() => _deleteAndCount(path));
 
   @override
   Future<String> bookDirectory(String bookId) async {
@@ -167,4 +190,35 @@ class FileImportStorage implements ImportStorage {
     }
     return removed;
   }
+}
+
+// Only the supplied private book tree is visited. Links are removed as links,
+// never followed to a shared-storage source. Work runs outside the UI isolate.
+StorageDeletion _deleteAndCount(String path) {
+  var freed = 0;
+  var failed = false;
+  void remove(String current) {
+    try {
+      final type = FileSystemEntity.typeSync(current, followLinks: false);
+      if (type == FileSystemEntityType.notFound) return;
+      if (type == FileSystemEntityType.link) {
+        Link(current).deleteSync();
+      } else if (type == FileSystemEntityType.directory) {
+        for (final child in Directory(current).listSync(followLinks: false)) {
+          remove(child.path);
+        }
+        Directory(current).deleteSync();
+      } else {
+        final file = File(current);
+        final bytes = file.lengthSync();
+        file.deleteSync();
+        freed += bytes;
+      }
+    } on FileSystemException {
+      failed = true;
+    }
+  }
+
+  remove(path);
+  return StorageDeletion(freedBytes: freed, failed: failed);
 }

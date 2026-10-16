@@ -95,6 +95,8 @@ kotlin {
 }
 
 dependencies {
+    // 后台执行 WebView 启动中允许离开界面线程的部分，不创建空白页面预热。
+    implementation("androidx.webkit:webkit:1.16.0")
     // pigeon 生成的 Kotlin 代码用 suspend 函数回调 Dart（见 TtsApi.g.kt），
     // 需要协程运行时。这是编译期硬依赖，不是可选项：不加这一行
     // com.example.gtreader.tts.TtsApi.g.kt 根本编译不过。
@@ -200,7 +202,7 @@ val verifyReleaseApk = tasks.register("verifyReleaseApk") {
             val abis = splitAbi?.let { listOf(it) } ?: releaseAbis
             ZipFile(apk).use { zip ->
                 val missing = abis.flatMap { abi ->
-                    listOf("libapp.so", "libflutter.so", "libsqlite3.so")
+                    listOf("libapp.so", "libflutter.so", "libsqlite3.so", "libgt_reader_native.so")
                         .map { "lib/$abi/$it" }
                 }.filter { path -> (zip.getEntry(path)?.size ?: 0L) <= 0L }
                 check(missing.isEmpty()) {

@@ -31,6 +31,13 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
 
   @override
   Widget build(BuildContext context) {
+    final sourceChanged = ref.watch(readerSourceChangeProvider(bookId)) ||
+        isSourceChange(ref.watch(readerSessionProvider(bookId)).error);
+    ref.listen(readerSessionProvider(bookId), (_, value) {
+      if (isSourceChange(value.error)) {
+        ref.read(readerSourceChangeProvider(bookId).notifier).markChanged();
+      }
+    });
     final state = ref.watch(readerProvider);
     ref.listen(readerProvider, (previous, next) {
       if (previous == null) return;
@@ -105,6 +112,7 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
       // 分页和滚动都先保存最终位置，不能在路由已经销毁后读取 Provider。
       canPop: false,
       onPopInvokedWithResult: (didPop, _) async {
+        if (sourceChanged) return; // 刷新层负责等待保存和退出，避免执行两次返回。
         if (didPop) {
           return;
         }
@@ -233,6 +241,8 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
                       state.panelCovered ? null : _buildPanel(ref, state),
                 ),
               ),
+              // 保留已有正文树，更新期间阻止继续翻页或编辑旧正文。
+              if (sourceChanged) Positioned.fill(child: ReaderSourceChangedPage(bookId: bookId)),
             ],
           ),
         )),
@@ -297,10 +307,12 @@ class _ReadingContentState extends ConsumerState<_ReadingContent> {
   late final ReaderProgressReturn _progressReturn;
   late final Future<void> Function() _prepareJumpCover;
   late final Future<void> Function() _finishJumpCover;
-  final _originalKey = GlobalKey();
-  final _pageKey = GlobalKey<_PageAreaState>();
-  final _scrollKey = GlobalKey<OriginalScrollAreaState>();
-  final _textScrollKey = GlobalKey<SimplifiedScrollAreaState>();
+  var _originalKey = GlobalKey();
+  var _pageKey = GlobalKey<_PageAreaState>();
+  var _scrollKey = GlobalKey<OriginalScrollAreaState>();
+  var _textScrollKey = GlobalKey<SimplifiedScrollAreaState>();
+  Book? _displayBook;
+  OriginalLayoutController? _displayOriginal;
   Object? _reportedOriginalError;
   Size? _originalViewport;
   ReaderState get state => widget.state;
@@ -349,6 +361,17 @@ class _ReadingContentState extends ConsumerState<_ReadingContent> {
   Widget build(BuildContext context) {
     final sessionAsync = ref.watch(readerSessionProvider(bookId));
     final session = sessionAsync.value;
+    if (session != null && !identical(_displayBook, session.book)) {
+      // 来源刷新仍沿用 bookId 和正文规则版本，但章节与会话已经换了。
+      // 重建各显示器，避免滚动窗口继续使用旧章节列表或已释放的会话；外层保留旧截图。
+      _displayBook = session.book;
+      _displayOriginal = null;
+      _originalKey = GlobalKey();
+      _pageKey = GlobalKey<_PageAreaState>();
+      _scrollKey = GlobalKey<OriginalScrollAreaState>();
+      _textScrollKey = GlobalKey<SimplifiedScrollAreaState>();
+      _reportedOriginalError = null;
+    }
     final searchBusy = ref.watch(bookSearchNavigationProvider(bookId).select((s) => s.busy));
     final jumpBusy = ref.watch(readerProgressReturnProvider(bookId).select((s) => s.busy));
     return ReadingStatisticsScope(bookId: bookId,
@@ -386,14 +409,15 @@ class _ReadingContentState extends ConsumerState<_ReadingContent> {
             viewport: originalPaged ? _originalViewport : null,
             reflow: originalPaged ? (settings.settings.fontSize,
               settings.settings.fontFamily, settings.settings.useOriginalFont,
-              settings.settings.bold, settings.settings.indent,
+              settings.settings.fontWeight, settings.settings.indent,
               settings.settings.lineHeight, settings.settings.paragraphGapEm,
               settings.settings.horizontalPadding, settings.settings.pageTurnEffect,
               theme, MediaQuery.textScalerOf(context),
               ref.watch(statusInfoVisibleProvider).value) : searchBusy,
             display: (settings.settings.layoutMode,
               settings.settings.pageTurnEffect == PageTurnEffect.scroll),
-            ready: () => !searchBusy && !jumpBusy && _displayReady(), captureNative: _captureNative,
+            ready: () => !ref.read(readerSourceChangeProvider(bookId)) &&
+                settingsReady && !searchBusy && !jumpBusy && _displayReady(), captureNative: _captureNative,
             loadingBackground: theme.background,
             child: ReaderPerformance(
               label: '${settings.settings.layoutMode.name}.${settings.settings.pageTurnEffect.name}',
@@ -446,9 +470,21 @@ class _ReadingContentState extends ConsumerState<_ReadingContent> {
     if (settings.settings.layoutMode.isOriginal &&
         session.book.format == BookFormat.epub) {
       final original = ref.watch(originalLayoutProvider(bookId));
+      // Provider 更新时可能暂存上一份 value；已关闭的旧原书服务不能交给新显示器。
+      if (original.isLoading) return const _PreparingState();
       // 原书内容打不开（源文件缺失、与章节索引对不上）：降级回简化排版，
       // 并把原因告诉用户，而不是留一个空白页（计划 3.1）
       if (original.hasError && !original.isLoading) {
+        if (ref.read(readerSourceChangeProvider(bookId))) return const SizedBox.expand();
+        if (isSourceChange(original.error)) {
+          if (_reportedOriginalError != original.error) {
+            _reportedOriginalError = original.error;
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) ref.read(readerSourceChangeProvider(bookId).notifier).markChanged();
+            });
+          }
+          return const SizedBox.expand();
+        }
         if (_reportedOriginalError != original.error) {
           _reportedOriginalError = original.error;
           WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -470,6 +506,11 @@ class _ReadingContentState extends ConsumerState<_ReadingContent> {
       }
       final controller = original.value;
       if (controller == null) return const _PreparingState();
+      if (!identical(_displayOriginal, controller)) {
+        _displayOriginal = controller;
+        _originalKey = GlobalKey();
+        _scrollKey = GlobalKey<OriginalScrollAreaState>();
+      }
       if (settings.settings.pageTurnEffect == PageTurnEffect.scroll) {
         return OriginalScrollArea(key: _scrollKey, bookId: bookId, session: session,
             settings: settings, original: controller);

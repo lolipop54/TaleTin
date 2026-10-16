@@ -38,7 +38,6 @@ class DriftReadingPositionRepository implements ReadingPositionRepository {
       source: decoded['source'] == 'listening'
           ? ReadingPositionSource.listening
           : ReadingPositionSource.visual,
-      // v2 写下的行没有进度，按 0 处理（书架会退回按章边界估算）
       progress: (row.progress ?? 0).clamp(0.0, 1.0),
     );
   }

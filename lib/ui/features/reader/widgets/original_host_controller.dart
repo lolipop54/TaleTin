@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show MethodChannel, OptionalMethodChannel;
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import '../../../../core/diagnostics/opening_experiments.dart';
 import 'turn_trace.dart';
 import 'original_tap_target.dart';
 export 'original_tap_target.dart';
@@ -97,9 +98,11 @@ class OriginalHostController {
     required Future<ui.Image> Function() capture,
     required Future<void> Function(int) holdPage,
     required Future<void> Function(bool) releasePage,
+    Future<void> Function(int?)? preparePage,
   }) : _frameEvaluate = evaluate, _frameRendered = rendered,
        _framePresented = presented, _frameCapture = capture,
-       _frameHoldPage = holdPage, _frameReleasePage = releasePage;
+       _frameHoldPage = holdPage, _frameReleasePage = releasePage,
+       _framePreparePage = preparePage;
 
   Future<dynamic> Function(String)? _frameEvaluate;
   Future<void> Function()? _frameRendered;
@@ -107,6 +110,16 @@ class OriginalHostController {
   Future<ui.Image> Function()? _frameCapture;
   Future<void> Function(int)? _frameHoldPage;
   Future<void> Function(bool)? _frameReleasePage;
+  Future<void> Function(int?)? _framePreparePage;
+  /// 宿主页根据已加载图片的像素量决定；小图片章节保持原来的完整解码。
+  bool deferredImagePixels = false;
+
+  /// 只等待目标页图片解码；不改图片尺寸和分页结果。
+  Future<void> prepareImagePage([int? page]) async {
+    if (OpeningExperiments.visibleImageDecode && deferredImagePixels) {
+      await _framePreparePage?.call(page);
+    }
+  }
   int? _heldPage;
   Map<String, int> bookmarkPages = {};
   Future<Map<String, dynamic>?> currentBookmarkPoint() async {
@@ -193,6 +206,7 @@ class OriginalHostController {
   }
 
   Future<void> previewPage(int page) async {
+    await prepareImagePage(page);
     await _call('__gt.previewPage($page)');
     await rendered();
   }
@@ -287,6 +301,7 @@ class OriginalHostController {
 
   /// 切页后的绘制就绪由截图接口保证，不重复等待浏览器帧。
   Future<ui.Image> capturePage(int page) async {
+    await prepareImagePage(page);
     await _call('__gt.previewPage($page)');
     return capture();
   }
@@ -564,10 +579,10 @@ class OriginalHostController {
     double? marginPx,
     bool? indent,
     String? fontFamily,
-    bool? bold,
+    int? fontWeight,
     Map<String, String>? colors,
   }) => _call(
-    '__gt.applyStyle(${jsonEncode({'fontSizePx': ?fontSizePx, 'lineHeight': ?lineHeight, 'paragraphGapEm': ?paragraphGapEm, 'marginPx': ?marginPx, 'indent': ?indent, 'fontFamily': ?fontFamily, 'bold': ?bold, 'colors': ?colors})})',
+    '__gt.applyStyle(${jsonEncode({'fontSizePx': ?fontSizePx, 'lineHeight': ?lineHeight, 'paragraphGapEm': ?paragraphGapEm, 'marginPx': ?marginPx, 'indent': ?indent, 'fontFamily': ?fontFamily, 'fontWeight': ?fontWeight, 'colors': ?colors})})',
   );
 
   /// 点击：分区由 Flutter 算好，一次调用里判断链接并执行相应动作。

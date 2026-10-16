@@ -98,6 +98,7 @@ extension _OriginalTurnCoordinator on _OriginalReaderAreaState {
     int page,
     int chapter,
   ) async {
+    await host.prepareImagePage(page);
     final fraction = await host.fractionForPage(page);
     return (
       host: host,
@@ -227,6 +228,15 @@ extension _OriginalTurnCoordinator on _OriginalReaderAreaState {
           .read(readerSessionProvider(widget.bookId).notifier)
           .beginManualReading();
       if (!mounted) return false;
+      if (OpeningExperiments.visibleImageDecode) {
+        final host = _hosts[widget.session.chapterIndex];
+        if (host != null) {
+          await Future.wait([
+            if (_page > 0) host.prepareImagePage(_page - 1),
+            if (_page + 1 < _pageCount) host.prepareImagePage(_page + 1),
+          ]);
+        }
+      }
       // 听书状态真正变化时才清理；普通翻页不能强制重置刚开始的手势。
       _scheduleSpeech();
       return true;

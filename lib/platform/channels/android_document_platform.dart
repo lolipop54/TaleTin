@@ -44,7 +44,9 @@ class AndroidDocumentPlatform implements DocumentPlatform {
   @override
   Future<String> decodeBytes(Uint8List bytes, String charsetName) async {
     try {
-      return await _api.decodeBytes(bytes, charsetName);
+      // 与 Android 的固定传输前缀配对，避免平台通道丢掉章内 U+FEFF。
+      final result = await _api.decodeBytes(bytes, charsetName);
+      return result.substring(1);
     } on PlatformException catch (e) {
       throw ArgumentError(e.message ?? '不支持的字符集：$charsetName');
     }

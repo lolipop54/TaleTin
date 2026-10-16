@@ -1,3 +1,4 @@
+import 'package:taletin/platform/channels/system_toast.dart';
 import 'package:taletin/ui/core/widgets/gt_switch.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -37,8 +38,7 @@ class GlobalFontView extends ConsumerWidget {
                   );
             } catch (_) {
               if (context.mounted) {
-                ScaffoldMessenger.of(context)
-                    .showSnackBar(const SnackBar(content: Text('设置未保存，请重试')));
+                SystemToast.show('设置未保存，请重试').ignore();
               }
             }
           },

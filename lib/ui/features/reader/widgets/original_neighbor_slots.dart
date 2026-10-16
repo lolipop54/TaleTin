@@ -96,6 +96,7 @@ extension _OriginalNeighborSlots on _OriginalReaderAreaState {
     final previous = _lastCurrent;
     _lastCurrent = current;
     if (previous == null || previous == current) return;
+    if (_parallelTarget?.chapter == current) _parallelTarget = null;
     traceTurn('handover from=$previous to=$current prev=${_prev.ordinal}/${_prev.ready} next=${_next.ordinal}/${_next.ready}');
     // 自己提交的跨章翻页保留目标截图；外部跳转才废弃整个手势。
     if (_curlHandover?.chapter != current) {

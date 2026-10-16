@@ -4,7 +4,7 @@
 //   dart run pigeon --input pigeons/tts_api.dart \
 //     --dart_out lib/platform/channels/tts_api.g.dart \
 //     --kotlin_out android/app/src/main/kotlin/com/example/gtreader/tts/TtsApi.g.kt \
-//     --kotlin_package com.example.gtreader.tts
+//     --kotlin_package com.example.gtreader.tts --package_name gtreader
 //
 // 为什么单独一个文件和单独的 Kotlin 包：pigeon 会给每个文件生成一份 `FlutterError`，
 // 与 document_host_api.dart 的生成物放同一个 Kotlin 包会重复声明（见那个文件顶部的说明）。
@@ -124,10 +124,11 @@ enum TtsErrorCode {
 /// 只在应用级插件里注册一次，不依赖 Activity：Activity 退出、锁屏、返回书架
 /// 都要能继续读下一句（实现计划第 5 节）。
 ///
-/// **全部方法都走 Pigeon 的串行后台线程**，不用默认的主线程队列：
+/// **连接和播放操作走 Pigeon 的串行后台线程**：
 /// `TextToSpeech` 的 `onInit` 回调由 `ServiceConnection` 派发，**一定在主线程**；
 /// 如果宿主方法跑在主线程上，[initialize] 里「等初始化结果」就是主线程等自己，
 /// 必然等到超时（真机实测：两次 15 秒超时，A2b 第二轮起全部失败）。
+/// 引擎清单只查包管理器，走独立的默认队列，不等待正在连接的引擎。
 @HostApi()
 abstract class TtsHostApi {
   @TaskQueue(type: TaskQueueType.serialBackgroundThread)
@@ -143,7 +144,6 @@ abstract class TtsHostApi {
   TtsInitResultDto initialize(String? enginePackage);
 
   /// 系统里可见的 TTS 引擎清单；始终包含系统默认引擎。
-  @TaskQueue(type: TaskQueueType.serialBackgroundThread)
   List<TtsEngineDto> listEngines();
 
   /// 当前引擎的音色清单。需要先 [initialize]。

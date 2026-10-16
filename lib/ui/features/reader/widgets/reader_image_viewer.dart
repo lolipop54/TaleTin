@@ -1,3 +1,4 @@
+import 'package:taletin/platform/channels/system_toast.dart';
 import 'package:taletin/ui/core/widgets/gt_button.dart';
 
 import 'dart:async';
@@ -38,7 +39,7 @@ Future<void> showReaderImage(
       Size(image.image.width.toDouble(), image.image.height.toDouble()),
     );
   } catch (_) {
-    if (context.mounted) _imageFailure(context);
+    if (context.mounted) _imageFailure();
   } finally {
     stream.removeListener(listener);
     image?.dispose();
@@ -63,15 +64,13 @@ Future<void> showReaderSvg(BuildContext context, BytesLoader loader) async {
       info.size,
     );
   } catch (_) {
-    if (context.mounted) _imageFailure(context);
+    if (context.mounted) _imageFailure();
   } finally {
     info?.picture.dispose();
   }
 }
 
-void _imageFailure(BuildContext context) =>
-    ScaffoldMessenger.of(context)
-        .showSnackBar(const SnackBar(content: Text('图片无法打开，请重试')));
+void _imageFailure() => SystemToast.show('图片无法打开，请重试').ignore();
 
 class _VectorImage extends CustomPainter {
   const _VectorImage(this.info);

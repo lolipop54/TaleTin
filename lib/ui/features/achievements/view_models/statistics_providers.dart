@@ -5,6 +5,7 @@ import '../../../../app/di/statistics_providers.dart';
 import '../../../../app/di/statistics_settings_providers.dart';
 import '../../../../domain/models/reading_statistics.dart';
 import '../../../../domain/services/reading_statistics_summary.dart';
+import '../../../../domain/services/reading_segment_slicer.dart';
 
 class StatisticsPageData {
   const StatisticsPageData(
@@ -12,9 +13,11 @@ class StatisticsPageData {
     this.bookTitles, {
     this.includeAudio = true,
     this.bookCovers = const {},
+    this.loadDay,
   });
   final Map<String, String> bookCovers;
   final bool includeAudio;
+  final Future<StatisticsPageData> Function(String date)? loadDay;
   ReadingStatisticsSummary overviewSummary(DateTime now) => includeAudio
       ? summary(now)
       : ReadingStatisticsSummary(
@@ -44,7 +47,10 @@ final statisticsPageProvider = StreamProvider<StatisticsPageData>((ref) async* {
   final books = ref.watch(bookRepositoryProvider);
   final repository = ref.watch(readingStatisticsRepositoryProvider);
   final settings = await ref.watch(statisticsSettingsProvider.future);
-  yield* repository.watch().asyncMap((data) async {
+  Future<StatisticsPageData> prepare(
+    ReadingStatistics data, {
+    bool overview = false,
+  }) async {
     final ids = data.sessions.map((s) => s.bookId).toSet();
     final covers = <String, String>{};
     final root = ref.read(libraryRootPathProvider);
@@ -60,8 +66,20 @@ final statisticsPageProvider = StreamProvider<StatisticsPageData>((ref) async* {
       Map.unmodifiable(Map.fromEntries(titles)),
       bookCovers: Map.unmodifiable(covers),
       includeAudio: settings.includeAudio,
+      loadDay: !overview
+          ? null
+          : (date) async {
+              final next = readingDate(
+                DateTime.parse(date).add(const Duration(days: 1)),
+              );
+              return prepare(await repository.loadRange(date, next));
+            },
     );
-  });
+  }
+
+  yield* repository.watchOverview().asyncMap(
+    (data) => prepare(data, overview: true),
+  );
 });
 
 /// 没有新增片段时，跨日后今日/本周仍能按本地日期刷新。

@@ -7,16 +7,20 @@ library;
 
 import 'dart:ui' show Offset, Rect;
 
+import '../../core/diagnostics/reader_work_trace.dart';
+
 import '../../domain/models/locator.dart';
 import '../../domain/services/reader_engine.dart';
 import '../selection/selection_rects.dart';
 import 'chapter_layout.dart';
 import 'layout_cache.dart';
+import 'block_measurement_cache.dart';
 
 class FlutterReaderEngine implements ReaderEngine {
   FlutterReaderEngine({LayoutCache? cache}) : _cache = cache ?? LayoutCache();
 
   final LayoutCache _cache;
+  final _measurements = BlockMeasurementCache();
   int _version = 0;
   LayoutToken? _current;
 
@@ -28,31 +32,47 @@ class FlutterReaderEngine implements ReaderEngine {
     LayoutRequest request, {
     LayoutToken? token,
   }) async {
-    final options = request.options;
-    final key = LayoutCache.keyFor(
-      bookId: request.bookId,
-      contentVersion: request.contentVersion,
-      chapterId: request.chapter.id,
-      layoutSignature: options.layoutSignature,
-    );
-    final cached = _cache.get(key);
-    if (cached != null) return cached;
+    final trace = ReaderWorkTrace.start('layout.request', {
+      'chapter': request.chapter.ordinal,
+      'cancellable': token != null,
+    });
+    try {
+      final options = request.options;
+      final key = LayoutCache.keyFor(
+        bookId: request.bookId,
+        contentVersion: request.contentVersion,
+        chapterId: request.chapter.id,
+        layoutSignature: options.layoutSignature,
+      );
+      final cached = _cache.get(key);
+      trace?.details['hit'] = cached != null;
+      if (cached != null) return cached;
 
-    final layout = await ChapterLayout.produce(
-      bookId: request.bookId,
-      contentVersion: request.contentVersion,
-      chapter: request.chapter,
-      content: request.content,
-      options: options,
-      token: token,
-    );
-    // 结果产出后才入缓存：取消的排版不会污染后续请求
-    _cache.put(key, layout);
-    return layout;
+      final layout = await ChapterLayout.produce(
+        bookId: request.bookId,
+        contentVersion: request.contentVersion,
+        chapter: request.chapter,
+        content: request.content,
+        options: options,
+        token: token,
+        measurementCache: _measurements,
+      );
+      // 结果产出后才入缓存：取消的排版不会污染后续请求
+      _cache.put(key, layout);
+      return layout;
+    } catch (error) {
+      trace?.finish(status: error.runtimeType.toString());
+      rethrow;
+    } finally {
+      trace?.finish();
+    }
   }
 
   @override
-  ({Locator start, Locator end}) pageBounds(ChapterLayout layout, int pageIndex) {
+  ({Locator start, Locator end}) pageBounds(
+    ChapterLayout layout,
+    int pageIndex,
+  ) {
     final slice = layout.page(pageIndex);
     return (
       start: layout.beginLocatorOf(slice),
@@ -74,26 +94,24 @@ class FlutterReaderEngine implements ReaderEngine {
     Locator from,
     Locator to, {
     Map<String, int>? chapterOrdinals,
-  }) =>
-      selectionRectsForPage(
-        layout: layout,
-        pageIndex: pageIndex,
-        from: from,
-        to: to,
-        chapterOrdinals: chapterOrdinals,
-      );
+  }) => selectionRectsForPage(
+    layout: layout,
+    pageIndex: pageIndex,
+    from: from,
+    to: to,
+    chapterOrdinals: chapterOrdinals,
+  );
 
   @override
   Locator? locatorAtPoint(
     ChapterLayout layout,
     int pageIndex,
     Offset position,
-  ) =>
-      locatorAtPointInPage(
-        layout: layout,
-        pageIndex: pageIndex,
-        position: position,
-      );
+  ) => locatorAtPointInPage(
+    layout: layout,
+    pageIndex: pageIndex,
+    position: position,
+  );
 
   @override
   CaretGeometry? caretAt(
@@ -101,29 +119,30 @@ class FlutterReaderEngine implements ReaderEngine {
     int pageIndex,
     Locator locator, {
     required bool atEnd,
-  }) =>
-      caretAtLocator(
-        layout: layout,
-        pageIndex: pageIndex,
-        locator: locator,
-        atEnd: atEnd,
-      );
+  }) => caretAtLocator(
+    layout: layout,
+    pageIndex: pageIndex,
+    locator: locator,
+    atEnd: atEnd,
+  );
 
   @override
-  Locator? pageEdge(ChapterLayout layout, int pageIndex, {required bool atEnd}) =>
-      pageEdgeLocator(layout: layout, pageIndex: pageIndex, atEnd: atEnd);
+  Locator? pageEdge(
+    ChapterLayout layout,
+    int pageIndex, {
+    required bool atEnd,
+  }) => pageEdgeLocator(layout: layout, pageIndex: pageIndex, atEnd: atEnd);
 
   @override
   ({Locator start, Locator end})? sentenceRangeAtPoint(
     ChapterLayout layout,
     int pageIndex,
     Offset position,
-  ) =>
-      sentenceRangeAtPointInPage(
-        layout: layout,
-        pageIndex: pageIndex,
-        position: position,
-      );
+  ) => sentenceRangeAtPointInPage(
+    layout: layout,
+    pageIndex: pageIndex,
+    position: position,
+  );
 
   /// 参数变化（字号、窗口尺寸等）后作废旧令牌并丢弃缓存
   @override
@@ -131,5 +150,6 @@ class FlutterReaderEngine implements ReaderEngine {
     _current?.cancel();
     _current = null;
     _cache.invalidate(bookId: bookId);
+    _measurements.clear();
   }
 }

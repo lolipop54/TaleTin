@@ -73,7 +73,6 @@ class AppDatabase extends _$AppDatabase {
       }
       if (from >= 2 && from < 3) {
         // v2 → v3：补一列「全书进度」，书架进度直接读它（逐页变化）。
-        // v2 写下的老行这一列为空，书架会退回按章边界估算。
         await m.addColumn(readingPositions, readingPositions.progress);
       }
       if (from >= 2 && from < 4) {

@@ -124,7 +124,7 @@ class _NotePositions {
     final bookId = data['book_id'] as String;
     final total = data['book_length'] as int;
     // 移除书籍会清理正文；旧笔记正文版本也可能已失效，不能编造位置。
-    if (total <= 0 || locator.contentVersion != data['book_version']) {
+    if (total <= 0 || locator.needsRelocation || locator.contentVersion != data['book_version']) {
       return '未知';
     }
     if (_bookId != bookId) {

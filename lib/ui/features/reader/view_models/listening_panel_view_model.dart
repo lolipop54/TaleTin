@@ -6,6 +6,9 @@ import '../view_models/reader_session_view_model.dart';
 import 'original_layout_controller.dart';
 import 'reader_view_model.dart';
 
+/// 页面最多等待一秒连接；超过后先显示页面，真正的引擎超时仍由原生层处理。
+const kTtsPageConnectionWait = Duration(seconds: 1);
+
 /// 面板只准备选项，播放状态始终来自应用级服务。
 final listeningVoicesProvider = FutureProvider.autoDispose<List<OfflineVoice>>(
   (ref) => ref.watch(listeningServiceProvider).prepareVoices(),

@@ -5,6 +5,7 @@ import 'package:flutter/painting.dart';
 import '../../domain/models/book_document.dart';
 import '../../domain/models/content_table.dart';
 import 'block_measure.dart';
+import 'block_measurement_cache.dart';
 import 'layout_options.dart';
 import 'measured_block.dart';
 import 'chapter_paginator.dart';
@@ -14,8 +15,9 @@ import 'chapter_paginator.dart';
 List<MeasuredBlock> measureTable(
   ContentTable table,
   Map<String, ContentBlock> source,
-  LayoutOptions options,
-) {
+  LayoutOptions options, {
+  BlockMeasurementCache? cache,
+}) {
   final id = table.blockIds.first;
   final columnWidth = options.contentWidth / table.columns;
   final fontSize = math.min(
@@ -37,6 +39,7 @@ List<MeasuredBlock> measureTable(
         contentSize: Size(width, math.max(1, options.contentHeight - unit)),
         textScaler: options.textScaler,
       ),
+      cache: cache,
     );
     measured[cell] = [
       for (final block in cell.blocks) measurer.measure(source[block]!),

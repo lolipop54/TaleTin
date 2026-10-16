@@ -17,6 +17,8 @@ import '../../../../platform/channels/reading_fonts.dart';
 import '../../../core/theme/reading_theme.dart';
 import 'reader_settings_mapper.dart';
 import 'reader_view_model.dart';
+import '../../../../domain/models/book.dart';
+import 'reader_source_change.dart';
 
 /// 一本书当前生效的阅读设置
 class ReaderSettingsState {
@@ -146,7 +148,8 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
 
   void setIndent(bool value) => _applyOverrides((o) => o.copyWith(indent: value));
 
-  void setBold(bool value) => _applyOverrides((o) => o.copyWith(bold: value));
+  void setFontWeight(int value) =>
+      _applyOverrides((o) => o.copyWith(fontWeight: value));
 
   void restoreOriginalFont() =>
       _applyOverrides((o) => o.copyWith(useOriginalFont: true));
@@ -174,8 +177,29 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
       );
 
   /// 排版模式（简化 / 原书）：本书覆盖，退出重进与换设备都跟着这本书走
-  void setLayoutMode(ReadingLayoutMode mode) =>
-      _applyOverrides((o) => o.copyWith(layoutMode: mode));
+  void setLayoutMode(ReadingLayoutMode mode) => _save(() async {
+    final current = state.value;
+    if (current == null) return;
+    final next = _overrides.copyWith(layoutMode: mode);
+    // 先保存用户这次选择；即使源书已改，重新导入后也按新排版打开。
+    await ref.read(readingSettingsRepositoryProvider).saveOverrides(bookId, next);
+    if (!ref.mounted) return;
+    _overrides = next;
+    final book = await ref.read(bookRepositoryProvider).findById(bookId);
+    if (!ref.mounted) return;
+    if (book?.status == BookStatus.sourceChanged) {
+      // 先阻止旧会话开始切换，后发布新选项；否则同步监听会先读取已改变的文件。
+      ref.read(readerSourceChangeProvider(bookId).notifier).markChanged();
+      state = AsyncData(ReaderSettingsState(settings: _global.mergeOver(next),
+        theme: current.theme, brightness: current.brightness,
+        customBrightness: current.customBrightness));
+      return;
+    }
+    await _prepareFont(_global.mergeOver(next));
+    if (ref.mounted) { state = AsyncData(ReaderSettingsState(
+      settings: _global.mergeOver(next), theme: current.theme,
+      brightness: current.brightness, customBrightness: current.customBrightness)); }
+  });
 
   void setPageTurnEffect(PageTurnEffect effect) =>
       _applyOverrides((o) => o.copyWith(pageTurnEffect: effect));

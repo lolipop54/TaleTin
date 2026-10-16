@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../app/di/app_providers.dart';
+import '../../../../app/di/source_book_providers.dart';
 import '../../../../data/services/annotation_locator_service.dart';
 import '../../../../domain/models/annotation.dart';
 
@@ -13,26 +14,8 @@ final annotationLocatorProvider = Provider<AnnotationLocatorService>(
 
 /// 唯一定位成功后才更新旧锚点，保留记录 ID、摘录、想法与创建时间。
 final prepareAnnotationProvider =
-    Provider<Future<Annotation> Function(Annotation)>((ref) {
-      final locations = ref.watch(annotationLocatorProvider);
-      final repository = ref.watch(annotationRepositoryProvider);
-      return (note) async {
-        final resolved = await locations.resolve(note);
-        if (resolved.start != note.start || resolved.end != note.end) {
-          await repository.saveAnnotation(
-            id: note.id,
-            bookId: note.bookId,
-            kind: note.kind,
-            range: resolved.range,
-            quote: note.quote,
-            body: note.body,
-            color: note.color,
-            chapterTitle: note.chapterTitle,
-          );
-        }
-        return resolved;
-      };
-    });
+    Provider<Future<Annotation> Function(Annotation)>((ref) =>
+      ref.watch(prepareSavedAnnotationProvider));
 
 /// 跨书笔记先解析位置，再发送一次性打开请求；阅读器首屏直接使用目标锚点。
 final annotationOpeningProvider =

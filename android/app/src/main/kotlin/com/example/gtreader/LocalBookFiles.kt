@@ -9,6 +9,9 @@ import android.os.Build
 import android.os.Environment
 import android.os.storage.StorageManager
 import android.provider.Settings
+import android.system.Os
+import android.system.OsConstants
+import android.system.ErrnoException
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
@@ -129,12 +132,19 @@ class LocalBookFiles(private val activity: Activity, engine: FlutterEngine) {
     }
 
     private fun entry(file: File, counts: Boolean): Map<String, Any> {
+        // One stat reads type, bytes and timestamp together. Keep millisecond API units.
+        // A file may disappear between enumeration and metadata lookup, just as with File APIs.
+        val info = try { Os.stat(file.absolutePath) } catch (_: ErrnoException) { null }
+        val directory = info?.let { OsConstants.S_ISDIR(it.st_mode) } ?: file.isDirectory
+        val modified = if (info == null) 0L else if (Build.VERSION.SDK_INT >= 27)
+            info.st_mtim.tv_sec * 1000 + info.st_mtim.tv_nsec / 1_000_000
+            else file.lastModified() // Older Android must retain millisecond precision too.
         val sortName = if (Build.VERSION.SDK_INT >= 29)
             transliterator?.transliterate(file.name) ?: file.name else file.name
         return mapOf("path" to file.absolutePath, "name" to file.name,
-            "directory" to file.isDirectory, "size" to file.length(),
-            "modified" to file.lastModified(), "sortName" to sortName,
-            "count" to if (counts && file.isDirectory)
+            "directory" to directory, "size" to (info?.st_size ?: 0L),
+            "modified" to modified, "sortName" to sortName,
+            "count" to if (counts && directory)
                 (file.listFiles()?.count { supported(it) } ?: -1) else -1)
     }
 

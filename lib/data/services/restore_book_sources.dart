@@ -8,7 +8,7 @@ Future<void> restoreBookSources(Directory staged, Directory destination) async {
   final database = AppDatabase.openFile(File(p.join(staged.path, 'database', 'reader.sqlite')));
   try {
     for (final book in await database.select(database.books).get()) {
-      if (book.status != 'active' || !book.sourceHash.startsWith('file:')) continue;
+      if ((book.status != 'active' && book.status != 'preparing') || !book.sourceHash.startsWith('file:')) continue;
       final relative = p.join('library', book.id, 'source.${book.format}');
       final path = p.join(destination.path, relative);
       await File(p.join(staged.path, 'library', book.id, 'source.path')).writeAsString(path, flush: true);

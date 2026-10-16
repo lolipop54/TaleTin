@@ -19,6 +19,8 @@ import '../database/app_database.dart';
 import '../mappers/book_mapper.dart';
 import '../services/book_source_path.dart';
 import '../services/book_source_availability.dart';
+import '../services/book_source_integrity.dart';
+import '../services/source_position_preparation.dart';
 
 // 独立函数限定闭包捕获范围，避免同方法的数据库事务闭包让 this 随任务发送。
 Future<Map<String, String>> _resolveLegacyTitlesInBackground(
@@ -31,11 +33,26 @@ class DriftBookRepository implements BookRepository {
 
   final AppDatabase _db;
   final String? libraryRoot;
+  late final _sourceIntegrity = BookSourceIntegrity(libraryRoot);
   final _checkedTitles = <String>{};
+
+  @override
+  Future<Set<String>> existingIds(Iterable<String> ids) async {
+    final selected = ids.toSet().toList();
+    final found = <String>{};
+    // Stay below the parameter limit even for a large multi-selection.
+    for (var start = 0; start < selected.length; start += 512) {
+      final query = _db.selectOnly(_db.books)
+        ..addColumns([_db.books.id])
+        ..where(_db.books.id.isIn(selected.skip(start).take(512)));
+      found.addAll((await query.get()).map((r) => r.read(_db.books.id)!));
+    }
+    return found;
+  }
 
   /// 书架观察流：墓碑删除的书籍不出现（设计文档 7.3），并带上阅读进度。
   ///
-  /// 进度来自 `reading_positions`，所以那张表（以及章节索引）变化时也要重新发一次，
+  /// 进度来自 `reading_positions`，所以那张表变化时也要重新发一次，
   /// 否则读完退回书架看到的还是旧百分比。
   @override
   Stream<List<Book>> watchActiveBooks() {
@@ -55,7 +72,6 @@ class DriftBookRepository implements BookRepository {
             TableUpdateQuery.allOf([
               for (final name in [
                 'books',
-                'chapters',
                 'reading_positions',
                 'preferences',
                 'book_completions',
@@ -67,7 +83,7 @@ class DriftBookRepository implements BookRepository {
       refresh();
       out.onCancel = changes.cancel;
     });
-    return watchBookSources(books);
+    return watchBookSources(books, checkSource: _sourceIntegrity.check);
   }
 
   Future<List<Book>> _loadActiveBooks() async {
@@ -77,18 +93,36 @@ class DriftBookRepository implements BookRepository {
         (t) => OrderingTerm.desc(t.importedAt),
         (t) => OrderingTerm.asc(t.title),
       ]);
-    return _withChapterProgress(await query.get());
+    return _withReadingProgress(await query.get());
   }
 
-  /// 补上阅读进度（设计文档 6.3）：优先用阅读位置里存的全书进度
-  /// （逐页变化的精确值），早期没有该值的行退回「当前章之前的章节字数占比」。
+  /// 补上阅读进度（设计文档 6.3）：直接使用阅读位置里存的全书进度。
+  /// 对外发布版本均已保存精确比例，0 也是有效值，不再按章节估算。
   /// 没读过（没有 reading_positions 行）时保持 null = 未读。
-  Future<List<Book>> _withChapterProgress(List<BookRow> rows) async {
+  Future<List<Book>> _withReadingProgress(List<BookRow> rows) async {
     if (rows.isEmpty) return const [];
     final bookIds = [for (final row in rows) row.id];
-    final positions = await (_db.select(
-      _db.readingPositions,
-    )..where((t) => t.bookId.isIn(bookIds))).get();
+    final positionTable = _db.readingPositions;
+    // 翻页会刷新后台书架；只取比例和时间，不读取章节或传回位置 JSON。
+    final positions =
+        await (_db.selectOnly(positionTable)
+              ..addColumns([
+                positionTable.bookId,
+                positionTable.progress,
+                positionTable.updatedAt,
+              ])
+              ..where(positionTable.bookId.isIn(bookIds)))
+            .get();
+    final positionOf = {
+      for (final row in positions)
+        row.read(positionTable.bookId)!: (
+          progress: ((row.read(positionTable.progress) ?? 0) * 100).clamp(
+            0.0,
+            100.0,
+          ),
+          updatedAt: row.read(positionTable.updatedAt)!,
+        ),
+    };
     final names =
         await (_db.select(_db.preferences)..where(
               (t) =>
@@ -108,90 +142,15 @@ class DriftBookRepository implements BookRepository {
     final finishedIds = {
       for (final row in completed) row.read<String>('book_id'),
     };
-    final lastReadOf = {for (final row in positions) row.bookId: row.updatedAt};
-
-    final chapterRows = await (_db.select(
-      _db.chapters,
-    )..where((t) => t.bookId.isIn(bookIds))).get();
-    // bookId → (章节 ID → ordinal)、bookId → (ordinal → 该章之前的字数)
-    final ordinalOf = <String, Map<String, int>>{};
-    final readBefore = <String, Map<int, int>>{};
-    for (final chapter in chapterRows) {
-      (ordinalOf[chapter.bookId] ??= {})[chapter.id] = chapter.ordinal;
-      final sum = readBefore[chapter.bookId] ??= {};
-      sum[chapter.ordinal] = chapter.textLength;
-    }
-    for (final entry in readBefore.entries) {
-      var running = 0;
-      final ordinals = entry.value.keys.toList()..sort();
-      for (final ordinal in ordinals) {
-        final length = entry.value[ordinal]!;
-        entry.value[ordinal] = running;
-        running += length;
-      }
-    }
-
-    final progressOf = <String, double>{};
-    final chapterIdOf = <String, String?>{};
-    for (final position in positions) {
-      progressOf[position.bookId] = position.progress ?? 0;
-      chapterIdOf[position.bookId] = _chapterIdOf(position.locatorJson);
-    }
-
     return [
       for (final row in rows)
-        _withProgress(
-          bookFromRow(row).copyWith(
-            finished: finishedIds.contains(row.id),
-            lastReadAt: lastReadOf[row.id],
-            sourceFileName: nameOf[row.id],
-          ),
-          storedProgress: progressOf[row.id],
-          chapterId: chapterIdOf[row.id],
-          ordinalOf: ordinalOf[row.id] ?? const {},
-          readBefore: readBefore[row.id] ?? const {},
+        bookFromRow(row).copyWith(
+          finished: finishedIds.contains(row.id),
+          lastReadAt: positionOf[row.id]?.updatedAt,
+          readProgress: positionOf[row.id]?.progress,
+          sourceFileName: nameOf[row.id],
         ),
     ];
-  }
-
-  /// 进度百分比 0–100（两位小数由界面格式化）；算了半天算不出就返回原书
-  Book _withProgress(
-    Book book, {
-    required double? storedProgress,
-    required String? chapterId,
-    required Map<String, int> ordinalOf,
-    required Map<int, int> readBefore,
-  }) {
-    // 没有阅读位置的书保持“未读”，不能因为同书架其他书有进度就变成0%。
-    if (book.lastReadAt == null || book.textLength <= 0) return book;
-    if (storedProgress != null && storedProgress > 0) {
-      return book.copyWith(
-        readProgress: (storedProgress * 100).clamp(0.0, 100.0),
-      );
-    }
-    // 没有精确进度（早期记录或刚翻开第一页）：按章边界给个下限估算
-    if (chapterId == null) {
-      // 位置存在但章节认不出来时，至少标成「在读」
-      return book.copyWith(readProgress: storedProgress ?? 0);
-    }
-    final ordinal = ordinalOf[chapterId];
-    if (ordinal == null) return book.copyWith(readProgress: 0);
-    final read = readBefore[ordinal] ?? 0;
-    return book.copyWith(
-      readProgress: (read * 100 / book.textLength).clamp(0.0, 100.0),
-    );
-  }
-
-  /// 从位置 JSON 里取章节 ID；格式不认识时返回 null（按未读处理）
-  String? _chapterIdOf(String locatorJson) {
-    try {
-      final decoded = jsonDecode(locatorJson);
-      if (decoded is! Map<String, Object?>) return null;
-      final chapterId = decoded['chapterId'];
-      return chapterId is String && chapterId.isNotEmpty ? chapterId : null;
-    } on FormatException {
-      return null;
-    }
   }
 
   @override
@@ -199,7 +158,7 @@ class DriftBookRepository implements BookRepository {
     final row = await (_db.select(
       _db.books,
     )..where((t) => t.id.equals(id))).getSingleOrNull();
-    return row == null ? null : checkBookSource(bookFromRow(row));
+    return row == null ? null : _sourceIntegrity.check(bookFromRow(row));
   }
 
   @override
@@ -272,6 +231,7 @@ class DriftBookRepository implements BookRepository {
           );
     }
     await _insertChapters(commit);
+    await _savePositionProof(commit);
   });
 
   /// 复用已删除书籍的 bookId 重新激活：覆盖元数据并替换全部章节。
@@ -297,7 +257,100 @@ class DriftBookRepository implements BookRepository {
               );
         }
         await _insertChapters(commit);
+        if (commit.sourceChanged) {
+          await _markLocationsForRelocation(commit.book.id);
+        }
+        await _savePositionProof(commit);
       });
+
+  Future<void> _savePositionProof(ImportCommit commit) async {
+    final proof = commit.positionProof;
+    if (proof == null) return;
+    await _db
+        .into(_db.preferences)
+        .insertOnConflictUpdate(
+          PreferencesCompanion.insert(
+            scope: 'book',
+            scopeId: commit.book.id,
+            key: sourcePositionProofKey,
+            valueJson: jsonEncode(proof.toJson()),
+            updatedAt: DateTime.now().toUtc(),
+          ),
+        );
+  }
+
+  /// 与新章节同一事务发布，防止中途退出后旧位置被当作新正文位置。
+  Future<void> _markLocationsForRelocation(String bookId) async {
+    String mark(String raw) {
+      final value = jsonDecode(raw) as Map<String, dynamic>;
+      value['needsRelocation'] = true;
+      return jsonEncode(value);
+    }
+
+    final positions = await (_db.select(
+      _db.readingPositions,
+    )..where((t) => t.bookId.equals(bookId))).get();
+    for (final row in positions) {
+      // 新正文找不到原句时允许从起点阅读，但保留更新前最后确认的位置证据。
+      if ((jsonDecode(row.locatorJson) as Map)['needsRelocation'] != true) {
+        await _db
+            .into(_db.preferences)
+            .insertOnConflictUpdate(
+              PreferencesCompanion.insert(
+                scope: 'book',
+                scopeId: bookId,
+                key: 'sourcePreviousPosition',
+                valueJson: jsonEncode({
+                  'locator': jsonDecode(row.locatorJson),
+                  'progress': row.progress,
+                }),
+                updatedAt: DateTime.now().toUtc(),
+              ),
+            );
+      }
+      await (_db.update(
+        _db.readingPositions,
+      )..where((t) => t.bookId.equals(bookId))).write(
+        ReadingPositionsCompanion(locatorJson: Value(mark(row.locatorJson))),
+      );
+    }
+    final notes = await (_db.select(
+      _db.annotations,
+    )..where((t) => t.bookId.equals(bookId))).get();
+    for (final row in notes) {
+      await (_db.update(
+        _db.annotations,
+      )..where((t) => t.id.equals(row.id))).write(
+        AnnotationsCompanion(
+          startLocatorJson: Value(mark(row.startLocatorJson)),
+          endLocatorJson: row.endLocatorJson == null
+              ? const Value.absent()
+              : Value(mark(row.endLocatorJson!)),
+        ),
+      );
+    }
+    final drafts =
+        await (_db.select(_db.preferences)..where(
+              (t) =>
+                  t.scope.equals('book') &
+                  t.scopeId.equals(bookId) &
+                  t.key.equals('noteDraft'),
+            ))
+            .get();
+    for (final row in drafts) {
+      final draft = jsonDecode(row.valueJson) as Map<String, dynamic>;
+      for (final key in ['start', 'end']) {
+        (draft[key] as Map<String, dynamic>)['needsRelocation'] = true;
+      }
+      await (_db.update(_db.preferences)..where(
+            (t) =>
+                t.scope.equals('book') &
+                t.scopeId.equals(bookId) &
+                t.key.equals('noteDraft'),
+          ))
+          .write(PreferencesCompanion(valueJson: Value(jsonEncode(draft))));
+    }
+  }
 
   @override
   Future<void> markContentMissing(Iterable<String> bookIds) async {
@@ -314,17 +367,41 @@ class DriftBookRepository implements BookRepository {
   /// 书籍行保留是为了重新导入同一文件时复用 bookId（阅读进度、笔记挂在它上面）。
   @override
   Future<void> markRemoved(String bookId, DateTime deletedAt) =>
-      _db.transaction(() async {
-        await (_db.update(_db.books)..where((t) => t.id.equals(bookId))).write(
-          BooksCompanion(
-            status: Value(BookStatus.removed.code),
-            deletedAt: Value(deletedAt),
-          ),
-        );
-        await (_db.delete(
-          _db.chapters,
-        )..where((t) => t.bookId.equals(bookId))).go();
-      });
+      _db.transaction(() => _writeRemoved(bookId, deletedAt));
+
+  Future<void> _writeRemoved(String bookId, DateTime deletedAt) async {
+    await (_db.update(_db.books)..where((t) => t.id.equals(bookId))).write(
+      BooksCompanion(
+        status: Value(BookStatus.removed.code),
+        deletedAt: Value(deletedAt),
+      ),
+    );
+    await (_db.delete(
+      _db.chapters,
+    )..where((t) => t.bookId.equals(bookId))).go();
+  }
+
+  @override
+  Future<Set<String>> markRemovedMany(
+    Iterable<String> ids,
+    DateTime deletedAt,
+  ) => _db.transaction(() async {
+    final failed = <String>{};
+    for (final id in ids) {
+      // Keep writes in the outer Drift notification scope. An explicit SQLite
+      // savepoint preserves per-book rollback without child stream notifications.
+      await _db.customStatement('SAVEPOINT gt_delete_book');
+      try {
+        await _writeRemoved(id, deletedAt);
+        await _db.customStatement('RELEASE SAVEPOINT gt_delete_book');
+      } catch (_) {
+        await _db.customStatement('ROLLBACK TO SAVEPOINT gt_delete_book');
+        await _db.customStatement('RELEASE SAVEPOINT gt_delete_book');
+        failed.add(id);
+      }
+    }
+    return failed;
+  });
 
   @override
   Future<List<Book>> deletedBooks() async {

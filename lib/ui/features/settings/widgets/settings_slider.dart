@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:taletin/platform/channels/system_toast.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/gt_tokens.dart';
@@ -140,8 +141,7 @@ class _SettingsSliderState extends State<SettingsSlider>
       await widget.save!(value);
     } catch (_) {
       if (mounted && request == _request) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('设置未保存，请重试')));
+        SystemToast.show('设置未保存，请重试').ignore();
       }
     } finally {
       // 保存可能立即完成，仍等这一次点击运动完成才撤销预览。

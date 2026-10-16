@@ -7,13 +7,21 @@ library;
 
 import 'dart:convert';
 import 'dart:typed_data';
+
 import 'content_table.dart';
+import 'source_content_index.dart';
+import 'locator.dart';
 
 /// 当前正文版本号。
 ///
 /// 章节 ID 方案、空白折叠规则或内容口径变化时必须递增，旧版本章节仍可解码，
 /// 避免历史笔记位置直接失效（设计文档 6.1）。
 const int kContentVersion = 2;
+
+/// 目录及 EPUB 显示资料的生成规则标记，仅用于跳过已完成的旧书修复。
+/// 它们不改变正文坐标，也不递增正文版本或应用版本。
+const int kTocRevision = 1;
+const int kEpubDetailsRevision = 1;
 
 /// 块类型。
 enum BlockKind {
@@ -150,11 +158,17 @@ class ContentBlock {
 
 /// 单章正文，落盘为 `content/<版本>/<chapterId>.json`。
 class ChapterContent {
-  const ChapterContent({required this.chapterId, required this.blocks, this.tables = const []});
+  const ChapterContent({
+    required this.chapterId,
+    required this.blocks,
+    this.tables = const [],
+    this.epubDetailsRevision = 0,
+  });
 
   final String chapterId;
   final List<ContentBlock> blocks;
   final List<ContentTable> tables;
+  final int epubDetailsRevision;
 
   int get textLength {
     var n = 0;
@@ -166,6 +180,7 @@ class ChapterContent {
 
   Map<String, Object?> toJson() => {
     'chapterId': chapterId,
+    if (epubDetailsRevision > 0) 'epubDetailsRevision': epubDetailsRevision,
     'blocks': [for (final b in blocks) b.toJson()],
     if (tables.isNotEmpty) 'tables': tables.map((t) => t.toJson()).toList(),
   };
@@ -174,8 +189,11 @@ class ChapterContent {
     final rawBlocks = json['blocks'];
     return ChapterContent(
       chapterId: json['chapterId'] as String? ?? '',
-      tables: [for (final table in (json['tables'] as List? ?? const []))
-        ContentTable.fromJson(Map<String, dynamic>.from(table as Map))],
+      epubDetailsRevision: (json['epubDetailsRevision'] as num?)?.toInt() ?? 0,
+      tables: [
+        for (final table in (json['tables'] as List? ?? const []))
+          ContentTable.fromJson(Map<String, dynamic>.from(table as Map)),
+      ],
       blocks: [
         if (rawBlocks is List)
           for (final raw in rawBlocks)
@@ -277,6 +295,9 @@ class BookDocument {
     this.coverHeight,
     this.warnings = const [],
     this.encoding = '',
+    this.tocRevision = 0,
+    this.sourceIndex,
+    this.locationMatches = const {},
   });
 
   final String title;
@@ -297,6 +318,10 @@ class BookDocument {
 
   /// TXT 实际使用的编码名，EPUB 为空
   final String encoding;
+  final int tocRevision;
+  final SourceContentIndex? sourceIndex;
+  /// 临时解析结果，单独保存核对缓存，不加入正文清单或改变正文版本。
+  final Map<String, Locator?> locationMatches;
 
   int get textLength {
     var n = 0;
@@ -309,6 +334,8 @@ class BookDocument {
   /// 清单文件内容（设计文档 6.1：封面资源 href + 嵌套 toc）。
   Map<String, Object?> toManifestJson() => {
     'contentVersion': contentVersion,
+    if (sourceIndex != null) 'sourceIndex': sourceIndex!.toJson(),
+    if (tocRevision > 0) 'tocRevision': tocRevision,
     'title': title,
     'author': author,
     if (coverPath != null) 'cover': coverPath,

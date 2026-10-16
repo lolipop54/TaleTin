@@ -1,4 +1,5 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../../../core/diagnostics/reader_work_trace.dart';
 
 import '../../../../domain/models/annotation.dart';
 import '../../../../domain/models/locator.dart';
@@ -62,6 +63,9 @@ class ReaderProgressReturn extends Notifier<ReaderProgressReturnState> {
 
   Future<void> seek(Future<void> Function() action) async {
     final version = ++_seekVersion;
+    final trace = !readerWorkTraceEnabled ? null : ReaderWorkTrace.start(
+      'reader.progress.transition', {'bookId': bookId, 'request': version});
+    var status = 'incomplete';
     beginSlider();
     final previous = state;
     state = ReaderProgressReturnState(
@@ -71,7 +75,10 @@ class ReaderProgressReturn extends Notifier<ReaderProgressReturnState> {
     );
     try {
       await prepareJumpCover?.call();
+      trace?.mark('old_page_cover');
       await action();
+      trace?.mark('target_position');
+      status = 'ok';
     } finally {
       if (ref.mounted && version == _seekVersion) {
         state = ref.read(readerProvider).controlsVisible
@@ -82,6 +89,8 @@ class ReaderProgressReturn extends Notifier<ReaderProgressReturnState> {
             : const ReaderProgressReturnState();
         await finishJumpCover?.call();
       }
+      trace?.mark('reveal_animation');
+      trace?.finish(status: version == _seekVersion ? status : 'superseded');
     }
   }
 

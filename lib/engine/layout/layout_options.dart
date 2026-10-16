@@ -68,24 +68,24 @@ class LayoutOptions {
   }) {
     final base = settings.fontSize.toDouble();
     final family = settings.fontFamily;
+    final weight = FontWeight.values[settings.fontWeight ~/ 100 - 1];
     return switch (kind) {
       BlockKind.heading => TextStyle(
           fontSize: base + _headingSizeDelta[(level ?? 1).clamp(1, 6) - 1],
-          fontWeight: settings.bold ? FontWeight.w700 : FontWeight.w600,
+          fontWeight: settings.fontWeight == 700 ? FontWeight.w700 : FontWeight.w600,
           height: _headingLineHeight,
           fontFamily: family,
         ),
       BlockKind.footnote => TextStyle(
           fontSize: base - _footnoteSizeDelta,
-          fontWeight: settings.bold ? FontWeight.w700 : FontWeight.w400,
+          fontWeight: weight,
           height: settings.lineHeight,
           fontFamily: family,
         ),
       _ => TextStyle(
           fontSize: base,
           height: settings.lineHeight,
-          fontWeight: settings.bold ? FontWeight.w700
-              : bold ? FontWeight.w600 : FontWeight.w400,
+          fontWeight: bold && settings.fontWeight < 600 ? FontWeight.w600 : weight,
           fontStyle: italic ? FontStyle.italic : FontStyle.normal,
           fontFamily: family,
         ),
@@ -112,7 +112,7 @@ class LayoutOptions {
       'v$engineVersion',
       'f${settings.fontFamily ?? 'system'}',
       's${settings.fontSize}',
-      'b${settings.bold}|originalFont${settings.useOriginalFont}',
+      'weight${settings.fontWeight}|originalFont${settings.useOriginalFont}',
       'l${settings.lineHeight}',
       'g${settings.paragraphGapEm}',
       'p${settings.horizontalPadding}',

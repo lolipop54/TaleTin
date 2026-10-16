@@ -60,9 +60,6 @@ class EpubSourceReader {
 
   final EpubFontDeobfuscator _fonts;
 
-  /// 已经读过一次的条目（见 [readEntry] 的「只能读一次」口径）
-  final _consumed = <String>{};
-
   bool _closed = false;
 
   /// 出版标识（[EpubPackage.uniqueIdentifier]）
@@ -145,22 +142,17 @@ class EpubSourceReader {
 
   /// 读条目字节；条目不存在返回 null（拦截器按 404 处理）。
   ///
-  /// **每个条目只能读一次**：归档层读完就释放解压内容，避免整本驻留内存
-  /// （导入流水线正是这么用的），同一路径再读会失败。需要重复使用的内容，
-  /// 由调用方先落盘再从磁盘取（见 W2 的 `EpubSourceRepository`）。
+  /// 已释放的章节或资源可再次从 ZIP 解压；归档只持有压缩条目的文件索引。
   /// 条目存在但解压失败或超出防护阈值时抛 [ContentFailure]。
   Uint8List? readEntry(String entryPath) {
     if (!_archive.contains(entryPath)) return null;
-    if (!_consumed.add(entryPath)) {
-      throw ContentFailure(
-        ContentErrorCode.corrupted,
-        '条目已读过一次，请改走落盘缓存：$entryPath',
-      );
-    }
     try {
       return _archive.readBytes(entryPath);
     } on ImportFailure catch (error) {
-      throw ContentFailure(ContentErrorCode.corrupted, '${error.displayText}：$entryPath');
+      throw ContentFailure(
+        ContentErrorCode.corrupted,
+        '${error.displayText}：$entryPath',
+      );
     }
   }
 

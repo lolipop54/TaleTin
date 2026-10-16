@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:taletin/platform/channels/system_toast.dart';
 
 import '../../../../app/di/achievement_providers.dart';
 import '../../../../app/router/main_pages_ready.dart';
@@ -86,8 +87,7 @@ class _AchievementRewardHostState extends ConsumerState<AchievementRewardHost> {
       }
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('奖励展示状态未保存，请稍后重试')));
+        SystemToast.show('奖励展示状态未保存，请稍后重试').ignore();
       }
     } finally {
       busy = false;

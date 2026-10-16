@@ -371,7 +371,7 @@ class OriginalCurlAreaState extends State<OriginalCurlArea> {
       current = null; next = null;
       return frames;
     } catch (error) {
-      traceTurn('prepare error $error');
+      traceTurn('prepare error type=${error.runtimeType}');
       _failed = true;
       if (mounted && generation == _generation) widget.onError('页面图像准备失败，请重试翻页');
       return null;

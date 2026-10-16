@@ -10,7 +10,7 @@ class OriginalChapter {
     this.columnMarginPx = 0,
     this.indent = true,
     this.fontFamily = '',
-    this.bold = false,
+    this.fontWeight = 400,
     this.initialFraction,
     this.themeColors,
     this.information,
@@ -43,7 +43,7 @@ class OriginalChapter {
 
   /// 空串保留书内字体；非空值来自阅读器的字体选项。
   final String fontFamily;
-  final bool bold;
+  final int fontWeight;
 
   /// 这个文档首次显示前要落到的章内比例（相邻章预览槽用：
   /// 下一章落章首 0、上一章落章末 1）；null 表示不额外定位

@@ -3,9 +3,11 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import 'app/bootstrap.dart';
+import 'core/diagnostics/app_opening_diagnostics.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  installOpeningDiagnostics();
   LicenseRegistry.addLicense(() async* {
     yield LicenseEntryWithLineBreaks([
       'Long Cang',

@@ -1,5 +1,7 @@
 import 'dart:ui' as ui;
 
+import '../../../../core/diagnostics/reader_work_trace.dart';
+
 import '../../../../engine/layout/chapter_layout.dart';
 import '../../../core/theme/reading_theme.dart';
 
@@ -18,9 +20,11 @@ class PageTextCache {
     final key = (layout, page, theme.primary, theme.secondary);
     var picture = _pictures.remove(key);
     if (picture == null) {
+      final trace = ReaderWorkTrace.start('page.text_picture', {'page': page});
       final recorder = ui.PictureRecorder();
       draw(ui.Canvas(recorder));
       picture = recorder.endRecording();
+      trace?.finish();
     }
     _pictures[key] = picture;
     while (_pictures.length > 3) {

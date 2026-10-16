@@ -1,3 +1,4 @@
+import 'package:taletin/platform/channels/system_toast.dart';
 import 'package:taletin/ui/core/widgets/gt_app_bar.dart';
 import 'package:taletin/ui/core/widgets/gt_list_button.dart';
 import 'package:flutter/material.dart';
@@ -61,8 +62,7 @@ Future<void> openSettingsPage<T>(
     );
   } catch (_) {
     if (context.mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('设置页面准备失败，请重试')));
+      SystemToast.show('设置页面准备失败，请重试').ignore();
     }
   } finally {
     subscription?.close();
@@ -100,6 +100,9 @@ class _SettingsChoicesState<T> extends ConsumerState<SettingsChoices<T>> {
   @override
   Widget build(BuildContext context) {
     final selected = widget.selected(ref);
+    // 在页面本身订阅主题。列表构建回调里的 context 属于 Sliver，
+    // 仅在那里读取颜色，不会保证已经创建的选项随主题重新构建。
+    final colors = context.gtColors;
     return Scaffold(
       appBar: GtAppBar(title: Text(widget.title)),
       body: SafeArea(
@@ -121,17 +124,11 @@ class _SettingsChoicesState<T> extends ConsumerState<SettingsChoices<T>> {
                 style:
                     widget.optionStyle?.call(option, active) ??
                     GtText.body(
-                      active
-                          ? context.gtColors.actionPrimary
-                          : context.gtColors.textPrimary,
+                      active ? colors.actionPrimary : colors.textPrimary,
                     ),
               ),
               trailing: active
-                  ? GtIcon(
-                      GtIcons.check,
-                      size: 20,
-                      color: context.gtColors.actionPrimary,
-                    )
+                  ? GtIcon(GtIcons.check, size: 20, color: colors.actionPrimary)
                   : null,
               onPressed: _saving ? null : () => _select(option),
             );
@@ -148,8 +145,7 @@ class _SettingsChoicesState<T> extends ConsumerState<SettingsChoices<T>> {
       await widget.save(ref, option);
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('设置未保存，请重试')));
+        SystemToast.show('设置未保存，请重试').ignore();
       }
     } finally {
       if (mounted) setState(() => _saving = false);

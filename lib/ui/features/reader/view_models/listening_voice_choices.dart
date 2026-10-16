@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../app/di/app_providers.dart';
 import '../../../../domain/models/tts_state.dart';
 import '../../../../domain/services/tts_engine.dart';
+import 'listening_panel_view_model.dart';
 
 class VoiceChoices {
   const VoiceChoices(
@@ -30,22 +33,66 @@ final listeningVoiceChoicesProvider =
     );
 
 class ListeningVoiceChoices extends AsyncNotifier<VoiceChoices> {
+  int _detection = 0;
+
   @override
   Future<VoiceChoices> build() async {
     final service = ref.watch(listeningServiceProvider);
-    final voices = await service.prepareVoices();
+    final detection = ++_detection;
+    ref.onDispose(() => _detection++);
+    // 读取一次保存值；后续点选音色时落库，不能因此重建当前检测/试听页面。
+    final preferences = await ref.read(ttsSettingsRepositoryProvider).load();
     final engines = await service.listEngines();
-    return VoiceChoices(
+    final initial = VoiceChoices(
       engines,
-      voices,
+      const [],
       service.snapshot.voice?.enginePackage ??
+          preferences.enginePackage ??
           engines.where((e) => e.isDefault).firstOrNull?.packageName,
+      loadingVoices: true,
     );
+    final connection = service.prepareVoices().then(
+      (voices) => VoiceChoices(
+        engines,
+        voices,
+        service.snapshot.voice?.enginePackage ?? initial.engine,
+        error: service.snapshot.error,
+      ),
+    );
+    try {
+      return await connection.timeout(kTtsPageConnectionWait);
+    } on TimeoutException {
+      // 一秒只决定页面何时打开，不取消连接，也不提前报告初始化失败。
+      unawaited(_finishConnection(connection, initial, detection));
+      return initial;
+    }
+  }
+
+  Future<void> _finishConnection(
+    Future<VoiceChoices> connection,
+    VoiceChoices initial,
+    int detection,
+  ) async {
+    try {
+      final result = await connection;
+      if (ref.mounted && detection == _detection) state = AsyncData(result);
+    } catch (error) {
+      if (!ref.mounted || detection != _detection) return;
+      state = AsyncData(
+        VoiceChoices(
+          initial.engines,
+          const [],
+          initial.engine,
+          error: '$error',
+        ),
+      );
+    }
   }
 
   Future<void> _run(Future<VoiceChoices> Function(VoiceChoices) action) async {
     final previous = state.value;
     if (previous == null || previous.busy) return;
+    ++_detection;
     state = AsyncData(
       VoiceChoices(
         previous.engines,
@@ -75,6 +122,7 @@ class ListeningVoiceChoices extends AsyncNotifier<VoiceChoices> {
   Future<void> detect(String? engine) async {
     final old = state.value;
     if (old == null || old.busy) return;
+    ++_detection;
     state = AsyncData(
       VoiceChoices(
         old.engines,

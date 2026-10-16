@@ -8,10 +8,13 @@ library;
 
 import 'dart:ui' show Size;
 
+import '../../core/diagnostics/reader_work_trace.dart';
+
 import '../../domain/models/book_document.dart';
 import '../../domain/models/locator.dart';
 import '../normalization/locator_mapper.dart';
 import 'block_measure.dart';
+import 'block_measurement_cache.dart';
 import 'chapter_paginator.dart';
 import 'layout_options.dart';
 import 'measured_block.dart';
@@ -111,12 +114,14 @@ class ChapterLayout {
         if (fragment.block.isDecoration) {
           continue;
         }
-        return _locatorFor(PageAnchor(
-          blockId: fragment.block.blockId,
-          utf16Offset: fragment.block.lines.isEmpty
-              ? 0
-              : fragment.block.lines[fragment.lineFrom].start,
-        ));
+        return _locatorFor(
+          PageAnchor(
+            blockId: fragment.block.blockId,
+            utf16Offset: fragment.block.lines.isEmpty
+                ? 0
+                : fragment.block.lines[fragment.lineFrom].start,
+          ),
+        );
       }
       // 标题独占一页时也不能把装饰块 ID 保存为阅读位置。
       return mapper.chapterStart(content.blocks);
@@ -204,11 +209,16 @@ class ChapterLayout {
     if (_positionOfBlock(locator.blockId)?.tableId != null) {
       for (final slice in pages) {
         for (final fragment in slice.fragments) {
-          if (fragment.frameOnly || fragment.block.blockId != locator.blockId) continue;
+          if (fragment.frameOnly || fragment.block.blockId != locator.blockId) {
+            continue;
+          }
           final lines = fragment.block.lines;
-          if (lines.isEmpty || (locator.utf16Offset >= lines[fragment.lineFrom].start &&
-              (locator.utf16Offset < lines[fragment.lineTo - 1].end ||
-                fragment.lineTo == lines.length))) { return slice.index; }
+          if (lines.isEmpty ||
+              (locator.utf16Offset >= lines[fragment.lineFrom].start &&
+                  (locator.utf16Offset < lines[fragment.lineTo - 1].end ||
+                      fragment.lineTo == lines.length))) {
+            return slice.index;
+          }
         }
       }
     }
@@ -244,11 +254,15 @@ class ChapterLayout {
     final buffer = StringBuffer();
     for (final fragment in slice.fragments) {
       final block = fragment.block;
-      if (fragment.frameOnly || block.isDecoration || block.lines.isEmpty) continue;
-      buffer.write(block.text.substring(
-        block.lines[fragment.lineFrom].start,
-        block.lines[fragment.lineTo - 1].end,
-      ));
+      if (fragment.frameOnly || block.isDecoration || block.lines.isEmpty) {
+        continue;
+      }
+      buffer.write(
+        block.text.substring(
+          block.lines[fragment.lineFrom].start,
+          block.lines[fragment.lineTo - 1].end,
+        ),
+      );
     }
     return buffer.toString();
   }
@@ -257,12 +271,18 @@ class ChapterLayout {
   String joinedPageText() {
     final buffer = StringBuffer();
     // 表格各列跨页同时续排；自检按原文块顺序收集实际页片段。
-    for (final block in blocks.where((b) => !b.isDecoration && b.lines.isNotEmpty)) {
+    for (final block in blocks.where(
+      (b) => !b.isDecoration && b.lines.isNotEmpty,
+    )) {
       for (final page in pages) {
         for (final fragment in page.fragments) {
           if (fragment.frameOnly || fragment.block != block) continue;
-          buffer.write(block.text.substring(block.lines[fragment.lineFrom].start,
-            block.lines[fragment.lineTo - 1].end));
+          buffer.write(
+            block.text.substring(
+              block.lines[fragment.lineFrom].start,
+              block.lines[fragment.lineTo - 1].end,
+            ),
+          );
         }
       }
     }
@@ -277,68 +297,114 @@ class ChapterLayout {
     required ChapterContent content,
     required LayoutOptions options,
     LayoutToken? token,
+    BlockMeasurementCache? measurementCache,
   }) async {
-    await EnglishHyphenation.prepare();
-    final measurer = BlockMeasurer(options);
-    final mapper = LocatorMapper(
-      bookId: bookId,
-      contentVersion: contentVersion,
-      chapterId: chapter.id,
-    );
-    // 章首标题：正文里本来就有同名标题时直接把它当章题画，
-    // 否则补一个装饰块，避免同一句话出现两遍
-    final useContentHeading = firstBlockIsChapterTitle(content, chapter.title);
-    final measured = <MeasuredBlock>[
-      if (!useContentHeading && chapter.title.trim().isNotEmpty)
-        measurer.measureChapterTitle(chapter.title),
-    ];
-    var batch = 0;
-    final byId = {for (final block in content.blocks) block.id: block};
-    final tables = {for (final table in content.tables) table.blockIds.first: table};
-    final tableIds = content.tables.expand((t) => t.blockIds).toSet();
-    for (var i = 0; i < content.blocks.length; i++) {
-      final block = content.blocks[i];
-      if (token?.isCancelled ?? false) throw const LayoutCancelled();
-      final table = tables[block.id];
-      if (table != null) {
-        measured.addAll(measureTable(table, byId, options));
-        await Future<void>.delayed(Duration.zero);
-      }
-      if (tableIds.contains(block.id)) continue;
-      // 首行缩进只给普通正文段落，且只在段首那一片
-      final withIndent = options.settings.indent &&
-          block.kind == BlockKind.paragraph;
-      measured.add(measurer.measure(
-        block,
-        withIndent: withIndent,
-        asChapterTitle: useContentHeading && i == 0,
-      ));
-      if (++batch >= kMeasureBatchSize) {
-        batch = 0;
-        // 让出事件循环：测量是 CPU 活，不阻塞手势与动画
-        await Future<void>.delayed(Duration.zero);
-      }
+    final trace = ReaderWorkTrace.start('layout.produce', {
+      'chapter': chapter.ordinal,
+      'blocks': content.blocks.length,
+    });
+    final batchClock = readerWorkTraceEnabled ? (Stopwatch()..start()) : null;
+    var maxBatchUs = 0;
+    void sampleBatch() {
+      if (batchClock == null) return;
+      final us = batchClock.elapsedMicroseconds;
+      if (us > maxBatchUs) maxBatchUs = us;
     }
 
-    final paginator = ChapterPaginator(
-      pageHeight: options.contentHeight,
-      gapBefore: measurer.gapBefore,
-    );
-    final pages = paginator.paginate(measured);
-    if (token?.isCancelled ?? false) throw const LayoutCancelled();
+    try {
+      await EnglishHyphenation.prepare();
+      trace?.mark('dictionary');
+      batchClock?.reset();
+      final measurer = BlockMeasurer(options, cache: measurementCache);
+      final work = Stopwatch()..start();
+      final mapper = LocatorMapper(
+        bookId: bookId,
+        contentVersion: contentVersion,
+        chapterId: chapter.id,
+      );
+      // 章首标题：正文里本来就有同名标题时直接把它当章题画，
+      // 否则补一个装饰块，避免同一句话出现两遍
+      final useContentHeading = firstBlockIsChapterTitle(
+        content,
+        chapter.title,
+      );
+      final measured = <MeasuredBlock>[
+        if (!useContentHeading && chapter.title.trim().isNotEmpty)
+          measurer.measureChapterTitle(chapter.title),
+      ];
+      var batch = 0;
+      final byId = {for (final block in content.blocks) block.id: block};
+      final tables = {
+        for (final table in content.tables) table.blockIds.first: table,
+      };
+      final tableIds = content.tables.expand((t) => t.blockIds).toSet();
+      for (var i = 0; i < content.blocks.length; i++) {
+        final block = content.blocks[i];
+        if (token?.isCancelled ?? false) throw const LayoutCancelled();
+        final table = tables[block.id];
+        if (table != null) {
+          measured.addAll(
+            measureTable(table, byId, options, cache: measurementCache),
+          );
+          sampleBatch();
+          await Future<void>.delayed(Duration.zero);
+          batchClock?.reset();
+          work.reset();
+        }
+        if (tableIds.contains(block.id)) continue;
+        // 首行缩进只给普通正文段落，且只在段首那一片
+        final withIndent =
+            options.settings.indent && block.kind == BlockKind.paragraph;
+        measured.add(
+          measurer.measure(
+            block,
+            withIndent: withIndent,
+            asChapterTitle: useContentHeading && i == 0,
+          ),
+        );
+        if (++batch >= kMeasureBatchSize || work.elapsedMicroseconds >= 4000) {
+          batch = 0;
+          // 让出事件循环：测量是 CPU 活，不阻塞手势与动画
+          sampleBatch();
+          await Future<void>.delayed(Duration.zero);
+          batchClock?.reset();
+          work.reset();
+        }
+      }
 
-    return ChapterLayout._(
-      bookId: bookId,
-      contentVersion: contentVersion,
-      chapterId: chapter.id,
-      chapterTitle: chapter.title,
-      blocks: measured,
-      pages: pages,
-      mapper: mapper,
-      totalLength: mapper.totalLength(content.blocks),
-      content: content,
-      options: options,
-    );
+      sampleBatch();
+      trace?.mark('measure_with_yields');
+      trace?.details['maxSynchronousBatchUs'] = maxBatchUs;
+      trace?.details['reusedBlocks'] = measurer.cacheHits;
+      trace?.details['measuredBlocks'] = measurer.measuredBlocks;
+
+      final paginator = ChapterPaginator(
+        pageHeight: options.contentHeight,
+        gapBefore: measurer.gapBefore,
+      );
+      final pages = paginator.paginate(measured);
+      trace?.mark('paginate');
+      trace?.details['pages'] = pages.length;
+      if (token?.isCancelled ?? false) throw const LayoutCancelled();
+
+      return ChapterLayout._(
+        bookId: bookId,
+        contentVersion: contentVersion,
+        chapterId: chapter.id,
+        chapterTitle: chapter.title,
+        blocks: measured,
+        pages: pages,
+        mapper: mapper,
+        totalLength: mapper.totalLength(content.blocks),
+        content: content,
+        options: options,
+      );
+    } catch (error) {
+      trace?.finish(status: error.runtimeType.toString());
+      rethrow;
+    } finally {
+      trace?.finish();
+    }
   }
 
   /// 章节的第一个块是不是「和章名一样的标题」。
@@ -358,8 +424,7 @@ class ChapterLayout {
     if (first.kind != BlockKind.heading && first.kind != BlockKind.paragraph) {
       return false;
     }
-    return _normalizeTitle(blockTextOf(first)) ==
-        _normalizeTitle(chapterTitle);
+    return _normalizeTitle(blockTextOf(first)) == _normalizeTitle(chapterTitle);
   }
 
   static String _normalizeTitle(String text) =>

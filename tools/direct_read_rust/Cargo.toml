@@ -1,0 +1,25 @@
+[package]
+name = "gt_reader_native"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT"
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+html5ever = "=0.40.1"
+serde_json = "=1.0.151"
+rayon = "1.11"
+encoding_rs = "=0.8.41"
+sha2 = "=0.11.1"
+flate2 = "=1.1.10"
+memchr = "=2.8.3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+panic = "abort"
+strip = "symbols"

@@ -4,6 +4,7 @@ import '../../domain/models/book_document.dart';
 import '../../domain/models/locator.dart';
 import '../normalization/locator_mapper.dart';
 import 'block_measure.dart';
+import 'block_measurement_cache.dart';
 import 'english_hyphenation.dart';
 import 'layout_options.dart';
 import 'measured_block.dart';
@@ -32,15 +33,18 @@ class ScrollCell {
   final List<PageFragment> table;
   final double? tableHeight;
   // 单元格完成测量后不再变化，列表反复查询高度时不再复制并遍历文字行。
-  late final double height =
-      tableHeight != null ? tableHeight! + endGap : gap + endGap +
-      (measured.isText
-          ? measured.lines
-                .sublist(from, to)
-                .fold<double>(0, (n, l) => n + l.height)
-          : measured.height) +
-      (measured.isTitleDecoration && to == measured.lines.length
-          ? kTitleRuleGap + kTitleRuleThickness : 0);
+  late final double height = tableHeight != null
+      ? tableHeight! + endGap
+      : gap +
+            endGap +
+            (measured.isText
+                ? measured.lines
+                      .sublist(from, to)
+                      .fold<double>(0, (n, l) => n + l.height)
+                : measured.height) +
+            (measured.isTitleDecoration && to == measured.lines.length
+                ? kTitleRuleGap + kTitleRuleThickness
+                : 0);
   int offsetAt(int line) =>
       offset + measured.lines[line].start - measured.displayPrefixLength;
 }
@@ -58,11 +62,12 @@ class ScrollChapter {
     LayoutOptions options, {
     required bool Function() cancelled,
     String chapterTitle = '',
+    BlockMeasurementCache? measurementCache,
   }) async {
     final cells = <ScrollCell>[];
     final starts = <double>[];
     await EnglishHyphenation.prepare();
-    final measurer = BlockMeasurer(options);
+    final measurer = BlockMeasurer(options, cache: measurementCache);
     var height = 0.0;
     void add(ScrollCell cell) {
       starts.add(height);
@@ -72,27 +77,64 @@ class ScrollChapter {
 
     final work = Stopwatch()..start();
     final byId = {for (final block in content.blocks) block.id: block};
-    final tables = {for (final table in content.tables) table.blockIds.first: table};
+    final tables = {
+      for (final table in content.tables) table.blockIds.first: table,
+    };
     final tableIds = content.tables.expand((t) => t.blockIds).toSet();
-    final contentTitle = ChapterLayout.firstBlockIsChapterTitle(content, chapterTitle);
+    final contentTitle = ChapterLayout.firstBlockIsChapterTitle(
+      content,
+      chapterTitle,
+    );
     if (!contentTitle && chapterTitle.trim().isNotEmpty) {
       final title = measurer.measureChapterTitle(chapterTitle);
-      add(ScrollCell(ContentBlock(id: title.blockId, kind: BlockKind.heading,
-        runs: title.runs), title, 0, 0, title.lines.length, 0));
+      add(
+        ScrollCell(
+          ContentBlock(
+            id: title.blockId,
+            kind: BlockKind.heading,
+            runs: title.runs,
+          ),
+          title,
+          0,
+          0,
+          title.lines.length,
+          0,
+        ),
+      );
     }
     for (final block in content.blocks) {
       if (tables[block.id] case final table?) {
-        final measured = measureTable(table, byId, options);
+        final measured = measureTable(
+          table,
+          byId,
+          options,
+          cache: measurementCache,
+        );
         final total = tableHeight(measured);
         var from = 0.0;
         while (from < total - .1) {
           final to = tableCut(measured, from, options.contentHeight);
-          final end = to > from ? to : math.min(total, from + measured.first.tableUnit);
+          final end = to > from
+              ? to
+              : math.min(total, from + measured.first.tableUnit);
           final gap = from == 0 ? options.paragraphGap : 0.0;
           final fragments = tableFragments(measured, from, end, gap);
-          final first = fragments.firstWhere((f) => !f.frameOnly, orElse: () => fragments.first);
-          add(ScrollCell(byId[first.block.blockId] ?? block, first.block, 0,
-            first.lineFrom, first.lineTo, 0, table: fragments, tableHeight: end - from + gap));
+          final first = fragments.firstWhere(
+            (f) => !f.frameOnly,
+            orElse: () => fragments.first,
+          );
+          add(
+            ScrollCell(
+              byId[first.block.blockId] ?? block,
+              first.block,
+              0,
+              first.lineFrom,
+              first.lineTo,
+              0,
+              table: fragments,
+              tableHeight: end - from + gap,
+            ),
+          );
           from = end;
         }
         await Future<void>.delayed(Duration.zero);
@@ -114,7 +156,10 @@ class ScrollChapter {
               );
         final measured = measurer.measure(
           piece,
-          withIndent: first && options.settings.indent && block.kind == BlockKind.paragraph,
+          withIndent:
+              first &&
+              options.settings.indent &&
+              block.kind == BlockKind.paragraph,
           asChapterTitle: contentTitle && block == content.blocks.first,
         );
         // 最后一行可能还没满，交给下一批与后续文字一起测量。
@@ -133,8 +178,11 @@ class ScrollChapter {
               offset,
               line,
               math.min(count, line + 12),
-              first && line == 0 && (block != content.blocks.first || !contentTitle)
-                  ? options.paragraphGap : 0,
+              first &&
+                      line == 0 &&
+                      (block != content.blocks.first || !contentTitle)
+                  ? options.paragraphGap
+                  : 0,
             ),
           );
         }
@@ -150,10 +198,23 @@ class ScrollChapter {
     // 章尾只留两行正文高度；留白不另造正文块，已有位置和笔记仍指向原文。
     if (cells.isNotEmpty) {
       final last = cells.removeLast();
-      final gap = options.textScaler.scale(options.settings.fontSize.toDouble()) *
-          options.settings.lineHeight * 2;
-      cells.add(ScrollCell(last.block, last.measured, last.offset,
-          last.from, last.to, last.gap, endGap: gap, table: last.table, tableHeight: last.tableHeight));
+      final gap =
+          options.textScaler.scale(options.settings.fontSize.toDouble()) *
+          options.settings.lineHeight *
+          2;
+      cells.add(
+        ScrollCell(
+          last.block,
+          last.measured,
+          last.offset,
+          last.from,
+          last.to,
+          last.gap,
+          endGap: gap,
+          table: last.table,
+          tableHeight: last.tableHeight,
+        ),
+      );
       height += gap;
     }
     return ScrollChapter(content, cells, starts, height);
@@ -165,9 +226,18 @@ class ScrollChapter {
     if (cell.table.isNotEmpty) {
       final parts = cell.table.where((f) => !f.frameOnly).toList();
       if (parts.isEmpty) return mapper.at(cell.block, 0);
-      final fragment = parts.where((f) => f.y + f.height > y - starts[i]).firstOrNull ?? parts.last;
-      final block = content.blocks.firstWhere((b) => b.id == fragment.block.blockId);
-      return mapper.at(block, fragment.block.lines.isEmpty ? 0 : fragment.block.lines[fragment.lineFrom].start);
+      final fragment =
+          parts.where((f) => f.y + f.height > y - starts[i]).firstOrNull ??
+          parts.last;
+      final block = content.blocks.firstWhere(
+        (b) => b.id == fragment.block.blockId,
+      );
+      return mapper.at(
+        block,
+        fragment.block.lines.isEmpty
+            ? 0
+            : fragment.block.lines[fragment.lineFrom].start,
+      );
     }
     if (cell.measured.isDecoration) return mapper.chapterStart(content.blocks);
     if (!cell.measured.isText) {
@@ -175,7 +245,8 @@ class ScrollChapter {
     }
     var top = starts[i] + cell.gap;
     var line = cell.from;
-    while (line + 1 < cell.to && top + cell.measured.lines[line].height <= y + 0.00001) {
+    while (line + 1 < cell.to &&
+        top + cell.measured.lines[line].height <= y + 0.00001) {
       top += cell.measured.lines[line++].height;
     }
     return mapper.at(
@@ -199,18 +270,25 @@ class ScrollChapter {
 
   double offsetOf(Locator anchor) {
     // 章首正文对应补画的标题；装饰标题本身不写入阅读位置。
-    if (content.blocks.isNotEmpty && anchor.blockId == content.blocks.first.id &&
-        anchor.utf16Offset == 0 && cells.first.measured.isTitleDecoration) {
+    if (content.blocks.isNotEmpty &&
+        anchor.blockId == content.blocks.first.id &&
+        anchor.utf16Offset == 0 &&
+        cells.first.measured.isTitleDecoration) {
       return 0;
     }
     for (var i = 0; i < cells.length; i++) {
       final cell = cells[i];
       if (cell.table.isNotEmpty) {
         for (final fragment in cell.table) {
-          if (fragment.frameOnly || fragment.block.blockId != anchor.blockId) continue;
+          if (fragment.frameOnly || fragment.block.blockId != anchor.blockId) {
+            continue;
+          }
           final lines = fragment.block.lines;
-          if (lines.isEmpty || (anchor.utf16Offset >= lines[fragment.lineFrom].start &&
-              anchor.utf16Offset <= lines[fragment.lineTo - 1].end)) { return starts[i] + fragment.y; }
+          if (lines.isEmpty ||
+              (anchor.utf16Offset >= lines[fragment.lineFrom].start &&
+                  anchor.utf16Offset <= lines[fragment.lineTo - 1].end)) {
+            return starts[i] + fragment.y;
+          }
         }
         continue;
       }

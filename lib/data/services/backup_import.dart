@@ -3,7 +3,7 @@ import '../database/app_database.dart';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:crypto/crypto.dart';
+import 'package:direct_read_rust/byte_processing.dart';
 
 import '../../domain/models/backup_manifest.dart';
 import '../../domain/models/backup_operation.dart';
@@ -118,7 +118,7 @@ class BackupImportService {
           for (final entry in manifest.files) {
             checkBackupWorker(cancel);
             final target = File('$root/${entry.path}');
-            zip.extract(
+            final extractedDigest = zip.extract(
               entry.path,
               target,
               entry.size,
@@ -130,6 +130,9 @@ class BackupImportService {
               ]),
             );
             done += entry.size;
+            if (extractedDigest != entry.sha256) {
+              throw FormatException('文件校验失败：${entry.path}');
+            }
             final input = target.openRead().map((bytes) {
               checkBackupWorker(cancel);
               progress.send([
@@ -139,7 +142,17 @@ class BackupImportService {
               ]);
               return bytes;
             });
-            if ((await sha256.bind(input).first).toString() != entry.sha256) {
+            final hash = NativeSha256();
+            String writtenDigest;
+            try {
+              await for (final bytes in input) {
+                hash.add(bytes);
+              }
+              writtenDigest = hash.finish();
+            } finally {
+              hash.close();
+            }
+            if (writtenDigest != entry.sha256) {
               throw FormatException('文件校验失败：${entry.path}');
             }
           }

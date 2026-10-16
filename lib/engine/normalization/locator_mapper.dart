@@ -68,6 +68,7 @@ class LocatorMapper {
       exact: _slice(text, safe, safe + kLocatorExactLimit),
       prefix: _slice(text, safe - kLocatorContextLimit, safe),
       suffix: _slice(text, safe, safe + kLocatorContextLimit),
+      imageResource: block.kind == BlockKind.image ? block.resourcePath : null,
     );
   }
 

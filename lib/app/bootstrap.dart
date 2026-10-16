@@ -40,6 +40,7 @@ import '../domain/services/reading_position_coordinator.dart';
 import '../domain/services/automatic_reading_tasks.dart';
 import '../data/services/file_import_storage.dart';
 import '../data/services/remove_legacy_search_cache.dart';
+import '../data/services/migrate_source_content.dart';
 import '../data/services/tts/listening_audio_handler.dart';
 import '../data/services/tts/listening_audio_service.dart';
 import '../domain/models/reading_settings.dart';
@@ -72,6 +73,7 @@ class BootstrapResult {
     required this.contents,
     required this.originals,
     required this.fileGate,
+    this.contentMigration,
   });
 
   final AppDatabase database;
@@ -97,9 +99,11 @@ class BootstrapResult {
   final FileChapterContentRepository contents;
   final EpubSourceRepository originals;
   final LibraryFileGate fileGate;
+  final SourceContentMigration? contentMigration;
 
   /// 页面已停止新操作后调用；数据库必须最后关闭。
   Future<void> close() async {
+    await contentMigration?.stop();
     await listeningHandler.detachController();
     await positions.flush();
     await statistics.shutdown();
@@ -239,6 +243,24 @@ Future<BootstrapResult> prepareApp({
     statistics.attachListening(listeningHandler.service!);
     achievements = AchievementService(DriftAchievementRepository(database));
     await achievements.initialize();
+    final fileGate = LibraryFileGate();
+    final appTheme = await DriftAppThemeRepository(database).load();
+    final migration = SourceContentMigration(
+      libraryRoot: libraryRoot,
+      workRoot: p.join(cacheDir.path, 'import'),
+      preparation: contents.textPreparation!,
+    );
+    // 不纳入 15 秒启动等待；UI 可先显示书架，正文服务协调单书迁移与读取。
+    unawaited(
+      migration
+          .runLibrary(DriftBookRepository(database), contents, fileGate)
+          .then((bytes) {
+            debugPrint('旧书按需正文转换释放 $bytes 字节');
+          })
+          .catchError((Object error) {
+            debugPrint('旧书转换保留原数据：$error');
+          }),
+    );
     return BootstrapResult(
       database: database,
       libraryRoot: libraryRoot,
@@ -250,10 +272,11 @@ Future<BootstrapResult> prepareApp({
       automaticTasks: automaticTasks,
       statistics: statistics,
       achievements: achievements,
-      appTheme: await DriftAppThemeRepository(database).load(),
+      appTheme: appTheme,
       contents: contents,
       originals: originals,
-      fileGate: LibraryFileGate(),
+      fileGate: fileGate,
+      contentMigration: migration,
     );
   } catch (_) {
     // 初始化失败也要关闭本次已打开的连接，回滚才能移动目录。

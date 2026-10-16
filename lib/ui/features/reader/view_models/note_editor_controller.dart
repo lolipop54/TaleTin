@@ -42,7 +42,13 @@ class NoteEditorController extends ChangeNotifier {
   final String bookId;
 
   /// 已规范化的选区（N3 的产物）
-  final SelectionRange range;
+  SelectionRange range;
+
+  /// 更新中仍保留输入，但旧选区之后保存时必须重新核对，不能直接画到新正文。
+  void sourceChanged() {
+    range = SelectionRange(start: range.start.copyWith(needsRelocation: true),
+      end: range.end.copyWith(needsRelocation: true));
+  }
 
   /// 选文完整摘录
   final String quote;
@@ -102,7 +108,7 @@ class NoteEditorController extends ChangeNotifier {
   Future<void> load() async {
     final draft = await drafts.load(bookId);
     if (_disposed) return;
-    if (draft == null || !_isSameStart(draft.range)) return;
+    if (draft == null || draft.quote != quote || !_isSameStart(draft.range)) return;
     _body = draft.body;
     _initialBody = draft.body;
     notifyListeners();
@@ -233,6 +239,10 @@ class NoteEditorController extends ChangeNotifier {
 
   /// 草稿写的是不是同一段选文（同一章、同一块、同一偏移）
   bool _isSameStart(SelectionRange other) =>
+      !other.start.needsRelocation &&
+      !other.end.needsRelocation &&
+      !range.start.needsRelocation &&
+      !range.end.needsRelocation &&
       other.start.chapterId == range.start.chapterId &&
       other.start.blockId == range.start.blockId &&
       other.start.utf16Offset == range.start.utf16Offset;

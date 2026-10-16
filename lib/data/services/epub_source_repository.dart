@@ -93,9 +93,18 @@ class EpubSourceRepository {
 
   Future<void Function()> prepareContentChange(String bookId) async {
     if (!_changing.add(bookId)) throw StateError('这本书正在更新正文');
-    await _waitOpening(bookId);
-    for (final session in _sessions.where((s) => s.bookId == bookId).toList()) {
-      await session.close();
+    try {
+      await _waitOpening(bookId);
+      for (final session
+          in _sessions.where((s) => s.bookId == bookId).toList()) {
+        await session.close();
+      }
+      // bookId 与正文规则版本不会因源文件编辑而变化。关闭旧读取后清掉旧网页、字体和图片缓存。
+      final cached = Directory(p.join(cacheRoot, 'original', bookId));
+      if (await cached.exists()) await cached.delete(recursive: true);
+    } catch (_) {
+      _changing.remove(bookId);
+      rethrow;
     }
     return () => _changing.remove(bookId);
   }

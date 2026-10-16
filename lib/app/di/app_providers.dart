@@ -4,14 +4,22 @@
 /// 不接收 `Ref`。数据库实例由 `bootstrap` 创建后 override，便于测试替换。
 library;
 
+import 'dart:async';
+
+import 'device_status_providers.dart';
+
 import '../../domain/services/library_file_gate.dart';
 import '../../domain/repositories/listening_timer_repository.dart';
 import '../../data/repositories/drift_listening_timer_repository.dart';
-
+import '../../domain/repositories/tts_settings_repository.dart';
+import '../../data/repositories/drift_tts_settings_repository.dart';
 
 import '../../domain/services/automatic_reading_tasks.dart';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../data/services/backfill_source_locations.dart';
+import '../../data/services/source_position_preparation.dart';
+import '../../core/diagnostics/position_experiments.dart';
 import 'package:path/path.dart' as p;
 
 import '../../data/database/app_database.dart';
@@ -57,7 +65,9 @@ import '../../platform/channels/android_screen_controls.dart';
 import '../../platform/tts/tts_system_settings.dart';
 
 /// 导入、删除与备份共用同一个文件变更等待器。
-final libraryFileGateProvider = Provider<LibraryFileGate>((_) => LibraryFileGate());
+final libraryFileGateProvider = Provider<LibraryFileGate>(
+  (_) => LibraryFileGate(),
+);
 
 /// 应用数据库；由 `main` 在 ProviderScope override 中注入。
 final appDatabaseProvider = Provider<AppDatabase>(
@@ -127,9 +137,10 @@ final systemBrightnessProvider = FutureProvider<double?>(
 );
 
 /// 电量百分比 0–100；拿不到时为 null（状态行显示用）。
-final batteryLevelProvider = FutureProvider<int?>(
-  (ref) => ref.watch(screenControlsProvider).batteryLevel(),
-);
+final batteryLevelProvider = FutureProvider.autoDispose<int?>((ref) {
+  ref.watch(deviceStatusChangesProvider);
+  return ref.watch(screenControlsProvider).batteryLevel();
+});
 
 /// 字体名解析：问系统「这个字体族实际用的是哪个字体」。
 final fontResolverProvider = Provider<FontResolver>(
@@ -162,6 +173,9 @@ final importBooksProvider = Provider<ImportBooksUseCase>(
     parsers: ref.watch(parserRegistryProvider),
     textPreparation: ref.watch(textPreparationProvider),
     prepareContentChange: ref.watch(bookContentChangeProvider),
+    loadSourcePositions: (id) => loadSourcePositionPreparation(
+      ref.read(appDatabaseProvider), ref.read(libraryRootPathProvider), id),
+    optimizeLocations: PositionExperiments.optimizedFlow,
   ),
 );
 
@@ -194,13 +208,19 @@ final epubSourceRepositoryProvider = Provider<EpubSourceRepository>(
 );
 
 /// 章节正文与资源读取（正文文件的事实来源，见实现计划 4.5 节）。
-final chapterContentRepositoryProvider = Provider<ChapterContentRepository>(
-  (ref) => FileChapterContentRepository(
+final chapterContentRepositoryProvider = Provider<ChapterContentRepository>((
+  ref,
+) {
+  final contents = FileChapterContentRepository(
     libraryRoot: ref.watch(libraryRootPathProvider),
     textPreparation: ref.watch(textPreparationProvider),
     cacheRoot: ref.watch(cacheRootPathProvider),
-  ),
-);
+  );
+  ref.onDispose(() {
+    unawaited(contents.close());
+  });
+  return contents;
+});
 
 /// 把书籍的相对封面路径解析成绝对路径；无封面时返回 null。
 final bookCoverFileProvider = Provider<String? Function(Book)>((ref) {
@@ -241,6 +261,10 @@ final listeningTimerRepositoryProvider = Provider<ListeningTimerRepository>(
   (ref) => DriftListeningTimerRepository(ref.watch(appDatabaseProvider)),
 );
 
+final ttsSettingsRepositoryProvider = Provider<TtsSettingsRepository>(
+  (ref) => DriftTtsSettingsRepository(ref.watch(appDatabaseProvider)),
+);
+
 final automaticReadingTasksProvider = Provider<AutomaticReadingTasks>(
   (_) => AutomaticReadingTasks(),
 );
@@ -273,22 +297,35 @@ final bookContentChangeProvider = Provider<PrepareBookContentChange>((ref) {
   final contents = ref.watch(chapterContentRepositoryProvider);
   final engine = ref.watch(readerEngineProvider);
   return (bookId) async {
-    final releaseAutomatic = await ref.read(automaticReadingTasksProvider).suspendBook(bookId);
+    final releaseAutomatic = await ref
+        .read(automaticReadingTasksProvider)
+        .suspendBook(bookId);
     late void Function() release;
     void Function()? releaseSearch;
     void Function()? releaseReader, releaseOriginal;
     try {
       release = await prepare(bookId);
+      // 听书先保存最后确认点，再收回旧页面/旧播放的写入权。
+      try {
+        await ref.read(readingPositionCoordinatorProvider).acquire(bookId, ReadingPositionSource.visual);
+      } catch (_) { release(); rethrow; }
     } catch (_) {
-      releaseAutomatic(); rethrow;
+      releaseAutomatic();
+      rethrow;
     }
     try {
       // 删除或重解析前等待读取收尾；正文交接期间阻止旧搜索继续读取。
       releaseSearch = await prepareSearch(bookId);
       if (contents is FileChapterContentRepository) {
+        await backfillSourceLocations(ref.read(appDatabaseProvider), bookId,
+          (chapter) => contents.cachedPreviousChapter(bookId, chapter));
+        await preserveSourcePositionProof(ref.read(appDatabaseProvider),
+          ref.read(libraryRootPathProvider), bookId);
         releaseReader = await contents.prepareContentChange(bookId);
       }
-      releaseOriginal = await ref.read(epubSourceRepositoryProvider).prepareContentChange(bookId);
+      releaseOriginal = await ref
+          .read(epubSourceRepositoryProvider)
+          .prepareContentChange(bookId);
     } catch (_) {
       releaseReader?.call();
       releaseSearch?.call();

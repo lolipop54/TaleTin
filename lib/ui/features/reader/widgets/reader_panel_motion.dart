@@ -27,7 +27,9 @@ class ReaderPanelViewport extends StatelessWidget {
       left: 0,
       right: 0,
       top: media.padding.top,
-      bottom: readerPanelBottom(context),
+      // 原生 WebView 与 Flutter 分别取整绘制边界；重叠一个物理像素，
+      // 避免小数安全区或像素密度在面板和工具栏之间留下透明细线。
+      bottom: readerPanelBottom(context) - 1 / media.devicePixelRatio,
       child: ClipRect(
         child: MediaQuery(
           data: media.copyWith(

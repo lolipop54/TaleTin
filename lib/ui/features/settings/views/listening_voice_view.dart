@@ -173,7 +173,7 @@ class _ListeningVoiceViewState extends ConsumerState<ListeningVoiceView> {
                           : const SizedBox.shrink(),
                     )
                   : data.loadingVoices
-                  ? const Center(child: Text('加载音色中...'))
+                  ? const Center(child: Text('连接中'))
                   : voices.isEmpty
                   ? const Center(child: Text('暂无可用的离线音色'))
                   : LayoutBuilder(

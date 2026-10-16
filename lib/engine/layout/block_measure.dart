@@ -14,9 +14,13 @@ import '../../domain/models/reading_settings.dart';
 import 'layout_options.dart';
 import 'measured_block.dart';
 import 'english_hyphenation.dart';
+import 'block_measurement_cache.dart';
 
 class BlockMeasurer {
-  BlockMeasurer(this.options);
+  BlockMeasurer(this.options, {BlockMeasurementCache? cache})
+    : _cache = cache ?? BlockMeasurementCache();
+  final BlockMeasurementCache _cache;
+  int cacheHits = 0, measuredBlocks = 0;
 
   final LayoutOptions options;
 
@@ -32,6 +36,42 @@ class BlockMeasurer {
     ContentBlock block, {
     bool withIndent = false,
     bool asChapterTitle = false,
+  }) {
+    final s = options.settings;
+    // Use exact dimensions and the actual TextScaler, rather than rounded samples.
+    final key = (
+      block,
+      options.contentSize,
+      options.textScaler,
+      s.fontFamily,
+      s.fontSize,
+      s.fontWeight,
+      s.lineHeight,
+      s.paragraphGapEm,
+      s.indent,
+      withIndent,
+      asChapterTitle,
+      EnglishHyphenation.isPrepared,
+    );
+    final cached = _cache.get(key);
+    if (cached != null) {
+      cacheHits++;
+      return cached;
+    }
+    final result = _measure(
+      block,
+      withIndent: withIndent,
+      asChapterTitle: asChapterTitle,
+    );
+    measuredBlocks++;
+    _cache.put(key, result);
+    return result;
+  }
+
+  MeasuredBlock _measure(
+    ContentBlock block, {
+    required bool withIndent,
+    required bool asChapterTitle,
   }) {
     switch (block.kind) {
       case BlockKind.image:
@@ -255,7 +295,8 @@ class BlockMeasurer {
   }
 
   /// 字号等参数变化后重新构造测量器（缓存键已包含全部参数，无需手动失效）
-  BlockMeasurer withOptions(LayoutOptions next) => BlockMeasurer(next);
+  BlockMeasurer withOptions(LayoutOptions next) =>
+      BlockMeasurer(next, cache: _cache);
 }
 
 /// 便于测试与调用方直接拿到默认设置

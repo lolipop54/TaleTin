@@ -13,8 +13,11 @@ import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'reader_session_state.dart';
+import '../../../../core/diagnostics/first_seek_experiments.dart';
+import 'original_layout_controller.dart';
 import 'annotation_opening.dart';
 import 'reader_view_model.dart';
+import 'reader_source_change.dart';
 import 'reader_settings_view_model.dart';
 import 'automatic_reading.dart';
 import 'reader_progress_return.dart';
@@ -23,6 +26,8 @@ import '../widgets/turn_trace.dart';
 export 'reader_session_state.dart';
 
 import '../../../../app/di/app_providers.dart';
+import '../../../../core/diagnostics/reader_work_trace.dart';
+import '../../../../app/di/source_book_providers.dart';
 import '../../../../app/di/app_font_providers.dart';
 import '../../../../domain/models/annotation.dart';
 import '../../../../domain/models/book_document.dart';
@@ -31,6 +36,7 @@ import '../../../../domain/models/bookmark.dart';
 import '../../../../domain/models/locator.dart';
 import '../../../../domain/models/reading_settings.dart';
 import '../../../../domain/repositories/reading_position_repository.dart';
+import '../../../../domain/repositories/chapter_content_repository.dart';
 import '../../../../domain/services/reader_engine.dart';
 import '../../../../domain/services/toc_entry_index.dart';
 import '../../../../engine/layout/chapter_layout.dart';
@@ -148,6 +154,9 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
     final books = ref.watch(bookRepositoryProvider);
     final contents = ref.watch(chapterContentRepositoryProvider);
     final book = await traceTurnStep('load book', () => books.findById(bookId));
+    if (book?.status == BookStatus.sourceChanged) {
+      throw const ContentFailure(ContentErrorCode.sourceChanged, '源文件已改变');
+    }
     if (book == null || book.status != BookStatus.active) {
       throw const ReaderFailure('这本书已不在书架中');
     }
@@ -174,13 +183,18 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
         .load(bookId);
     final saved =
         await ref.read(prepareListeningReaderProvider)(bookId) ?? stored;
-    final locator = saved?.locator;
+    final locator = saved?.locator == null ? null : await ref
+      .read(sourcePositionResolverProvider).resolve(saved!.locator, chapters);
     if (locator != null && locator.contentVersion == book.contentVersion) {
       final index = chapters.indexWhere((c) => c.id == locator.chapterId);
       if (index >= 0) {
         chapterIndex = index;
         _pendingAnchor = locator;
-        if (saved!.source == ReadingPositionSource.listening) {
+        if (saved!.locator.needsRelocation) {
+          _originalExact = locator;
+          _pendingOriginalFraction = 0;
+        }
+        if (saved.source == ReadingPositionSource.listening && !saved.locator.needsRelocation) {
           _listeningRestore = saved;
           _originalExact = locator;
           _pendingOriginalFraction = 0;
@@ -189,7 +203,7 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
         // （页 / 页数），乘页数正好回到原来那一页。若由 Locator 现算，算出来的
         // 是字数比例——图片占版面不计字，比例偏小，落点会退到前一页；而落点
         // 页首又会被存成新位置，于是反复打开一次比一次往回退（用户反馈）。
-        final landed = saved.source == ReadingPositionSource.listening
+        final landed = saved.source == ReadingPositionSource.listening || saved.locator.needsRelocation
             ? null
             : ReaderSession.chapterFractionOf(
                 saved.progress,
@@ -224,6 +238,15 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
           break;
         }
       }
+    }
+    BookOpeningTrace.mark(bookId, 'session_ready');
+    if (readerWorkTraceEnabled) {
+      ReaderWorkTrace.start('reader.initial_content', {
+        'bookId': bookId, 'chapterIndex': chapterIndex,
+        'chapters': chapters.length, 'characters': first.textLength,
+        'layoutMode': _mode.name, 'effect': settings.settings.pageTurnEffect.name,
+        'font': settings.settings.fontFamily, 'fontSize': settings.settings.fontSize,
+      })?.finish();
     }
     return ReaderSession(
       book: book,
@@ -509,6 +532,13 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
     bool restoringListening = false,
     bool manual = true,
   }) async {
+    if (locator.needsRelocation) {
+      final chapters = state.value?.chapters;
+      if (chapters == null) return;
+      final resolved = await ref.read(sourcePositionResolverProvider).resolve(locator, chapters);
+      if (resolved == null) throw const ReaderFailure('原文已变化，无法准确定位，记录已保留');
+      locator = resolved;
+    }
     if (manual && !restoringListening) await beginManualReading();
     if (!restoringListening) _clearRestoredPosition();
     final session = state.value;
@@ -547,7 +577,7 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
     double fraction, {
     bool waitForOriginal = false,
   }) async {
-    await beginManualReading();
+    await traceReaderWork('reader.progress.stop_automatic', beginManualReading);
     _clearRestoredPosition();
     final session = state.value;
     if (session == null || session.chapters.isEmpty) return;
@@ -558,17 +588,26 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
       if (consumed + length >= target || i == session.chapters.length - 1) {
         final within = (target - consumed).clamp(0, length).toInt();
         if (session.scrolling) {
-          await requestScrollChapter(i,
-              fraction: length == 0 ? 0 : within / length);
+          await traceReaderWork('reader.progress.scroll_request',
+            () => requestScrollChapter(i, fraction: length == 0 ? 0 : within / length));
           if (waitForOriginal) {
-            await waitForScrollPosition();
-            await persist();
+            await traceReaderWork('reader.progress.scroll_landing', waitForScrollPosition);
+            await traceReaderWork('reader.progress.persist', persist);
           }
           return;
         }
         // 原书模式：按章内比例跳（进度滑块拖动会连续触发，这里只下发一次定位）
         if (_mode.isOriginal) {
           final fraction = length <= 0 ? 0.0 : within / length;
+          if (readerWorkTraceEnabled) {
+            ReaderWorkTrace.start('reader.progress.target', {
+              'bookId': bookId, 'fromChapter': session.chapterIndex,
+              'targetChapter': i, 'chapterTextLength': length,
+              'chapterFraction': fraction, 'waitForOriginal': waitForOriginal,
+              'parallelEligible': FirstSeekExperiments.parallelChapter &&
+                  length >= 64 * 1024 && i != session.chapterIndex,
+            })?.finish();
+          }
           final previous = _progressLanding;
           if (previous != null && !previous.done.isCompleted) {
             previous.done.complete();
@@ -577,16 +616,24 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
               ? (chapter: i, fraction: fraction, done: Completer<void>())
               : null;
           _progressLanding = landing;
-          await jumpToOriginalChapter(i, fraction: fraction);
+          // 短章读取很快，提前挂载反而增加一轮帧调度；只并行读取较慢的大章。
+          if (FirstSeekExperiments.parallelChapter &&
+              length >= 64 * 1024 && i != session.chapterIndex) {
+            ref.read(originalLayoutProvider(bookId)).value
+                ?.prepareProgressChapter?.call(i, fraction);
+          }
+          await traceReaderWork('reader.progress.switch_chapter',
+            () => jumpToOriginalChapter(i, fraction: fraction));
           await _flushQueuedOriginalJump();
           if (landing != null) {
             try {
               // 等真实落页确认；超时只报失败，不用固定延时掩盖闪回。
-              await landing.done.future.timeout(const Duration(seconds: 10));
+              await traceReaderWork('reader.progress.wait_landing',
+                () => landing.done.future.timeout(const Duration(seconds: 10)));
             } finally {
               if (identical(_progressLanding, landing)) _progressLanding = null;
             }
-            await persist();
+            await traceReaderWork('reader.progress.persist', persist);
           }
           return;
         }

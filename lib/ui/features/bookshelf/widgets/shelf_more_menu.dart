@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:forui/forui.dart';
+import 'package:taletin/platform/channels/system_toast.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/gt_tokens.dart';
@@ -50,9 +51,7 @@ class ShelfMoreMenu extends ConsumerWidget {
                     if (context.mounted) await controller.hide();
                   } catch (_) {
                     if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('排序设置未保存，请重试')),
-                      );
+                      SystemToast.show('排序设置未保存，请重试').ignore();
                     }
                   }
                 },

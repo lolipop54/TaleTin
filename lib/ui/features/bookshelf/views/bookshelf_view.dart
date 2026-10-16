@@ -3,14 +3,19 @@ import '../widgets/book_group_sheet.dart';
 
 import 'dart:math' as math;
 
+import 'package:taletin/platform/channels/system_toast.dart';
 import 'package:taletin/ui/core/widgets/gt_button.dart';
 import 'package:taletin/ui/core/widgets/gt_dialog_action.dart';
 import 'package:flutter/material.dart';
+
+import '../../../../domain/models/import_job.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../../app/di/app_providers.dart';
 import '../../../../app/router/app_router.dart';
+import '../../../../platform/channels/original_webview_warmup.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/gt_tokens.dart';
 import '../../../core/widgets/book_cover.dart';
@@ -66,6 +71,13 @@ class BookshelfView extends ConsumerWidget {
       );
     }
 
+    final route = ModalRoute.of(context);
+    if (route?.isCurrent != false &&
+        library.value?.any((book) => book.format == BookFormat.epub) == true) {
+      OriginalWebViewWarmup.schedule(
+        allowed: () => context.mounted && (route?.isCurrent ?? true),
+      );
+    }
     final visible = library.value == null
         ? const <Book>[]
         : shelf.apply(library.value!);
@@ -257,21 +269,17 @@ class BookshelfView extends ConsumerWidget {
       );
       if (!context.mounted) return;
       // 这些书已经从数据库流里消失，选择集合里也要去掉，避免残留选中态
-      ref.read(bookshelfProvider.notifier).clearSelection();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            result.failedCount == 0
-                ? '已删除 ${result.deletedCount} 本，释放 ${formatBytes(result.freedBytes)}'
-                : '已删除 ${result.deletedCount} 本，其中 ${result.failedCount} 本的文件将在下次启动时清理',
-          ),
-          duration: const Duration(seconds: 3),
-        ),
-      );
+      ref.read(bookshelfProvider.notifier).pruneSelection(result.undeletedIds);
+      SystemToast.show(
+        result.undeletedIds.isNotEmpty
+            ? '已删除 ${result.deletedCount} 本，${result.undeletedIds.length} 本未删除，请重试'
+            : result.failedCount == 0
+            ? '已删除 ${result.deletedCount} 本，释放 ${formatBytes(result.freedBytes)}'
+            : '已删除 ${result.deletedCount} 本，其中 ${result.failedCount} 本的文件将在下次启动时清理',
+      ).ignore();
     } catch (error) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('未完成删除，请重试：$error')));
+      SystemToast.show('未完成删除，请重试：$error').ignore();
     }
   }
 
@@ -320,7 +328,11 @@ class BookshelfView extends ConsumerWidget {
     Widget tile(int index, bool list) {
       final book = books[index];
       final item = imports[book.id];
-      final completed = item != null && item.stage.isFinished
+      final completed =
+          item != null &&
+              (item.stage == ImportStage.done ||
+                  item.stage == ImportStage.duplicate) &&
+              ready[item.bookId]?.status == BookStatus.active
           ? ready[item.bookId]
           : null;
       return KeyedSubtree(

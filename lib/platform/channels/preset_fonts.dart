@@ -28,6 +28,7 @@ abstract final class PresetFonts {
     //   bold: "江城圆体/江城圆体-Bold.ttf",
     // ),
     'gt-preset-jiangcheng': (name: '江城圆体', file: '江城圆体.ttf', bold: null),
+    'gt-preset-alimama': (name: '阿里妈妈方圆体', file: '阿里妈妈方圆体.ttf', bold: null),
     'gt-preset-lxgwwenkai': (name: '霞鹜文楷', file: '霞鹜文楷.ttf', bold: null),
     'gt-preset-lxgwmanhei': (name: '霞鹜漫黑', file: '霞鹜漫黑.ttf', bold: null),
     'gt-preset-lxgwzhenkai': (name: '霞鹜臻楷', file: '霞鹜臻楷.ttf', bold: null),
@@ -35,6 +36,12 @@ abstract final class PresetFonts {
     'gt-preset-ideals': (name: '自由理想体', file: '自由理想体.ttf', bold: null),
   };
   static const root = 'assets/fonts/preset/';
+
+  /// 与字体文件 fvar 中的 wght 范围一致。WebView 若只声明 400，会把
+  /// 可变字体当成固定字重，500/700 仍可能画出与 400 完全相同的笔画。
+  static const variableWeightRanges = {
+    'gt-preset-alimama': (min: 200, max: 700),
+  };
   static final _prepared = <String>{};
   static final _preparedPreviews = <String>{};
 
@@ -70,7 +77,11 @@ abstract final class PresetFonts {
   }
 
   static void _prepareParagraphs(String family, String text) {
-    for (final weight in [ui.FontWeight.normal, ui.FontWeight.bold]) {
+    for (final weight in [
+      ui.FontWeight.w400,
+      ui.FontWeight.w500,
+      ui.FontWeight.w700,
+    ]) {
       final builder = ui.ParagraphBuilder(
         ui.ParagraphStyle(fontFamily: family, fontWeight: weight, fontSize: 16),
       )..addText(text);
@@ -82,11 +93,12 @@ abstract final class PresetFonts {
 
   static String cssFor(String family) {
     final font = families[family]!;
-    String face(String resource, int weight) =>
+    final range = variableWeightRanges[family];
+    String face(String resource, String weight) =>
         '@font-face{font-family:"$family";'
         'src:url("/__gt_fonts/$resource");font-weight:$weight;font-style:normal;}';
-    return face(family, 400) +
-        (font.bold == null ? '' : face('$family-bold', 700));
+    return face(family, range == null ? '400' : '${range.min} ${range.max}') +
+        (font.bold == null ? '' : face('$family-bold', '700'));
   }
 
   static Future<Uint8List?> bytes(String resource) async {

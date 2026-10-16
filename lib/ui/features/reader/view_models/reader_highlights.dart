@@ -10,5 +10,6 @@ final readerHighlightsProvider = Provider.autoDispose
       final marks =
           ref.watch(annotationsProvider(bookId)).value ?? const <Annotation>[];
       final search = ref.watch(bookSearchNavigationProvider(bookId)).highlight;
-      return [...marks, ?search];
+      return [...marks.where((m) => !m.start.needsRelocation &&
+        m.end?.needsRelocation != true), ?search];
     });

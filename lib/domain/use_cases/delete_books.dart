@@ -19,15 +19,19 @@ class DeleteBooksResult {
     required this.deletedCount,
     required this.freedBytes,
     required this.failedCount,
+    this.undeletedIds = const {},
   });
 
   final int deletedCount;
 
-  /// 实际尝试删除的目录总大小（统计值，不保证全部释放成功）
+  /// 已确认删除成功的文件字节数，不把旧估计或失败文件算作释放。
   final int freedBytes;
 
-  /// 文件删除失败的本数（下次启动会回收）
+  /// 准备交接、数据库标记或文件清理失败的书籍数。
   final int failedCount;
+
+  /// 没能写入墓碑的书籍仍留在书架，供界面保留选择并允许重试。
+  final Set<String> undeletedIds;
 }
 
 class DeleteBooks {
@@ -63,37 +67,69 @@ class DeleteBooks {
     final releaseFiles = await fileGate?.enter();
     try {
       return await _delete(bookIds, now: now);
-    } finally { releaseFiles?.call(); }
+    } finally {
+      releaseFiles?.call();
+    }
   }
 
-  Future<DeleteBooksResult> _delete(Iterable<String> bookIds, {required DateTime now}) async {
+  Future<DeleteBooksResult> _delete(
+    Iterable<String> bookIds, {
+    required DateTime now,
+  }) async {
     var deleted = 0;
     var freed = 0;
     var failed = 0;
-    for (final id in bookIds) {
-      final book = await _books.findById(id);
-      if (book == null) continue;
-      final release = await prepareContentChange?.call(id);
+    final undeleted = <String>{};
+    final releases = <void Function()>[];
+    final ready = <String>[];
+    // Stable ordering prevents two overlapping delete commands holding opposite locks.
+    final ids = bookIds.toSet().toList()..sort();
+    try {
+      for (final id in ids) {
+        final releaseBook = await fileGate?.enterBook(id);
+        if (releaseBook != null) releases.add(releaseBook);
+      }
+      final existing = await _books.existingIds(ids);
+      for (final id in ids) {
+        try {
+          if (!existing.contains(id)) continue;
+          final release = await prepareContentChange?.call(id);
+          if (release != null) releases.add(release);
+          ready.add(id);
+        } catch (_) {
+          failed++;
+          undeleted.add(id);
+        }
+      }
+      Set<String> rejected;
       try {
-        // 先把书籍从书架隐藏（数据库是可见性的唯一依据）
-        await _books.markRemoved(id, now);
+        rejected = await _books.markRemovedMany(ready, now);
+      } catch (_) {
+        rejected = ready.toSet();
+      }
+      failed += rejected.length;
+      undeleted.addAll(rejected);
+      for (final id in ready.where((id) => !rejected.contains(id))) {
         deleted++;
         try {
           final dir = await _storage.bookDirectoryPath(id);
-          freed += await _storage.directorySize(dir);
-          await _storage.deleteRecursively(dir);
+          final result = await _storage.deleteRecursivelyWithSize(dir);
+          freed += result.freedBytes;
+          if (result.failed) failed++;
         } catch (_) {
-          // 文件删不掉时留墓碑即可，残留目录由启动回收处理
           failed++;
         }
-      } finally {
-        release?.call();
+      }
+    } finally {
+      for (final release in releases.reversed) {
+        release();
       }
     }
     return DeleteBooksResult(
       deletedCount: deleted,
       freedBytes: freed,
       failedCount: failed,
+      undeletedIds: Set.unmodifiable(undeleted),
     );
   }
 }

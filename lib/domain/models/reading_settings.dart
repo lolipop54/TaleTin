@@ -66,6 +66,18 @@ abstract final class ReadingLimits {
 const ReadingSettings kBuiltinReadingSettings =
     ReadingSettings(fontFamily: 'sans-serif');
 
+// 旧版本只保存 bold；缺少单书字段仍表示跟随全局，不能误写成 400。
+int? _readFontWeight(Map<String, Object?> json) {
+  final weight = json['fontWeight'];
+  // 试用版保存的半粗 600 恢复为 500，仍保留原来的半粗选择。
+  if (weight == 600) return 500;
+  if (weight == 400 || weight == 500 || weight == 700) {
+    return (weight as num).toInt();
+  }
+  final oldBold = json['bold'];
+  return oldBold is bool ? (oldBold ? 700 : 400) : null;
+}
+
 class ReadingSettings {
   const ReadingSettings({
     this.fontSize = ReadingLimits.defaultFontSize,
@@ -75,7 +87,7 @@ class ReadingSettings {
     this.indent = true,
     this.fontFamily,
     this.fontOnlyInReader = true,
-    this.bold = false,
+    this.fontWeight = 400,
     this.useOriginalFont = true,
     this.layoutMode = ReadingLayoutMode.simplified,
     this.pageTurnEffect = PageTurnEffect.curl,
@@ -106,8 +118,8 @@ class ReadingSettings {
   /// 全局字体的应用范围；单书覆盖不能改变应用界面的字体。
   final bool fontOnlyInReader;
 
-  /// 加粗正文；原书字体默认保留，选字体后才覆盖。
-  final bool bold;
+  /// 正文字重：正常 400、半粗 500、粗体 700；原书字体另行保存。
+  final int fontWeight;
   final bool useOriginalFont;
 
   /// 排版模式（简化 / 原书）；原书模式只对 EPUB 生效
@@ -129,7 +141,7 @@ class ReadingSettings {
     bool? indent,
     String? fontFamily,
     bool? fontOnlyInReader,
-    bool? bold,
+    int? fontWeight,
     bool? useOriginalFont,
     bool clearFontFamily = false,
     ReadingLayoutMode? layoutMode,
@@ -152,7 +164,7 @@ class ReadingSettings {
           ReadingLimits.maxHorizontalPadding,
         ),
         indent: indent ?? this.indent,
-        bold: bold ?? this.bold,
+        fontWeight: fontWeight ?? this.fontWeight,
         useOriginalFont: useOriginalFont ?? this.useOriginalFont,
         fontOnlyInReader: fontOnlyInReader ?? this.fontOnlyInReader,
         fontFamily: clearFontFamily ? null : (fontFamily ?? this.fontFamily),
@@ -172,7 +184,7 @@ class ReadingSettings {
         paragraphGapEm: overrides.paragraphGapEm ?? paragraphGapEm,
         horizontalPadding: overrides.horizontalPadding ?? horizontalPadding,
         indent: overrides.indent ?? indent,
-        bold: overrides.bold ?? bold,
+        fontWeight: overrides.fontWeight ?? fontWeight,
         useOriginalFont: overrides.useOriginalFont ?? useOriginalFont,
         fontFamily: overrides.fontFamily ?? fontFamily,
         fontOnlyInReader: fontOnlyInReader,
@@ -189,7 +201,7 @@ class ReadingSettings {
         'paragraphGapEm': paragraphGapEm,
         'horizontalPadding': horizontalPadding,
         'indent': indent,
-        'bold': bold,
+        'fontWeight': fontWeight,
         'useOriginalFont': useOriginalFont,
         'fontOnlyInReader': fontOnlyInReader,
         if (fontFamily != null) 'fontFamily': fontFamily,
@@ -234,7 +246,7 @@ class ReadingSettings {
               ReadingLimits.maxHorizontalPadding,
             ),
       indent: indent is bool ? indent : base.indent,
-      bold: json['bold'] is bool ? json['bold'] as bool : false,
+      fontWeight: _readFontWeight(json) ?? 400,
       useOriginalFont: json['useOriginalFont'] is bool
           ? json['useOriginalFont'] as bool : true,
       fontOnlyInReader: json['fontOnlyInReader'] as bool? ?? true,
@@ -255,7 +267,7 @@ class ReadingSettings {
       other.paragraphGapEm == paragraphGapEm &&
       other.horizontalPadding == horizontalPadding &&
       other.indent == indent &&
-      other.bold == bold &&
+      other.fontWeight == fontWeight &&
       other.useOriginalFont == useOriginalFont &&
       other.fontFamily == fontFamily &&
       other.fontOnlyInReader == fontOnlyInReader &&
@@ -270,7 +282,7 @@ class ReadingSettings {
         paragraphGapEm,
         horizontalPadding,
         indent,
-        bold,
+        fontWeight,
         useOriginalFont,
         fontFamily,
         fontOnlyInReader,
@@ -289,7 +301,7 @@ class ReadingSettingsOverrides {
     this.horizontalPadding,
     this.indent,
     this.fontFamily,
-    this.bold,
+    this.fontWeight,
     this.useOriginalFont,
     this.layoutMode,
     this.pageTurnEffect,
@@ -304,7 +316,7 @@ class ReadingSettingsOverrides {
   final double? horizontalPadding;
   final bool? indent;
   final String? fontFamily;
-  final bool? bold;
+  final int? fontWeight;
   final bool? useOriginalFont;
 
   /// 排版模式覆盖；null 表示跟随全局默认
@@ -322,7 +334,7 @@ class ReadingSettingsOverrides {
     double? horizontalPadding,
     bool? indent,
     String? fontFamily,
-    bool? bold,
+    int? fontWeight,
     bool? useOriginalFont,
     bool clearFontFamily = false,
     ReadingLayoutMode? layoutMode,
@@ -337,7 +349,7 @@ class ReadingSettingsOverrides {
         paragraphGapEm: paragraphGapEm ?? this.paragraphGapEm,
         horizontalPadding: horizontalPadding ?? this.horizontalPadding,
         indent: indent ?? this.indent,
-        bold: bold ?? this.bold,
+        fontWeight: fontWeight ?? this.fontWeight,
         useOriginalFont: useOriginalFont ?? this.useOriginalFont,
         fontFamily: clearFontFamily ? null : (fontFamily ?? this.fontFamily),
         layoutMode: layoutMode ?? this.layoutMode,
@@ -353,7 +365,7 @@ class ReadingSettingsOverrides {
         if (paragraphGapEm != null) 'paragraphGapEm': paragraphGapEm,
         if (horizontalPadding != null) 'horizontalPadding': horizontalPadding,
         if (indent != null) 'indent': indent,
-        if (bold != null) 'bold': bold,
+        if (fontWeight != null) 'fontWeight': fontWeight,
         if (useOriginalFont != null) 'useOriginalFont': useOriginalFont,
         if (fontFamily != null) 'fontFamily': fontFamily,
         if (layoutMode != null) 'layoutMode': layoutMode!.code,
@@ -370,7 +382,7 @@ class ReadingSettingsOverrides {
         paragraphGapEm: (json['paragraphGapEm'] as num?)?.toDouble(),
         horizontalPadding: (json['horizontalPadding'] as num?)?.toDouble(),
         indent: json['indent'] is bool ? json['indent'] as bool : null,
-        bold: json['bold'] is bool ? json['bold'] as bool : null,
+        fontWeight: _readFontWeight(json),
         useOriginalFont: json['useOriginalFont'] is bool
             ? json['useOriginalFont'] as bool : null,
         fontFamily:
@@ -392,7 +404,7 @@ class ReadingSettingsOverrides {
       paragraphGapEm == null &&
       horizontalPadding == null &&
       indent == null &&
-      bold == null &&
+      fontWeight == null &&
       useOriginalFont == null &&
       fontFamily == null &&
       layoutMode == null && pageTurnEffect == null && autoScrollSpeed == null &&
@@ -406,7 +418,7 @@ class ReadingSettingsOverrides {
         paragraphGapEm: settings.paragraphGapEm,
         horizontalPadding: settings.horizontalPadding,
         indent: settings.indent,
-        bold: settings.bold,
+        fontWeight: settings.fontWeight,
         useOriginalFont: settings.useOriginalFont,
         fontFamily: settings.fontFamily,
         layoutMode: settings.layoutMode,

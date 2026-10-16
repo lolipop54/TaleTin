@@ -1,4 +1,4 @@
-/// TXT 解析适配器：把已转成 UTF-8 的正文文本切成章节与段落块。
+/// TXT 解析适配器：按原编码读取正文，切成章节与段落块。
 ///
 /// 输出与 EPUB 完全相同的 [BookDocument]（设计文档 6.1/6.3）：
 /// 章节按标题行切分，标题行本身不再重复进正文（章节标题由阅读器顶部显示）；
@@ -11,13 +11,22 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 
 import '../../../core/errors/import_error.dart';
+import '../../../core/diagnostics/import_timing.dart';
+import '../../../core/io/source_fingerprint.dart';
 import '../../../domain/models/book_document.dart';
+import '../../../domain/models/source_content_index.dart';
+import '../../../domain/models/locator.dart';
 import '../../../domain/services/book_parser.dart';
 import '../../normalization/text_normalizer.dart';
+import '../../normalization/source_position_matcher.dart';
 import 'txt_chapter_rule.dart';
+import 'txt_source_lines.dart';
 
 class TxtParser {
-  const TxtParser();
+  const TxtParser({this.sourceLinesFactory});
+
+  /// 性能对照可注入字节扫描实现，章节规则、分节与编号继续使用同一份代码。
+  final TxtSourceLines Function(String, String, String?)? sourceLinesFactory;
 
   /// 无可靠目录时每节的目标字符数（按段落边界切分，不会切断段落）。
   static const int fallbackSectionChars = 8000;
@@ -33,6 +42,7 @@ class TxtParser {
     required ParseProgress onProgress,
     required bool Function() isCancelled,
   }) async {
+    final timing = traceImportPerf ? ImportTiming('txt_parser') : null;
     final textPath = request.textPath;
     if (textPath == null) {
       throw const ImportFailure(ImportErrorCode.decodeFailed, '缺少正文文本');
@@ -45,57 +55,142 @@ class TxtParser {
 
     final forceSections = request.txt?.forceSectionFallback ?? false;
 
-    // 第一遍：找出所有标题行，判断目录是否可靠（强制分段时跳过这一遍）
-    final headings = <TxtHeading>[];
-    var lineCount = 0;
-    await for (final line in _lines(textPath)) {
-      if (forceSections) {
-        lineCount++;
-        continue;
-      }
-      final heading = rule.matchLine(line, lineCount);
-      if (heading != null) headings.add(heading);
-      lineCount++;
-      if (lineCount % 4096 == 0) {
-        onProgress(0.30 * (lineCount / (lineCount + 4096)).clamp(0.0, 0.99));
-        if (isCancelled()) throw const ImportFailure(ImportErrorCode.cancelled);
-      }
-    }
-
-    final chapterHeadings =
-        headings.where((h) => h.kind == TxtHeadingKind.chapter).toList();
-    // 只有一两个标题行不足以构成目录，按设计降级为受控分段
-    final useHeadings = !forceSections && chapterHeadings.length >= 2;
-
-    final builder = _ChapterBuilder(
+    var builder = _ChapterBuilder(
       workDir: request.workDir,
       contentVersion: request.contentVersion,
+      indexedContent: request.indexedContent,
+      anchors: request.locationAnchors,
     );
+    var useHeadings = false;
+    var headingCount = 0;
+    var section = 1;
+    var started = false;
+    var pendingVolume = false;
+    builder.startChapter(_sectionTitle(section));
 
-    if (useHeadings) {
-      await _buildByHeadings(
-        textPath: textPath,
-        headings: headings,
-        lineCount: lineCount,
-        builder: builder,
-        onProgress: onProgress,
-        isCancelled: isCancelled,
+    void addSectionLine(TxtSourceLine sourceLine) {
+      final line = sourceLine.text;
+      if (isBlankLine(line)) return;
+      builder.addParagraph(
+        sourceLine.normalizedText ?? normalizeParagraph(line),
+        sourceLine,
       );
-    } else {
-      await _buildBySections(
-        textPath: textPath,
-        lineCount: lineCount,
-        builder: builder,
-        onProgress: onProgress,
-        isCancelled: isCancelled,
-      );
+      if (builder.currentTextLength >= fallbackSectionChars &&
+          builder.chapters.length < maxChapters) {
+        builder.closeChapter();
+        builder.startChapter(_sectionTitle(++section));
+      }
     }
+
+    void addHeadingLine(TxtSourceLine sourceLine) {
+      final line = sourceLine.text;
+      final heading = rule.matchLine(line, 0);
+      if (heading != null) {
+        builder.closeChapter();
+        if (heading.kind == TxtHeadingKind.volume) {
+          builder.startVolume(heading.title);
+          pendingVolume = true;
+        } else {
+          builder.startChapter(heading.title);
+          pendingVolume = false;
+          started = true;
+        }
+      } else if (!isBlankLine(line)) {
+        if (!builder.hasOpenChapter && (!started || pendingVolume)) {
+          builder.startChapter(prefaceTitle);
+          started = true;
+          pendingVolume = false;
+        }
+        builder.addParagraph(
+          sourceLine.normalizedText ?? normalizeParagraph(line),
+          sourceLine,
+        );
+      }
+    }
+
+    // 原文件只顺序读取一次。未确定目录时先生成分节候选；第二个章题一到，
+    // 只回放此前的短前段并切为按章生成。没有目录的书直接使用分节候选，
+    // 不再重读整本。前段超过 64 Ki 字符后落临时文件，不把全书留在内存中。
+    final prefix = _TxtPrefix(p.join(request.workDir, '.txt-prefix.tmp'));
+    final totalBytes = await File(
+      request.indexedContent ? request.sourcePath : textPath,
+    ).length();
+    var readBytes = 0;
+    var lineCount = 0;
+    var locationMatches = <String, Locator?>{};
+    final sourceLines = request.indexedContent
+        ? sourceLinesFactory?.call(
+                request.sourcePath,
+                request.txt?.charset ?? 'UTF-8',
+                textPath,
+              ) ??
+              TxtSourceLines(
+                request.sourcePath,
+                request.txt?.charset ?? 'UTF-8',
+                preparedPath: textPath,
+              )
+        : TxtSourceLines(textPath, 'UTF-8');
+    timing?.mark('setup');
+    try {
+      _checkCancelled(isCancelled);
+      await for (final batch in sourceLines.readBatches(
+        onBytes: (n) => readBytes += n,
+      )) {
+        for (final line in batch) {
+          if (forceSections) {
+            addSectionLine(line);
+          } else if (useHeadings) {
+            addHeadingLine(line);
+          } else {
+            prefix.add(line);
+            addSectionLine(line);
+            if (rule.matchLine(line.text, lineCount)?.kind ==
+                TxtHeadingKind.chapter) {
+              headingCount++;
+            }
+            if (headingCount == 2) {
+              useHeadings = true;
+              builder.discard();
+              builder = _ChapterBuilder(
+                workDir: request.workDir,
+                contentVersion: request.contentVersion,
+                indexedContent: request.indexedContent,
+                anchors: request.locationAnchors,
+              );
+              var replayed = 0;
+              await for (final previous in prefix.lines()) {
+                addHeadingLine(previous);
+                if (++replayed % 2048 == 0) _checkCancelled(isCancelled);
+              }
+              prefix.dispose();
+            }
+          }
+          if (++lineCount % 2048 == 0) {
+            onProgress(totalBytes == 0 ? null : 0.95 * readBytes / totalBytes);
+            _checkCancelled(isCancelled);
+          }
+        }
+      }
+      _checkCancelled(isCancelled);
+      builder.closeChapter();
+      locationMatches = builder.matches.finish();
+    } finally {
+      prefix.dispose();
+    }
+    timing?.mark('scan_decode_hash_headings');
 
     if (builder.chapters.isEmpty) {
       throw const ImportFailure(ImportErrorCode.emptyContent);
     }
 
     final meta = _splitName(request.displayName);
+    timing?.report(
+      counts: {
+        'sourceBytes': totalBytes,
+        'lines': lineCount,
+        'chapters': builder.chapters.length,
+      },
+    );
     onProgress(1);
     return BookDocument(
       title: meta.title,
@@ -104,86 +199,26 @@ class TxtParser {
       chapters: builder.chapters,
       toc: builder.toc,
       encoding: request.txt?.charset ?? '',
-      warnings: useHeadings
-          ? const []
-          : const ['未识别到章节标题，已按固定长度分成小节'],
+      tocRevision: kTocRevision,
+      locationMatches: locationMatches,
+      sourceIndex: !request.indexedContent
+          ? null
+          : SourceContentIndex(
+              format: 'txt',
+              sourceDigest: sourceLines.digest,
+              sourceBytes: sourceLines.byteCount,
+              sourceStamp: sourceFingerprint(
+                await File(request.sourcePath).stat(),
+              ),
+              charset: request.txt?.charset ?? 'UTF-8',
+              chapters: builder.ranges,
+            ),
+      warnings: useHeadings ? const [] : const ['未识别到章节标题，已按固定长度分成小节'],
     );
   }
 
-  /// 按标题行切分：卷标题进目录分组，章标题开新章。
-  Future<void> _buildByHeadings({
-    required String textPath,
-    required List<TxtHeading> headings,
-    required int lineCount,
-    required _ChapterBuilder builder,
-    required ParseProgress onProgress,
-    required bool Function() isCancelled,
-  }) async {
-    final byLine = {for (final h in headings) h.lineIndex: h};
-    var lineIndex = 0;
-    var started = false;
-    // 卷标题到第一个章标题之间的正文（常见为卷首语）单独成章
-    var pendingVolume = false;
-    await for (final line in _lines(textPath)) {
-      final heading = byLine[lineIndex];
-      if (heading != null) {
-        if (heading.kind == TxtHeadingKind.volume) {
-          builder.closeChapter();
-          builder.startVolume(heading.title);
-          pendingVolume = true;
-        } else {
-          builder.closeChapter();
-          builder.startChapter(heading.title);
-          pendingVolume = false;
-          started = true;
-        }
-      } else if (!isBlankLine(line)) {
-        if (!builder.hasOpenChapter) {
-          // 正文开头（或卷首）没有章标题时，先归入「卷首」
-          if (!started || pendingVolume) {
-            builder.startChapter(prefaceTitle);
-            started = true;
-            pendingVolume = false;
-          }
-        }
-        builder.addParagraph(normalizeParagraph(line));
-      }
-      lineIndex++;
-      if (lineIndex % 2048 == 0) {
-        onProgress(0.3 + 0.65 * (lineIndex / (lineCount + 1)));
-        if (isCancelled()) throw const ImportFailure(ImportErrorCode.cancelled);
-      }
-    }
-    builder.closeChapter();
-  }
-
-  /// 没有可用目录：按目标长度切段，段名「第 N 节」。
-  Future<void> _buildBySections({
-    required String textPath,
-    required int lineCount,
-    required _ChapterBuilder builder,
-    required ParseProgress onProgress,
-    required bool Function() isCancelled,
-  }) async {
-    var lineIndex = 0;
-    var section = 0;
-    builder.startChapter(_sectionTitle(++section));
-    await for (final line in _lines(textPath)) {
-      if (!isBlankLine(line)) {
-        builder.addParagraph(normalizeParagraph(line));
-        if (builder.currentTextLength >= fallbackSectionChars &&
-            builder.chapters.length < maxChapters) {
-          builder.closeChapter();
-          builder.startChapter(_sectionTitle(++section));
-        }
-      }
-      lineIndex++;
-      if (lineIndex % 2048 == 0) {
-        onProgress(0.3 + 0.65 * (lineIndex / (lineCount + 1)));
-        if (isCancelled()) throw const ImportFailure(ImportErrorCode.cancelled);
-      }
-    }
-    builder.closeChapter();
+  static void _checkCancelled(bool Function() isCancelled) {
+    if (isCancelled()) throw const ImportFailure(ImportErrorCode.cancelled);
   }
 
   static String _sectionTitle(int index) => '第 $index 节';
@@ -209,12 +244,6 @@ class TxtParser {
     // 「作者：某某.txt」这种极端命名：书名留空没有意义，退回完整文件名
     return _NameMeta(title: title.isEmpty ? full : title, author: author);
   }
-
-  /// 逐行读取 UTF-8 文本（已由导入流水线转码并去掉 BOM）。
-  Stream<String> _lines(String path) => File(path)
-      .openRead()
-      .transform(const Utf8Decoder(allowMalformed: true))
-      .transform(const LineSplitter());
 }
 
 class _NameMeta {
@@ -225,24 +254,35 @@ class _NameMeta {
 
 /// 按章收集块、写章节文件、组装目录。
 class _ChapterBuilder {
-  _ChapterBuilder({required this.workDir, required this.contentVersion});
+  _ChapterBuilder({
+    required this.workDir,
+    required this.contentVersion,
+    required this.indexedContent,
+    required List<Locator> anchors,
+  }) : matches = SourcePositionMatcher(anchors);
 
   final String workDir;
   final int contentVersion;
+  final bool indexedContent;
+  final SourcePositionMatcher matches;
+  final ranges = <String, List<Object>>{};
+  int _start = 0, _end = 0;
 
   final List<Chapter> chapters = [];
   final List<TocNode> toc = [];
+  List<TocNode>? _volumeChildren;
   final List<ContentBlock> _blocks = [];
   int _blockSeq = 0;
   String? _openTitle;
   int _currentTextLength = 0;
 
-  bool get hasOpenChapter => _openTitle != null && _blocks.isNotEmpty;
+  bool get hasOpenChapter => _openTitle != null && _blockSeq > 0;
 
   int get currentTextLength => _currentTextLength;
 
   void startVolume(String title) {
-    toc.add(TocNode(title: title));
+    _volumeChildren = [];
+    toc.add(TocNode(title: title, children: _volumeChildren!));
   }
 
   void startChapter(String title) {
@@ -252,37 +292,53 @@ class _ChapterBuilder {
     _currentTextLength = 0;
   }
 
-  void addParagraph(String text) {
+  void addParagraph(String text, TxtSourceLine sourceLine) {
     if (text.isEmpty) return;
-    final block = ContentBlock(
-      id: 'b${++_blockSeq}',
-      kind: BlockKind.paragraph,
-      runs: [TextRun(text)],
-    );
-    _blocks.add(block);
-    _currentTextLength += block.textLength;
+    if (_blockSeq == 0) _start = sourceLine.start;
+    _end = sourceLine.end;
+    _blockSeq++;
+    // 来源索引只需要字节边界和精确字符数，正文对象留到实际读章时创建。
+    // 段间的一个位置权重与 ContentBlock.textLength 保持一致。
+    _currentTextLength += text.length + 1;
+    if (!indexedContent || !matches.isEmpty) {
+      _blocks.add(
+        ContentBlock(
+          id: 'b$_blockSeq',
+          kind: BlockKind.paragraph,
+          runs: [TextRun(text)],
+        ),
+      );
+      if (indexedContent && _blocks.length >= 128) _feedMatches();
+    }
   }
 
   /// 结束当前章：写正文文件并登记章节与目录条目。
   void closeChapter() {
     final title = _openTitle;
-    if (title == null || _blocks.isEmpty) {
+    if (title == null || _blockSeq == 0) {
       _openTitle = null;
       _blocks.clear();
       return;
     }
     final id = 'ch${(chapters.length + 1).toString().padLeft(4, '0')}';
     final contentPath = 'content/$contentVersion/$id.json';
-    final content = ChapterContent(chapterId: id, blocks: List.of(_blocks));
-    File(p.join(workDir, '$id.json'))
-        .writeAsBytesSync(content.encode(), flush: false);
-    chapters.add(Chapter(
-      id: id,
-      ordinal: chapters.length,
-      title: title,
-      contentPath: contentPath,
-      textLength: content.textLength,
-    ));
+    _feedMatches();
+    if (indexedContent) {
+      ranges[id] = [_start, _end];
+    } else {
+      final content = ChapterContent(chapterId: id, blocks: List.of(_blocks));
+      File(p.join(workDir, '$id.json'))
+          .writeAsBytesSync(content.encode(), flush: false);
+    }
+    chapters.add(
+      Chapter(
+        id: id,
+        ordinal: chapters.length,
+        title: title,
+        contentPath: contentPath,
+        textLength: _currentTextLength,
+      ),
+    );
     _appendToc(title, id);
     _openTitle = null;
     _blocks.clear();
@@ -292,14 +348,80 @@ class _ChapterBuilder {
   /// 有卷分组时章节挂到最近的卷下，否则平铺。
   void _appendToc(String title, String chapterId) {
     final node = TocNode(title: title, chapterId: chapterId);
-    if (toc.isNotEmpty && !toc.last.isLeaf) {
-      final last = toc.removeLast();
-      toc.add(TocNode(
-        title: last.title,
-        children: [...last.children, node],
-      ));
-    } else {
-      toc.add(node);
+    // 解析结束前目录不发布，直接追加即可，无需逐章复制整卷已有条目。
+    (_volumeChildren ?? toc).add(node);
+  }
+
+  void discard() {
+    if (indexedContent) return;
+    for (final chapter in chapters) {
+      File(p.join(workDir, '${chapter.id}.json')).deleteSync();
     }
+  }
+
+  void _feedMatches() {
+    if (matches.isEmpty || _blocks.isEmpty) return;
+    final id = 'ch${(chapters.length + 1).toString().padLeft(4, '0')}';
+    matches.add(id, _blocks);
+    if (indexedContent) _blocks.clear();
+  }
+}
+
+/// 未确定切章方式时保留原始行；内存和磁盘都只缓存第二个章题前的部分。
+class _TxtPrefix {
+  _TxtPrefix(this.path);
+  final String path;
+  final _buffer = <TxtSourceLine>[];
+  int _characters = 0;
+  RandomAccessFile? _output;
+  bool _spilled = false;
+
+  void add(TxtSourceLine line) {
+    _buffer.add(line);
+    _characters += line.text.length + 1;
+    if (_characters >= 64 * 1024) {
+      _output ??= File(path).openSync(mode: FileMode.writeOnly);
+      _spilled = true;
+      _flush();
+    }
+  }
+
+  void _flush() {
+    if (_buffer.isEmpty) return;
+    _output!.writeStringSync(
+      '${_buffer.map((line) => jsonEncode([line.text, line.start, line.end, line.normalizedText])).join('\n')}\n',
+    );
+    _buffer.clear();
+    _characters = 0;
+  }
+
+  Stream<TxtSourceLine> lines() async* {
+    if (!_spilled) {
+      yield* Stream.fromIterable(_buffer);
+    } else {
+      _flush();
+      _output!.closeSync();
+      _output = null;
+      yield* File(path)
+          .openRead()
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .map((line) {
+            final values = jsonDecode(line) as List;
+            return TxtSourceLine(
+              values[0] as String,
+              values[1] as int,
+              values[2] as int,
+              normalizedText: values[3] as String?,
+            );
+          });
+    }
+  }
+
+  void dispose() {
+    _output?.closeSync();
+    _output = null;
+    _buffer.clear();
+    if (_spilled && File(path).existsSync()) File(path).deleteSync();
   }
 }

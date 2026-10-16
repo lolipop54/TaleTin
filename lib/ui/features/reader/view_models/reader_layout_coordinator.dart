@@ -236,6 +236,7 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
     final session = state.value;
     if (session == null) return;
     final nextIndex = chapterIndex + 1;
+    traceTurn('prefetch next requested chapter=$nextIndex');
     if (nextIndex >= session.chapters.length) {
       _nextChapterLayout = null;
       return;
@@ -266,13 +267,17 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
           return;
         }
         _nextChapterLayout = layout;
+        traceTurn('prefetch next ready chapter=$nextIndex pages=${layout.pageCount}');
         // 通知一次界面：下一章的首页可以参与翻页过渡了（prefetch 不在 state 里，
         // 但拖动过渡要用到它）
         final current = state.value;
         if (current != null) state = AsyncData(current.copyWith());
       } on LayoutCancelled {
         // 参数变化导致作废，忽略
-      } on Object {
+      } on Object catch (error) {
+        if (ref.mounted && isSourceChange(error)) {
+          ref.read(readerSourceChangeProvider(bookId).notifier).markChanged();
+        }
         // 预取失败不影响当前阅读，真正翻页时会再试一次
       }
     }());
@@ -286,6 +291,7 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
     final session = state.value;
     if (session == null) return;
     final previousIndex = chapterIndex - 1;
+    traceTurn('prefetch previous requested chapter=$previousIndex');
     if (previousIndex < 0) {
       _previousChapterLayout = null;
       return;
@@ -316,13 +322,17 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
           return;
         }
         _previousChapterLayout = layout;
+        traceTurn('prefetch previous ready chapter=$previousIndex pages=${layout.pageCount}');
         // 通知一次界面：上一章的最后一页可以参与翻页过渡了（prefetch 不在 state 里，
         // 但拖动过渡要用到它）
         final current = state.value;
         if (current != null) state = AsyncData(current.copyWith());
       } on LayoutCancelled {
         // 参数变化导致作废，忽略
-      } on Object {
+      } on Object catch (error) {
+        if (ref.mounted && isSourceChange(error)) {
+          ref.read(readerSourceChangeProvider(bookId).notifier).markChanged();
+        }
         // 预取失败不影响当前阅读，真正翻页时会再排一次
       }
     }());

@@ -8,6 +8,7 @@ import '../../../../platform/channels/reading_window.dart';
 import '../../../../domain/services/reading_statistics_service.dart';
 import '../view_models/automatic_reading.dart';
 import '../view_models/reader_view_model.dart';
+import '../view_models/reader_source_change.dart';
 
 /// 只上报界面事实；计时、超时与存储属于应用服务。此组件不随排版模式替换。
 class ReadingStatisticsScope extends ConsumerStatefulWidget {
@@ -75,19 +76,25 @@ class _StatisticsScopeState extends ConsumerState<ReadingStatisticsScope> {
       _loggedReady = true;
       traceTurn('load first-readable us=${_opening.elapsedMicroseconds}');
     }
-    final visible = foreground && currentRoute && widget.ready() &&
+    final visible = !ref.read(readerSourceChangeProvider(widget.bookId)) &&
+      foreground && currentRoute && widget.ready() &&
       !reader.controlsVisible && reader.panel == ReaderPanel.none &&
       reader.note == null && reader.selection == null;
     final controls = ref.read(readingControlsProvider).value;
     // 锁屏、切后台和阅读内弹层都保留系统栏设置。若失去前台时显示系统栏，
     // 回来再隐藏，正文会按临时高度重排，页首反复取整就会退到前一页。
-    // 真正退出阅读时才恢复系统栏；计时、常亮和音量键仍只在正文前台生效。
+    // 真正退出阅读时才恢复系统栏；计时和音量键仍只在正文前台生效。
     final bars = (controls?.statusBar ?? true, controls?.navigationBar ?? true);
     if (_bars != bars) {
       _bars = bars;
       unawaited(window.systemBars(status: bars.$1, navigation: bars.$2));
     }
-    final awake = visible && controls?.keepAwake == true;
+    // 常亮属于整个前台阅读页，不能跟随统计的“正文无遮挡”条件。
+    // 调整面板、选文或等待重排时同样需要保持亮屏。
+    final readingRoute = currentRoute || reader.panelCovered ||
+        reader.panel == ReaderPanel.search;
+    final awake = foreground && readingRoute && !window.exiting.value &&
+        controls?.keepAwake == true;
     final keys = visible && controls?.volumeKeys == true && widget.onVolumeTurn != null;
     if (awake != _awake) {
       _awake = awake; unawaited(window.keepAwake(awakeOwner, awake));

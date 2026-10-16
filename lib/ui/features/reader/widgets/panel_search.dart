@@ -8,6 +8,7 @@ import '../../../core/theme/gt_tokens.dart';
 import '../../../core/theme/app_theme.dart';
 import '../view_models/book_search_controller.dart';
 import '../view_models/book_search_navigation.dart';
+import 'contents/contents_scroll_area.dart';
 import 'reader_sheet.dart';
 
 class PanelSearch extends ConsumerStatefulWidget {
@@ -137,80 +138,83 @@ class _PanelSearchState extends ConsumerState<PanelSearch> {
               ),
             ),
             Expanded(
-              child: !state.busy && state.complete && state.hits.isEmpty
-                  ? Padding(
-                      padding: const EdgeInsets.all(GtSpacing.s5),
-                      child: Text(
-                        '本书没有匹配结果，请试试更短的词。',
-                        style: GtText.body(colors.textPrimary),
-                      ),
-                    )
-                  : ListView.builder(
-                      key: PageStorageKey(
-                        'search-${widget.bookId}-${state.resultQuery}',
-                      ),
-                      itemCount:
-                          state.hits.length + (state.next == null ? 0 : 1),
-                      itemBuilder: (context, i) {
-                        if (i == state.hits.length) {
-                          return GtButton(
-                            onPressed:
-                                state.busy ||
-                                    state.resultQuery != state.query.trim()
-                                ? null
-                                : () => vm.search(more: true),
-                            child: const Text('加载更多'),
-                          );
-                        }
-                        final hit = state.hits[i];
-                        return Material(
-                          color: ReaderSheet.backgroundOf(context),
-                          child: GtListButton(
-                            key: ValueKey('book-search-hit-$i'),
-                            onPressed: navigation.busy || !state.complete
-                                ? null
-                                : () async {
-                                    FocusManager.instance.primaryFocus
-                                        ?.unfocus();
-                                    await navigate.pick(hit);
-                                  },
-                            title: Text(
-                              hit.chapterTitle.isEmpty
-                                  ? '正文'
-                                  : hit.chapterTitle,
-                              style: GtText.caption(colors.textSecondary),
-                            ),
-                            subtitle: Text.rich(
-                              textAlign: TextAlign.justify,
-                              TextSpan(
-                                style: GtText.body(colors.textPrimary),
-                                children: [
-                                  TextSpan(
-                                    text: hit.context.substring(
-                                      0,
-                                      hit.matchStart,
+              // 与目录共用补发触点过滤，拉伸和裁剪只作用于结果区域。
+              child: ContentsScrollArea(
+                child: !state.busy && state.complete && state.hits.isEmpty
+                    ? Padding(
+                        padding: const EdgeInsets.all(GtSpacing.s5),
+                        child: Text(
+                          '本书没有匹配结果，请试试更短的词。',
+                          style: GtText.body(colors.textPrimary),
+                        ),
+                      )
+                    : ListView.builder(
+                        key: PageStorageKey(
+                          'search-${widget.bookId}-${state.resultQuery}',
+                        ),
+                        itemCount:
+                            state.hits.length + (state.next == null ? 0 : 1),
+                        itemBuilder: (context, i) {
+                          if (i == state.hits.length) {
+                            return GtButton(
+                              onPressed:
+                                  state.busy ||
+                                      state.resultQuery != state.query.trim()
+                                  ? null
+                                  : () => vm.search(more: true),
+                              child: const Text('加载更多'),
+                            );
+                          }
+                          final hit = state.hits[i];
+                          return Material(
+                            color: ReaderSheet.backgroundOf(context),
+                            child: GtListButton(
+                              key: ValueKey('book-search-hit-$i'),
+                              onPressed: navigation.busy || !state.complete
+                                  ? null
+                                  : () async {
+                                      FocusManager.instance.primaryFocus
+                                          ?.unfocus();
+                                      await navigate.pick(hit);
+                                    },
+                              title: Text(
+                                hit.chapterTitle.isEmpty
+                                    ? '正文'
+                                    : hit.chapterTitle,
+                                style: GtText.caption(colors.textSecondary),
+                              ),
+                              subtitle: Text.rich(
+                                textAlign: TextAlign.justify,
+                                TextSpan(
+                                  style: GtText.body(colors.textPrimary),
+                                  children: [
+                                    TextSpan(
+                                      text: hit.context.substring(
+                                        0,
+                                        hit.matchStart,
+                                      ),
                                     ),
-                                  ),
-                                  TextSpan(
-                                    text: hit.context.substring(
-                                      hit.matchStart,
-                                      hit.matchEnd,
+                                    TextSpan(
+                                      text: hit.context.substring(
+                                        hit.matchStart,
+                                        hit.matchEnd,
+                                      ),
+                                      style: TextStyle(
+                                        color: colors.actionPrimary,
+                                        fontWeight: FontWeight.w600,
+                                      ),
                                     ),
-                                    style: TextStyle(
-                                      color: colors.actionPrimary,
-                                      fontWeight: FontWeight.w600,
+                                    TextSpan(
+                                      text: hit.context.substring(hit.matchEnd),
                                     ),
-                                  ),
-                                  TextSpan(
-                                    text: hit.context.substring(hit.matchEnd),
-                                  ),
-                                ],
+                                  ],
+                                ),
                               ),
                             ),
-                          ),
-                        );
-                      },
-                    ),
+                          );
+                        },
+                      ),
+              ),
             ),
           ],
         ),

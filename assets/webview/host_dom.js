@@ -3,6 +3,7 @@
   'use strict';
   var internal = window.__gtHost = window.__gtHost || {};
   var state = internal.state;
+  var pageAnchors = new Map(), anchorVersion = -1;
 
   function findFirstBlock(page) {
     var startX = page * state.width;
@@ -21,6 +22,17 @@
   }
 
   function firstVisibleTextAnchor(page) {
+    if (!internal.layout.geometryVersion) return measureFirstVisibleTextAnchor(page);
+    var version = internal.layout.geometryVersion();
+    if (anchorVersion !== version) { pageAnchors.clear(); anchorVersion = version; }
+    if (!pageAnchors.has(page)) {
+      pageAnchors.set(page, measureFirstVisibleTextAnchor(page));
+      if (pageAnchors.size > 64) pageAnchors.delete(pageAnchors.keys().next().value);
+    }
+    return pageAnchors.get(page);
+  }
+
+  function measureFirstVisibleTextAnchor(page) {
     var block = findFirstBlock(page);
     if (!block) return null;
     var walker = document.createTreeWalker(

@@ -6,6 +6,8 @@
 /// - `cache/import/<jobId>/` 导入暂存目录，提交或失败后清理
 library;
 
+import '../models/book_document.dart';
+
 /// 一次分块复制的结果。
 class CopiedFile {
   const CopiedFile({required this.byteCount, required this.sha256Hex});
@@ -14,6 +16,12 @@ class CopiedFile {
 
   /// 原始文件 SHA-256（十六进制小写），用于去重
   final String sha256Hex;
+}
+
+class StorageDeletion {
+  const StorageDeletion({required this.freedBytes, required this.failed});
+  final int freedBytes;
+  final bool failed;
 }
 
 abstract class ImportStorage {
@@ -43,6 +51,9 @@ abstract class ImportStorage {
 
   Future<void> deleteRecursively(String path);
 
+  /// 一遍遍历中统计并删除，只累计确认删除成功的文件；不使用确认前的旧估计。
+  Future<StorageDeletion> deleteRecursivelyWithSize(String path);
+
   /// 清理不属于 [keepJobIds] 的暂存目录，返回清掉的目录数。
   Future<int> cleanupStaging({required Iterable<String> keepJobIds});
 
@@ -53,4 +64,12 @@ abstract class ImportStorage {
 
   /// 书籍目录的绝对路径（不创建目录）。
   Future<String> bookDirectoryPath(String bookId);
+
+  /// 启动时回收完整 TXT 书籍中不再使用的全文转码副本，返回实际释放字节。
+  /// 章节或清单不完整时保留副本，不修改正文、源书或位置记录。
+  Future<int> removeRedundantTxtCopy(
+    String bookId,
+    int contentVersion,
+    List<Chapter> chapters,
+  );
 }

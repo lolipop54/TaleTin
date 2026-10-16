@@ -48,6 +48,7 @@ final currentBookmarkProvider = Provider.autoDispose.family<Bookmark?, String>((
   final marks = ref.watch(bookmarksProvider(id)).value ?? const <Bookmark>[];
   final original = ref.watch(originalPageBookmarksProvider(id));
   for (final mark in marks) {
+    if (mark.locator.needsRelocation) continue;
     if (session.isOriginal &&
         !session.scrolling &&
         original?.chapter == anchor.chapterId) {

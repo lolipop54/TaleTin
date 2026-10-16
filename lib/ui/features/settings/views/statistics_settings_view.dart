@@ -1,3 +1,4 @@
+import 'package:taletin/platform/channels/system_toast.dart';
 import 'package:taletin/ui/core/widgets/gt_switch.dart';
 import 'package:taletin/ui/core/widgets/gt_app_bar.dart';
 import 'package:taletin/ui/core/widgets/gt_button.dart';
@@ -116,13 +117,11 @@ class _StatisticsSettingsState extends ConsumerState<StatisticsSettingsView> {
     try {
       await ref.read(resetReadingStatisticsProvider).run();
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('阅读统计已重置')));
+        SystemToast.show('阅读统计已重置').ignore();
       }
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('重置未完成，请重试')));
+        SystemToast.show('重置未完成，请重试').ignore();
       }
     } finally {
       if (mounted) setState(() => resetting = false);

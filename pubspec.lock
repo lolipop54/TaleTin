@@ -248,6 +248,13 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "3.1.13"
+  direct_read_rust:
+    dependency: "direct main"
+    description:
+      path: "tools/direct_read_rust"
+      relative: true
+    source: path
+    version: "0.0.0"
   drift:
     dependency: "direct main"
     description:

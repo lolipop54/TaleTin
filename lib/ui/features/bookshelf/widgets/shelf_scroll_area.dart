@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../core/theme/gt_tokens.dart';
+import '../../../core/widgets/gt_scroll_input_scope.dart';
 
 /// 书架滚动区：保留系统拉伸，顶部固定渐隐，并统一裁掉绘制越界。
 class ShelfScrollArea extends StatelessWidget {
@@ -15,7 +16,7 @@ class ShelfScrollArea extends StatelessWidget {
         background: context.gtColors.canvas,
         pixel: 1 / MediaQuery.devicePixelRatioOf(context),
       ),
-      child: ScrollConfiguration(
+      child: GtScrollInputScope(
         behavior: const _ShelfScrollBehavior(),
         child: child,
       ),
@@ -24,7 +25,7 @@ class ShelfScrollArea extends StatelessWidget {
 }
 
 /// 拉伸单独采样内容，顶部和两侧的留白也需要不透明底色。
-class _ShelfScrollBehavior extends MaterialScrollBehavior {
+class _ShelfScrollBehavior extends GtScrollBehavior {
   const _ShelfScrollBehavior();
 
   @override

@@ -5,6 +5,20 @@ class LibraryFileGate {
   int _active = 0;
   Completer<void>? _frozen;
   Completer<void>? _idle;
+  final _books = <String, Future<void>>{};
+
+  /// 同一本书的自动更新与删除顺序执行，防止更新结束又把已删除的书放回书架。
+  Future<void Function()> enterBook(String id) async {
+    final previous = _books[id];
+    final done = Completer<void>();
+    _books[id] = done.future;
+    if (previous != null) await previous;
+    return () {
+      if (done.isCompleted) return;
+      if (identical(_books[id], done.future)) _books.remove(id);
+      done.complete();
+    };
+  }
 
   Future<void Function()> enter() async {
     while (_frozen != null) { await _frozen!.future; }

@@ -91,7 +91,9 @@ class DocumentHostApiImpl(
         val decoder = charsetOf(charsetName).newDecoder()
             .onMalformedInput(CodingErrorAction.REPLACE)
             .onUnmappableCharacter(CodingErrorAction.REPLACE)
-        return decoder.decode(ByteBuffer.wrap(bytes)).toString()
+        // StandardMessageCodec 用 UTF-8 传 String，会删掉开头真正的 U+FEFF。
+        // 加一个传输前缀，Dart 收到后马上移除；正文不能因分章而丢字符。
+        return "\u0001" + decoder.decode(ByteBuffer.wrap(bytes)).toString()
     }
 
     override fun transcodeToUtf8(

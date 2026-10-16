@@ -380,10 +380,11 @@ class _PigeonCodec extends StandardMessageCodec {
 /// 只在应用级插件里注册一次，不依赖 Activity：Activity 退出、锁屏、返回书架
 /// 都要能继续读下一句（实现计划第 5 节）。
 ///
-/// **全部方法都走 Pigeon 的串行后台线程**，不用默认的主线程队列：
+/// **连接和播放操作走 Pigeon 的串行后台线程**：
 /// `TextToSpeech` 的 `onInit` 回调由 `ServiceConnection` 派发，**一定在主线程**；
 /// 如果宿主方法跑在主线程上，[initialize] 里「等初始化结果」就是主线程等自己，
 /// 必然等到超时（真机实测：两次 15 秒超时，A2b 第二轮起全部失败）。
+/// 引擎清单只查包管理器，走独立的默认队列，不等待正在连接的引擎。
 class TtsHostApi {
   /// Constructor for [TtsHostApi]. The [binaryMessenger] named argument is
   /// available for dependency injection. If it is left null, the default

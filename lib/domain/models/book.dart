@@ -25,11 +25,13 @@ enum BookFormat {
   }
 }
 
-/// 书籍状态：正常、墓碑删除、内容文件缺失（启动恢复时标记）。
+/// 书籍状态；源文件改变只是核验后的显示状态，不删除原记录。
 enum BookStatus {
+  preparing('preparing'),
   active('active'),
   removed('removed'),
-  contentMissing('contentMissing');
+  contentMissing('contentMissing'),
+  sourceChanged('sourceChanged');
 
   const BookStatus(this.code);
   final String code;

@@ -10,6 +10,7 @@ import '../../../../domain/services/listening_service.dart';
 import '../view_models/listening_view_state.dart';
 import '../view_models/reader_session_view_model.dart';
 import '../view_models/reader_settings_view_model.dart';
+import '../view_models/reader_source_change.dart';
 
 /// 简化 EPUB/TXT 共用跟随入口。后台不做布局，回到前台读取最新快照。
 class ListeningFollow extends ConsumerStatefulWidget {
@@ -59,7 +60,7 @@ class _ListeningFollowState extends ConsumerState<ListeningFollow> {
   }
 
   void _follow() {
-    if (!_visible) return;
+    if (!_visible || ref.read(readerSourceChangeProvider(widget.bookId))) return;
     final settings = ref.read(readerSettingsProvider(widget.bookId)).value;
     if (settings == null) return;
     final session = ref.read(readerSessionProvider(widget.bookId)).value;

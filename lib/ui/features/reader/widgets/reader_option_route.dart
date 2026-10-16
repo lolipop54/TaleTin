@@ -110,6 +110,7 @@ Future<T?> showReaderOption<T>(
                         bottom: 0,
                         child: SafeArea(
                           top: false,
+                          maintainBottomViewPadding: true,
                           child: Consumer(
                             builder: (context, ref, _) => ReaderToolbar(
                               theme: ref

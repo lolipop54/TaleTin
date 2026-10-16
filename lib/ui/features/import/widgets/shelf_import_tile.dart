@@ -10,6 +10,7 @@ import '../../../core/widgets/book_cover.dart';
 import '../../../core/widgets/gt_button.dart';
 import '../../../core/widgets/gt_dialog_action.dart';
 import '../../bookshelf/widgets/bookshelf_widgets.dart';
+import '../../bookshelf/widgets/invalid_book_dialog.dart';
 import '../view_models/import_view_model.dart';
 
 /// 数据库流收到正式书籍后才撤掉占位，避免入库交接时短暂消失。
@@ -36,7 +37,9 @@ class ShelfImportItems extends Notifier<Map<String, ImportItem>> {
         _handedOff.remove(item.key);
         if (queue.running) _batchSlots.add(item.key);
       } else if (item.stage != ImportStage.failed &&
-          ids.contains(item.bookId)) {
+          ids.contains(item.bookId) &&
+          ref.read(libraryBooksProvider).value?.where((b) => b.id == item.bookId)
+              .firstOrNull?.status == BookStatus.active) {
         _handedOff.add(item.key);
       }
     }
@@ -133,6 +136,12 @@ class ShelfImportTile extends ConsumerWidget {
     );
     void tap() {
       if (item.stage != ImportStage.failed) {
+        final current = ref.read(libraryBooksProvider).value
+            ?.where((b) => b.id == item.bookId).firstOrNull;
+        if (current != null) {
+          openShelfBook(context, ref, current);
+          return;
+        }
         SystemToast.show('正在导入中...');
         return;
       }

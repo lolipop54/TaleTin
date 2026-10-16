@@ -68,7 +68,7 @@ class TxtTextPreparer {
       return const Utf8Decoder(allowMalformed: true).convert(bytes);
     }
     if (name == 'UTF-16LE' || name == 'UTF-16BE') {
-      return _decodeUtf16Bytes(bytes, littleEndian: name == 'UTF-16LE');
+      return decodeUtf16Bytes(bytes, littleEndian: name == 'UTF-16LE');
     }
     // 平台解码：预览片段可能在多字节字符中间截断，平台按替换字符处理
     return decodeBytes(bytes, name);
@@ -113,6 +113,7 @@ class TxtTextPreparer {
     await target.parent.create(recursive: true);
     final sink = target.openWrite();
     var carry = -1;
+    var highSurrogate = -1;
     var first = true;
     try {
       await for (final chunk in File(sourcePath).openRead()) {
@@ -128,43 +129,63 @@ class TxtTextPreparer {
         }
         var index = 0;
         final codes = <int>[];
+        if (highSurrogate >= 0) {
+          codes.add(highSurrogate);
+          highSurrogate = -1;
+        }
         if (carry >= 0) {
           if (bytes.isEmpty) continue;
-          codes.add(littleEndian
-              ? carry | (bytes[0] << 8)
-              : (carry << 8) | bytes[0]);
+          codes.add(
+            littleEndian ? carry | (bytes[0] << 8) : (carry << 8) | bytes[0],
+          );
           index = 1;
           carry = -1;
         }
         while (index + 1 < bytes.length) {
-          codes.add(littleEndian
-              ? bytes[index] | (bytes[index + 1] << 8)
-              : (bytes[index] << 8) | bytes[index + 1]);
+          codes.add(
+            littleEndian
+                ? bytes[index] | (bytes[index + 1] << 8)
+                : (bytes[index] << 8) | bytes[index + 1],
+          );
           index += 2;
         }
         if (index < bytes.length) carry = bytes[index];
+        // emoji 可能刚好跨越读取块，不能分别替换成两个乱码字符。
+        if (codes.isNotEmpty && codes.last >= 0xD800 && codes.last <= 0xDBFF) {
+          highSurrogate = codes.removeLast();
+        }
         if (codes.isNotEmpty) {
-          sink.add(utf8.encode(String.fromCharCodes(_combineSurrogates(codes))));
+          sink.add(
+            utf8.encode(String.fromCharCodes(_combineSurrogates(codes))),
+          );
         }
       }
+      if (highSurrogate >= 0) sink.add(utf8.encode('\ufffd'));
     } finally {
       await sink.flush();
       await sink.close();
     }
   }
 
-  static String _decodeUtf16Bytes(Uint8List bytes, {required bool littleEndian}) {
+  static String decodeUtf16Bytes(
+    Uint8List bytes, {
+    required bool littleEndian,
+    bool stripBom = true,
+  }) {
     var start = 0;
-    if (bytes.length >= 2 &&
+    if (stripBom &&
+        bytes.length >= 2 &&
         ((littleEndian && bytes[0] == 0xFF && bytes[1] == 0xFE) ||
             (!littleEndian && bytes[0] == 0xFE && bytes[1] == 0xFF))) {
       start = 2;
     }
     final codes = <int>[];
     for (var i = start; i + 1 < bytes.length; i += 2) {
-      codes.add(littleEndian
-          ? bytes[i] | (bytes[i + 1] << 8)
-          : (bytes[i] << 8) | bytes[i + 1]);
+      codes.add(
+        littleEndian
+            ? bytes[i] | (bytes[i + 1] << 8)
+            : (bytes[i] << 8) | bytes[i + 1],
+      );
     }
     if (codes.isEmpty) throw const ImportFailure(ImportErrorCode.decodeFailed);
     return String.fromCharCodes(_combineSurrogates(codes));
@@ -180,7 +201,9 @@ class TxtTextPreparer {
         if (i + 1 < codes.length &&
             codes[i + 1] >= 0xDC00 &&
             codes[i + 1] <= 0xDFFF) {
-          result.add(0x10000 + ((code - 0xD800) << 10) + (codes[i + 1] - 0xDC00));
+          result.add(
+            0x10000 + ((code - 0xD800) << 10) + (codes[i + 1] - 0xDC00),
+          );
           i++;
         } else {
           result.add(0xFFFD);

@@ -23,6 +23,13 @@ class DriftAnnotationRepository implements AnnotationRepository {
 
   final AppDatabase _db;
 
+  /// 更新来源时一次读取快照，不建立界面订阅；包含书签。
+  Future<List<Annotation>> loadForRelocation(String bookId) async {
+    final rows = await (_db.select(_db.annotations)
+      ..where((t) => t.bookId.equals(bookId))).get();
+    return rows.map(_toAnnotation).toList();
+  }
+
   /// kind 取值：书签 / 高亮 / 笔记（与 `AnnotationKind.code` 一致）
   static const String bookmarkKind = 'bookmark';
   static const String highlightKind = 'highlight';
@@ -112,7 +119,7 @@ class DriftAnnotationRepository implements AnnotationRepository {
     for (final row in rows) {
       final existing = _toBookmark(row);
       // 同一页首再加一次不重复建：返回已有书签
-      if (existing.locator.chapterId == locator.chapterId &&
+      if (!existing.locator.needsRelocation && existing.locator.chapterId == locator.chapterId &&
           existing.locator.blockId == locator.blockId &&
           existing.locator.utf16Offset == locator.utf16Offset) {
         return existing.id;
@@ -160,7 +167,8 @@ class DriftAnnotationRepository implements AnnotationRepository {
         .get();
     for (final row in rows) {
       final annotation = _toAnnotation(row);
-      if (sameSelectionRange(annotation.range, range)) return annotation;
+      if (!annotation.start.needsRelocation && annotation.end?.needsRelocation != true &&
+          sameSelectionRange(annotation.range, range)) { return annotation; }
     }
     return null;
   }

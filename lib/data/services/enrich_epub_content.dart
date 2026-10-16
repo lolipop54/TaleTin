@@ -16,6 +16,7 @@ ChapterContent enrichEpubContent(
   String contentDirectory,
   String sourcePath,
 ) {
+  if (content.epubDetailsRevision >= kEpubDetailsRevision) return content;
   final blocks = content.blocks.map((block) {
     final resource = block.resourcePath;
     if (block.kind != BlockKind.image ||

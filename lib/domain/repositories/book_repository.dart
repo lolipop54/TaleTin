@@ -5,6 +5,7 @@ library;
 
 import '../models/book.dart';
 import '../models/book_document.dart';
+import '../models/source_position_preparation.dart';
 
 /// 导入任务 journal 的一行记录，用于启动时回收孤儿文件。
 class ImportJobRecord {
@@ -26,10 +27,17 @@ class ImportJobRecord {
 /// [book] 的 `contentPath`/`coverPath` 为相对书籍目录的路径，
 /// [chapters] 为扁平章节元数据。
 class ImportCommit {
-  const ImportCommit({required this.book, required this.chapters});
+  const ImportCommit({
+    required this.book,
+    required this.chapters,
+    this.sourceChanged = false,
+    this.positionProof,
+  });
 
   final Book book;
   final List<Chapter> chapters;
+  final bool sourceChanged;
+  final SourcePositionProof? positionProof;
 }
 
 abstract class BookRepository {
@@ -38,6 +46,15 @@ abstract class BookRepository {
   Stream<List<Book>> watchActiveBooks();
 
   Future<Book?> findById(String id);
+
+  /// 只判断书籍行是否存在；删除准备不需要逐本加载进度、文件名和完成记录。
+  Future<Set<String>> existingIds(Iterable<String> ids) async {
+    final found = <String>{};
+    for (final id in ids) {
+      if (await findById(id) != null) found.add(id);
+    }
+    return found;
+  }
 
   /// 按阅读顺序取章节索引（`ordinal` 升序）。
   ///
@@ -64,6 +81,22 @@ abstract class BookRepository {
 
   /// 标记为墓碑删除：书籍从书架隐藏，但同一文件重新导入时复用这一行。
   Future<void> markRemoved(String bookId, DateTime deletedAt);
+
+  /// 合并可见性刷新；返回没能写入墓碑的书籍，不把单本失败当整批成功。
+  Future<Set<String>> markRemovedMany(
+    Iterable<String> ids,
+    DateTime deletedAt,
+  ) async {
+    final failed = <String>{};
+    for (final id in ids) {
+      try {
+        await markRemoved(id, deletedAt);
+      } catch (_) {
+        failed.add(id);
+      }
+    }
+    return failed;
+  }
 
   /// 已删除（墓碑）的书籍，用于启动时回收残留文件。
   Future<List<Book>> deletedBooks();

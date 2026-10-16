@@ -5,6 +5,8 @@ import 'package:go_router/go_router.dart';
 import '../../../../app/di/app_providers.dart';
 import '../../../../app/router/app_router.dart';
 import '../../../../domain/models/book.dart';
+import '../../../../platform/channels/system_toast.dart';
+import '../../../../core/diagnostics/reader_work_trace.dart';
 import '../../../core/theme/gt_tokens.dart';
 import '../../../core/widgets/gt_dialog_action.dart';
 import '../view_models/bookshelf_view_model.dart';
@@ -15,17 +17,36 @@ Future<void> openShelfBook(
   WidgetRef ref,
   Book book,
 ) async {
+  BookOpeningTrace.begin(
+    book.id,
+    entry: 'shelf',
+    details: {
+      'format': book.format.code,
+      'status': book.status.code,
+      'bytes': book.sizeBytes,
+    },
+  );
   final repository = ref.read(bookRepositoryProvider);
-  final current = await repository.findById(book.id);
+  final current = await traceReaderWork(
+    'shelf.open.lookup',
+    () => repository.findById(book.id),
+    {'bookId': book.id},
+  );
+  BookOpeningTrace.mark(book.id, 'shelf_lookup');
   if (!context.mounted ||
       current == null ||
       current.status == BookStatus.removed) {
+    BookOpeningTrace.finish(book.id, status: 'unavailable');
     return;
   }
-  if (current.status == BookStatus.active) {
+  if (current.status == BookStatus.active ||
+      current.status == BookStatus.sourceChanged ||
+      current.status == BookStatus.preparing) {
+    BookOpeningTrace.mark(book.id, 'navigation_requested');
     context.push(AppRoutes.reader(book.id));
     return;
   }
+  BookOpeningTrace.finish(book.id, status: 'invalid_source');
   var cleanOthers = false;
   final confirmed = await showDialog<bool>(
     context: context,
@@ -84,8 +105,15 @@ Future<void> openShelfBook(
       .map((b) => b.id)
       .toList();
   if (!context.mounted) return;
-  await ref.read(deleteBooksProvider).run(ids, now: DateTime.now().toUtc());
-  if (context.mounted) ref.read(bookshelfProvider.notifier).clearSelection();
+  final result = await ref
+      .read(deleteBooksProvider)
+      .run(ids, now: DateTime.now().toUtc());
+  if (context.mounted) {
+    ref.read(bookshelfProvider.notifier).pruneSelection(result.undeletedIds);
+    if (result.undeletedIds.isNotEmpty) {
+      await SystemToast.show('${result.undeletedIds.length} 本未删除，请重试');
+    }
+  }
 }
 
 class InvalidBookOverlay extends StatelessWidget {

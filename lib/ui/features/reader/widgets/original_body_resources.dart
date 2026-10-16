@@ -120,7 +120,8 @@ extension _OriginalBodyResources on _OriginalBodyState {
               'window,$slot,$load,$chapter,event);};</script>';
     final injection =
         '$viewport$preload$bridge'
-        '<script>window.__gtReaderPerf=$readerPerformanceEnabled;</script>'
+        '<script>window.__gtReaderPerf=$readerPerformanceEnabled;'
+        'window.__gtImageDecodeVisible=${OpeningExperiments.visibleImageDecode};</script>'
         '<script src="${base}reader_perf.js" defer></script>'
         '${turnTraceEnabled ? '<script>window.__gtTraceTurn=true;</script>' : ''}'
         '<link rel="stylesheet" href="${base}host.css"/>'

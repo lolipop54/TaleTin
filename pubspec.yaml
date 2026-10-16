@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.6+52
+version: 1.1.0+53
 
 environment:
   sdk: ^3.13.2
@@ -28,6 +28,8 @@ environment:
 # the latest version available on pub.dev. To see which dependencies have newer
 # versions available, run `flutter pub outdated`.
 dependencies:
+  direct_read_rust:
+    path: tools/direct_read_rust
   flutter:
     sdk: flutter
 
@@ -100,7 +102,7 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
-
+ 
   assets:
     - assets/icons/
     - assets/icons_used/
@@ -140,6 +142,10 @@ flutter:
     - family: gt-preset-jiangcheng
       fonts:
         - asset: assets/fonts/preset/江城圆体.ttf
+          weight: 400
+    - family: gt-preset-alimama
+      fonts:
+        - asset: assets/fonts/preset/阿里妈妈方圆体.ttf
           weight: 400
     - family: gt-preset-lxgwwenkai
       fonts:
@@ -186,6 +192,10 @@ flutter:
     - family: gt-preview-jiangcheng
       fonts:
         - asset: assets/fonts/preview/gt-preview-jiangcheng-400.ttf
+          weight: 400
+    - family: gt-preview-alimama
+      fonts:
+        - asset: assets/fonts/preview/gt-preview-alimama-400.ttf
           weight: 400
     - family: gt-preview-lxgwwenkai
       fonts:

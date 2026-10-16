@@ -11,6 +11,7 @@ import '../di/completion_providers.dart';
 import '../di/reading_controls_providers.dart';
 import '../../ui/features/achievements/view_models/statistics_providers.dart';
 import '../../ui/features/achievements/widgets/achievement_wall.dart';
+import '../../ui/features/settings/view_models/listening_preferences.dart';
 import '../../ui/features/reader/view_models/listening_panel_view_model.dart';
 import '../../ui/features/reader/view_models/listening_view_state.dart';
 import '../../ui/features/settings/view_models/settings_view_model.dart';
@@ -79,8 +80,11 @@ GoRouter createAppRouter() => GoRouter(
     GoRoute(path: AppRoutes.import, builder: (_, _) => const LocalFilesView()),
     GoRoute(
       path: '/reader/:bookId',
-      pageBuilder: (_, state) => ReaderRoutePage(key: state.pageKey,
-          child: ReaderView(bookId: state.pathParameters['bookId']!)),
+      pageBuilder: (_, state) => ReaderRoutePage(
+        key: state.pageKey,
+        bookId: state.pathParameters['bookId'],
+        child: ReaderView(bookId: state.pathParameters['bookId']!),
+      ),
     ),
   ],
 );
@@ -169,8 +173,12 @@ class _MainShellState extends ConsumerState<MainShell> {
         ref.read(globalPageTurnProvider.future),
         ref.read(readingControlsProvider.future),
         ref.read(statusInfoVisibleProvider.future),
-        ref.read(listeningVoicesProvider.future),
+        ref.read(listeningPreferencesProvider.future),
         ref.read(listeningViewStateProvider.future),
+        ref
+            .read(listeningVoicesProvider.future)
+            .then<void>((_) {})
+            .timeout(kTtsPageConnectionWait, onTimeout: () {}),
       ],
     ];
     // 首次极早点击时保留当前页；失败也交给目标页原有错误/重试界面。
@@ -205,6 +213,8 @@ class _MainShellState extends ConsumerState<MainShell> {
     ref.listen(globalPageTurnProvider, (_, _) {});
     ref.listen(readingControlsProvider, (_, _) {});
     ref.listen(statusInfoVisibleProvider, (_, _) {});
+    ref.listen(listeningPreferencesProvider, (_, _) {});
+    // 超过一秒仍保留订阅，让后台连接继续，完成或超时后照常更新界面。
     ref.listen(listeningVoicesProvider, (_, _) {});
     ref.listen(listeningViewStateProvider, (_, _) {});
     return MainPagesReady(
@@ -213,8 +223,11 @@ class _MainShellState extends ConsumerState<MainShell> {
       child: Scaffold(
         // 让页面内容画到曲线凹口背后；各页把底栏高度作为列表末尾留白。
         extendBody: true,
-        body: FrameFade(key: _fadeKey,
-          revision: navigationShell.currentIndex, child: navigationShell),
+        body: FrameFade(
+          key: _fadeKey,
+          revision: navigationShell.currentIndex,
+          child: navigationShell,
+        ),
         bottomNavigationBar: MainNavigationBar(
           branchIndex: navigationShell.currentIndex,
           onSelect: _goBranch,

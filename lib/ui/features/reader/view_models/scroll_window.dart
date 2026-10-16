@@ -6,6 +6,7 @@ import '../../../../domain/models/book_document.dart';
 import '../../../../domain/models/locator.dart';
 import '../../../../engine/layout/layout_options.dart';
 import '../../../../engine/layout/scroll_chapter.dart';
+import '../../../../engine/layout/block_measurement_cache.dart';
 import '../../../../engine/normalization/locator_mapper.dart';
 import '../widgets/reader_performance.dart';
 
@@ -18,14 +19,25 @@ class _AnchorScrollController extends ScrollController {
   @override
   double get initialScrollOffset => landingOffset;
   @override
-  ScrollPosition createScrollPosition(ScrollPhysics physics, ScrollContext context,
-      ScrollPosition? oldPosition) => _AnchorScrollPosition(physics: physics,
-        context: context, initialPixels: landingOffset, oldPosition: oldPosition);
+  ScrollPosition createScrollPosition(
+    ScrollPhysics physics,
+    ScrollContext context,
+    ScrollPosition? oldPosition,
+  ) => _AnchorScrollPosition(
+    physics: physics,
+    context: context,
+    initialPixels: landingOffset,
+    oldPosition: oldPosition,
+  );
 }
 
 class _AnchorScrollPosition extends ScrollPositionWithSingleContext {
-  _AnchorScrollPosition({required super.physics, required super.context,
-    required super.initialPixels, super.oldPosition}) : super(keepScrollOffset: false);
+  _AnchorScrollPosition({
+    required super.physics,
+    required super.context,
+    required super.initialPixels,
+    super.oldPosition,
+  }) : super(keepScrollOffset: false);
   double pendingCorrection = 0;
 
   @override
@@ -59,17 +71,22 @@ class ScrollWindow extends ChangeNotifier {
   final Future<void> Function(ScrollChapter, double, double)? prepareResources;
   final void Function(Object, StackTrace)? onError;
   final controller = _AnchorScrollController();
+  final _measurements = BlockMeasurementCache();
   List<ScrollEntry> entries = [];
   Map<Key, int> _cellIndices = {};
   Key keyAt(int index) {
     final value = cellAt(index), cell = value.cell;
-    return ValueKey('scroll-${value.entry.index}-${cell.block.id}-${cell.offset}-${cell.from}');
+    return ValueKey(
+      'scroll-${value.entry.index}-${cell.block.id}-${cell.offset}-${cell.from}',
+    );
   }
+
   int? indexOfKey(Key key) => _cellIndices[key];
   void _replace(List<ScrollEntry> next) {
     entries = next;
     _cellIndices = {for (var i = 0; i < cellCount; i++) keyAt(i): i};
   }
+
   LayoutOptions? options;
   bool busy = false;
   bool _opening = false;
@@ -101,29 +118,48 @@ class ScrollWindow extends ChangeNotifier {
       final held = entries.where((entry) => entry.index == index).firstOrNull;
       if (held != null) return held;
     }
-    final content = await measureReader('simplified.scroll.load', () => load(chapters[index]));
-    final layout = await measureReader('simplified.scroll.layout', () => ScrollChapter.prepare(
-      content,
-      value,
-      cancelled: () => _disposed || request != _request,
-      chapterTitle: chapters[index].title,
-    ));
+    final content = await measureReader(
+      'simplified.scroll.load',
+      () => load(chapters[index]),
+    );
+    final layout = await measureReader(
+      'simplified.scroll.layout',
+      () => ScrollChapter.prepare(
+        content,
+        value,
+        cancelled: () => _disposed || request != _request,
+        chapterTitle: chapters[index].title,
+        measurementCache: _measurements,
+      ),
+    );
     return (index: index, layout: layout);
   }
 
-  Future<void> open(int index, LayoutOptions value, Locator? anchor,
-      {int? jumpToken, bool animated = false}) async {
+  Future<void> open(
+    int index,
+    LayoutOptions value,
+    Locator? anchor, {
+    int? jumpToken,
+    bool animated = false,
+  }) async {
     final request = ++_request;
-    busy = true; _opening = true;
+    busy = true;
+    _opening = true;
     try {
       final held = options?.layoutSignature == value.layoutSignature
-          ? entries.where((e) => e.index == index).firstOrNull : null;
-      final heldBefore = entries.where((e) => e.index < index)
+          ? entries.where((e) => e.index == index).firstOrNull
+          : null;
+      final heldBefore = entries
+          .where((e) => e.index < index)
           .fold<double>(0, (sum, e) => sum + e.layout.height);
-      final heldY = heldBefore + (held == null || anchor == null ? 0 : held.layout.offsetOf(anchor));
-      final covered = entries.isNotEmpty &&
+      final heldY =
+          heldBefore +
+          (held == null || anchor == null ? 0 : held.layout.offsetOf(anchor));
+      final covered =
+          entries.isNotEmpty &&
           (entries.first.index == 0 || heldY >= value.contentHeight) &&
-          (entries.last.index == chapters.length - 1 || height - heldY >= value.contentHeight * 2);
+          (entries.last.index == chapters.length - 1 ||
+              height - heldY >= value.contentHeight * 2);
       if (held != null && controller.hasClients && (covered || animated)) {
         final local = anchor == null ? 0.0 : held.layout.offsetOf(anchor);
         await prepareResources?.call(held.layout, local, value.contentHeight);
@@ -131,9 +167,14 @@ class ScrollWindow extends ChangeNotifier {
         _appliedJump = jumpToken;
         if (animated) {
           // 听书复用当前列表，逐帧平移；完成前不回报中途的页首位置。
-          await controller.animateTo((heldBefore + local).clamp(
-            controller.position.minScrollExtent, controller.position.maxScrollExtent),
-            duration: const Duration(milliseconds: 320), curve: Curves.easeInOutCubic);
+          await controller.animateTo(
+            (heldBefore + local).clamp(
+              controller.position.minScrollExtent,
+              controller.position.maxScrollExtent,
+            ),
+            duration: const Duration(milliseconds: 320),
+            curve: Curves.easeInOutCubic,
+          );
           if (_disposed || request != _request) return;
           _opening = false;
           report();
@@ -146,14 +187,20 @@ class ScrollWindow extends ChangeNotifier {
       final local = anchor == null ? 0.0 : target.layout.offsetOf(anchor);
       final next = await _around(target, local, value, request);
       if (_disposed || request != _request) return;
-      final before = next.where((e) => e.index < index)
+      final before = next
+          .where((e) => e.index < index)
           .fold<double>(0, (sum, e) => sum + e.layout.height);
       final offset = before + local;
       for (final entry in next) {
-        await prepareResources?.call(entry.layout,
-            entry.index < index ? entry.layout.height - value.contentHeight
-                : entry.index == index ? offset - before : 0,
-            value.contentHeight);
+        await prepareResources?.call(
+          entry.layout,
+          entry.index < index
+              ? entry.layout.height - value.contentHeight
+              : entry.index == index
+              ? offset - before
+              : 0,
+          value.contentHeight,
+        );
       }
       if (_disposed || request != _request) return;
       options = value;
@@ -165,7 +212,8 @@ class ScrollWindow extends ChangeNotifier {
       // 换字号、跳转或退出后，旧测量不再改动当前画面。
     } finally {
       if (!_disposed && request == _request) {
-        busy = false; _opening = false;
+        busy = false;
+        _opening = false;
         if (animated) _maintainLater();
       }
     }
@@ -225,7 +273,9 @@ class ScrollWindow extends ChangeNotifier {
       ),
     );
     onPosition(layout.content, locator, _appliedJump);
-    if (watch != null) readerPerf('simplified.scroll.report', watch.elapsedMicroseconds);
+    if (watch != null) {
+      readerPerf('simplified.scroll.report', watch.elapsedMicroseconds);
+    }
   }
 
   Future<void> maintain() async {
@@ -237,19 +287,31 @@ class ScrollWindow extends ChangeNotifier {
     // 一章可能只有封面或几十个字，必须按距离补齐，不能只看章数。
     if (_center == index &&
         (entries.first.index == 0 || y >= viewport) &&
-        (entries.last.index == chapters.length - 1 || height - y >= viewport * 2)) { return; }
+        (entries.last.index == chapters.length - 1 ||
+            height - y >= viewport * 2)) {
+      return;
+    }
     busy = true;
     final request = _request;
     var retry = false;
     try {
-      final next = await _around(current.entry, current.local, options!, request);
+      final next = await _around(
+        current.entry,
+        current.local,
+        options!,
+        request,
+      );
       if (_disposed || request != _request) return;
       final visibleIndex = visible()?.entry.index;
       if (visibleIndex == null || !next.any((e) => e.index == visibleIndex)) {
-        retry = true; return;
+        retry = true;
+        return;
       }
       _center = index;
-      if (next.first.index == entries.first.index && next.last.index == entries.last.index) return;
+      if (next.first.index == entries.first.index &&
+          next.last.index == entries.last.index) {
+        return;
+      }
       // 使用完成时的距离，准备期间用户继续拖动也不会被拉回旧位置。
       var oldBefore = 0.0, newBefore = 0.0;
       for (final e in entries) {
@@ -261,14 +323,19 @@ class ScrollWindow extends ChangeNotifier {
       final offset = controller.offset + newBefore - oldBefore;
       var before = 0.0;
       for (final entry in next) {
-        await prepareResources?.call(entry.layout, offset - before, options!.contentHeight);
+        await prepareResources?.call(
+          entry.layout,
+          offset - before,
+          options!.contentHeight,
+        );
         before += entry.layout.height;
       }
       if (_disposed || request != _request) return;
       // 图片等待期间也可能继续拖动，最后补偿必须使用此刻的位置。
       final latest = visible()?.entry.index;
       if (latest == null || !next.any((e) => e.index == latest)) {
-        retry = true; return;
+        retry = true;
+        return;
       }
       final finalOffset = controller.offset + newBefore - oldBefore;
       _replace(next);
@@ -284,23 +351,32 @@ class ScrollWindow extends ChangeNotifier {
     }
   }
 
-  void _maintainLater() => unawaited(maintain().catchError(
-      (Object error, StackTrace stack) { onError?.call(error, stack); }));
+  void _maintainLater() => unawaited(
+    maintain().catchError((Object error, StackTrace stack) {
+      onError?.call(error, stack);
+    }),
+  );
 
-  Future<List<ScrollEntry>> _around(ScrollEntry target, double local,
-      LayoutOptions value, int request) async {
+  Future<List<ScrollEntry>> _around(
+    ScrollEntry target,
+    double local,
+    LayoutOptions value,
+    int request,
+  ) async {
     final next = <ScrollEntry>[target];
     var above = local, below = target.layout.height - local;
     final reserve = value.contentHeight * 2;
     while (next.first.index > 0 &&
         (next.first.index == target.index || above < reserve)) {
       final entry = await _prepare(next.first.index - 1, value, request);
-      next.insert(0, entry); above += entry.layout.height;
+      next.insert(0, entry);
+      above += entry.layout.height;
     }
     while (next.last.index + 1 < chapters.length &&
         (next.last.index == target.index || below < reserve * 1.5)) {
       final entry = await _prepare(next.last.index + 1, value, request);
-      next.add(entry); below += entry.layout.height;
+      next.add(entry);
+      below += entry.layout.height;
     }
     return next;
   }
@@ -309,6 +385,7 @@ class ScrollWindow extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _request++;
+    _measurements.clear();
     controller.dispose();
     super.dispose();
   }

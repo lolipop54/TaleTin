@@ -16,8 +16,9 @@ import java.nio.ByteBuffer
 
 /** 翻页截图直接传 RGBA 像素，避免在 Android 主线程压 PNG、在 Dart 再解码。 */
 object PageCapture {
-    var traceInput = false
-        private set
+    private var readerInputTracing = false
+    private var captureInputTracing = false
+    val traceInput: Boolean get() = readerInputTracing || captureInputTracing
     // 三个章节宿主在主线程串行取图，共用一套原尺寸工作区，不按章节累积。
     private var bitmap: Bitmap? = null
     private var pixels: ByteBuffer? = null
@@ -40,9 +41,15 @@ object PageCapture {
     fun register(engine: FlutterEngine) {
         MethodChannel(engine.dartExecutor.binaryMessenger, "gtreader/page_capture")
             .setMethodCallHandler { call, result ->
+                if (call.method == "setInputTracing") {
+                    readerInputTracing = call.arguments == true
+                    Log.i("GT_TURN_NATIVE", "wall=${System.currentTimeMillis()} readerTrace=$readerInputTracing")
+                    result.success(null)
+                    return@setMethodCallHandler
+                }
                 if (call.method == "setEnabled") {
                     enabled = call.arguments == true
-                    if (!enabled) { traceInput = false; release() }
+                    if (!enabled) { captureInputTracing = false; release() }
                     result.success(null)
                     return@setMethodCallHandler
                 }
@@ -52,7 +59,7 @@ object PageCapture {
                 }
                 val id = call.argument<Int>("viewId")!!
                 val tracing = call.argument<Boolean>("trace") == true
-                traceInput = tracing || call.argument<Boolean>("traceInput") == true
+                captureInputTracing = tracing || call.argument<Boolean>("traceInput") == true
                 val started = if (tracing) SystemClock.elapsedRealtimeNanos() else 0L
                 fun trace(stage: String) {
                     if (tracing) Log.i("GT_TURN_NATIVE", "wall=${System.currentTimeMillis()} web=$id op=${call.method} request=$started stage=$stage us=${(SystemClock.elapsedRealtimeNanos() - started) / 1000}")

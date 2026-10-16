@@ -1,5 +1,4 @@
 import 'package:taletin/ui/core/widgets/gt_switch.dart';
-import 'package:taletin/ui/core/widgets/gt_button.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../app/router/main_pages_ready.dart';
@@ -33,6 +32,7 @@ import 'restore_view.dart';
 import 'notes_export_view.dart';
 import '../../reader/view_models/listening_view_state.dart';
 import 'listening_rate_view.dart';
+import '../view_models/listening_preferences.dart';
 import '../../reader/view_models/listening_panel_view_model.dart';
 import '../../reader/view_models/listening_voice_choices.dart';
 import 'listening_voice_view.dart';
@@ -45,10 +45,14 @@ class SettingsView extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    MainPagesReady.dependOn(context);
+    final mainReady =
+        context.dependOnInheritedWidgetOfExactType<MainPagesReady>()?.ready ??
+        true;
     final colors = context.gtColors;
-    final voices = ref.watch(listeningVoicesProvider);
+    final preferences = ref.watch(listeningPreferencesProvider);
     final speech = ref.watch(listeningViewStateProvider).value;
+    final connecting =
+        mainReady && ref.watch(listeningVoicesProvider).isLoading;
     // 全局默认排版模式；还没读出来时不显示值（也不可点）
     final layoutMode = ref.watch(globalLayoutModeProvider).value;
     final pageTurn = ref.watch(globalPageTurnProvider).value;
@@ -59,12 +63,13 @@ class SettingsView extends ConsumerWidget {
         pageTurn == null ||
         controls == null ||
         !status.hasValue ||
-        (!voices.hasValue && voices.isLoading) ||
+        !preferences.hasValue ||
         speech == null) {
       final failed =
           ref.watch(globalSettingsProvider).hasError ||
           ref.watch(readingControlsProvider).hasError ||
-          status.hasError;
+          status.hasError ||
+          preferences.hasError;
       return Scaffold(
         body: failed
             ? GtErrorView(
@@ -73,6 +78,7 @@ class SettingsView extends ConsumerWidget {
                   ref.invalidate(globalSettingsProvider);
                   ref.invalidate(readingControlsProvider);
                   ref.invalidate(statusInfoVisibleProvider);
+                  ref.invalidate(listeningPreferencesProvider);
                 },
               )
             : const SizedBox.shrink(),
@@ -209,31 +215,27 @@ class SettingsView extends ConsumerWidget {
             ),
             const SizedBox(height: GtSpacing.s4),
             _sectionHeader(context, '听书'),
-            if (!voices.hasValue)
-              GtButton(
-                onPressed: () => ref.invalidate(listeningVoicesProvider),
-                child: const Text('音色准备失败，点击重试'),
-              )
-            else ...[
-              if (speech.error != null) Text(speech.error!),
-              SettingsRow(
-                label: '引擎与离线音色',
-                value: speech.voice == null
-                    ? '未选择'
-                    : '${speech.voice!.displayName} · ${speech.voice!.locale}',
-                onTap: () => openSettingsPage(
-                  context,
-                  const ListeningVoiceView(),
-                  ready: listeningVoiceChoicesProvider.future,
-                ),
+            if (speech.error != null) Text(speech.error!),
+            SettingsRow(
+              label: '引擎与离线音色',
+              value: connecting
+                  ? '连接中'
+                  : speech.voice != null
+                  ? '${speech.voice!.displayName} · ${speech.voice!.locale}'
+                  : preferences.requireValue.voiceId == null
+                  ? '未选择'
+                  : '${preferences.requireValue.voiceId} · ${preferences.requireValue.locale}',
+              onTap: () => openSettingsPage(
+                context,
+                const ListeningVoiceView(),
+                ready: listeningVoiceChoicesProvider.future,
               ),
-              SettingsRow(
-                label: '语速',
-                value: '${speech.speed.toStringAsFixed(1)}×',
-                onTap: () =>
-                    openSettingsPage(context, const ListeningRateView()),
-              ),
-            ],
+            ),
+            SettingsRow(
+              label: '语速',
+              value: '${preferences.requireValue.speed.toStringAsFixed(1)}×',
+              onTap: () => openSettingsPage(context, const ListeningRateView()),
+            ),
             const SizedBox(height: GtSpacing.s4),
             _sectionHeader(context, '数据'),
             SettingsRow(

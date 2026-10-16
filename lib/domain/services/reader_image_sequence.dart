@@ -54,6 +54,7 @@ Future<ReaderImageSequence?> readerImageSequence({
       utf16Offset: 0,
       affinity: LocatorAffinity.before,
       resourceHref: chapters[index].href,
+      imageResource: block.resourcePath,
     ),
     contents.resourceAbsolutePath(
       book.id,

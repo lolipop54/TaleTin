@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.SystemClock
+import android.provider.Settings
 import android.speech.tts.TextToSpeech
 import android.media.AudioAttributes
 import android.speech.tts.UtteranceProgressListener
@@ -48,7 +49,6 @@ internal class NativeTtsEngine(
             events.onError(id, TtsErrorCode.OUTPUT, "本地语音播放失败")
         } },
     )
-    private var systemDefaultPackage = ""
     private var sleepVersion = -1L
     private var sleepDeadline: Long? = null
     private var sleepReported = false
@@ -180,7 +180,6 @@ internal class NativeTtsEngine(
         }
 
         enginePackage = if (want != null) want else resolveDefaultEngine()
-        systemDefaultPackage = tts?.defaultEngine.orEmpty()
         tts?.setAudioAttributes(AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_MEDIA)
             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
@@ -203,6 +202,10 @@ internal class NativeTtsEngine(
      */
     fun listEngines(): List<TtsEngineDto> {
         return try {
+            // 只读系统偏好和已安装服务，不依赖 TTS 已连接；连接超时期间页面也能选引擎。
+            val systemDefaultPackage = Settings.Secure.getString(
+                context.contentResolver, Settings.Secure.TTS_DEFAULT_SYNTH,
+            ).orEmpty()
             val manager = context.packageManager
             manager.queryIntentServices(Intent(TextToSpeech.Engine.INTENT_ACTION_TTS_SERVICE), 0)
                 .distinctBy { it.serviceInfo.packageName }.map { info ->

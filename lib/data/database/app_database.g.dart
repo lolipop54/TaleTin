@@ -2467,7 +2467,6 @@ class ReadingPositionRow extends DataClass
   final String locatorJson;
 
   /// 全书进度 0–1（内容比例，与排版无关）：书架直接用它显示百分比。
-  /// 早期版本写入的行没有这个值，书架会退回「按章边界估算」。
   final double? progress;
   final DateTime updatedAt;
   final int schemaVersion;

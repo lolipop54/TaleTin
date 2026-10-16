@@ -306,7 +306,7 @@ final readerProvider =
 
 /// 阅读页显示时间（状态栏位）的来源。
 /// 单独抽出是为了让测试能注入固定时间，避免 Golden 随当前时间抖动；
-/// 阶段 5 会由 Clock 契约统一提供。
+/// 系统状态通知到达或恢复前台时，信息区重新读取这个时钟。
 final readerClockProvider = Provider<DateTime Function()>(
   (ref) => DateTime.now,
 );

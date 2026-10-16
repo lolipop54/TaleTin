@@ -46,15 +46,15 @@ abstract class DocumentPlatform {
 
   Future<void> close(DocumentSession session);
 
-  /// 用指定字符集解码一段字节，用于 TXT 编码预览。
+  /// 保留平台解码用于诊断对照；正式 TXT 编码预览使用 Rust。
   ///
   /// 平台无法识别字符集时抛 [ArgumentError]。
   Future<String> decodeBytes(Uint8List bytes, String charsetName);
 
   /// 把整个文件按指定字符集转成 UTF-8 写入目标路径。
   ///
-  /// Dart 侧只原生支持 UTF-8 / UTF-16，GB18030 等中文常见编码
-  /// 由平台 ICU 完成解码（设计文档 6.3）。返回实际使用的字符集名。
+  /// 诊断时与 Rust 转码比较输出和耗时。返回平台实际使用的字符集名；
+  /// 正式正文及旧书修复的转码不再调用本方法。
   Future<String> transcodeToUtf8({
     required String sourcePath,
     required String charsetName,

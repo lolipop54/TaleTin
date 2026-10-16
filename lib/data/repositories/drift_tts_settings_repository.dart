@@ -11,21 +11,24 @@ class DriftTtsSettingsRepository implements TtsSettingsRepository {
   final AppDatabase database;
 
   @override
-  Future<TtsSettings> load() async {
-    final row =
-        await (database.select(database.preferences)..where(
-              (t) =>
-                  t.scope.equals('global') &
-                  t.scopeId.equals('global') &
-                  t.key.equals('ttsSettings'),
-            ))
-            .getSingleOrNull();
-    return row == null
-        ? const TtsSettings()
-        : TtsSettings.fromJson(
-            jsonDecode(row.valueJson) as Map<String, Object?>,
+  Future<TtsSettings> load() => watch().first;
+
+  @override
+  Stream<TtsSettings> watch() =>
+      (database.select(database.preferences)..where(
+            (t) =>
+                t.scope.equals('global') &
+                t.scopeId.equals('global') &
+                t.key.equals('ttsSettings'),
+          ))
+          .watchSingleOrNull()
+          .map(
+            (row) => row == null
+                ? const TtsSettings()
+                : TtsSettings.fromJson(
+                    jsonDecode(row.valueJson) as Map<String, Object?>,
+                  ),
           );
-  }
 
   @override
   Future<void> save(TtsSettings settings) async {

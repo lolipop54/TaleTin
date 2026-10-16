@@ -14,6 +14,7 @@ abstract final class EnglishHyphenation {
   static Future<void>? _preparing;
   static final _words = <String, List<int>>{};
   static final _word = RegExp(r'[A-Za-z]{5,}');
+  static bool get isPrepared => _dictionary != null;
 
   static Future<void> prepare() {
     // 已准备好时直接返回，不继续持有首次资源加载所在的异步上下文。
@@ -54,6 +55,8 @@ abstract final class EnglishHyphenation {
       }
     }
     if (_words.length > 1024) _words.clear();
+    // No inserted hyphens means the original string and all offsets stay valid.
+    if (points.isEmpty) return HyphenatedText(source, const []);
     final buffer = StringBuffer();
     final inserted = <int>[];
     for (var i = 0; i < source.length; i++) {

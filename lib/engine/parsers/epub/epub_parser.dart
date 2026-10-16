@@ -9,15 +9,24 @@ library;
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
+import 'package:direct_read_rust/direct_read_rust.dart';
 
+import 'dart:convert';
+import 'dart:typed_data';
+
+import '../../../core/diagnostics/import_timing.dart';
 import '../../../core/errors/import_error.dart';
+import '../../../core/io/source_fingerprint.dart';
+import '../../../core/io/source_digest.dart';
 import '../../../domain/models/book_document.dart';
+import '../../../domain/models/source_content_index.dart';
 import '../../../domain/services/book_parser.dart';
 import 'epub_archive.dart';
 import 'epub_package.dart';
 import 'epub_source_reader.dart';
 import 'image_sniff.dart';
 import 'xhtml_blocks.dart';
+import '../../normalization/source_position_matcher.dart';
 
 class EpubParser {
   const EpubParser();
@@ -46,7 +55,13 @@ class EpubParser {
     required bool Function() isCancelled,
     ParseCover? onCover,
   }) async {
+    final timing = traceImportPerf ? ImportTiming('epub_parser') : null;
+    var chapterBytes = 0;
+    var chapterCount = 0;
     final archive = EpubArchive.open(request.sourcePath);
+    final matches = SourcePositionMatcher(request.locationAnchors);
+    archive.importTiming = timing;
+    timing?.mark('zip_open');
     try {
       final opfPath = EpubPackage.readOpfPath(archive);
       final package = EpubPackage.parse(archive, opfPath);
@@ -64,7 +79,9 @@ class EpubParser {
         for (final item in package.manifest.values)
           item.entryPath: item.mediaType,
       };
+      timing?.mark('package_metadata');
       final imageCache = <String, ResolvedImage>{};
+      var deferredImageBytes = 0;
 
       ResolvedImage? resolveImage(String entryPath) {
         final cached = imageCache[entryPath];
@@ -76,7 +93,33 @@ class EpubParser {
           return null;
         }
         if (!archive.contains(entryPath)) return null;
+        // 统计只需知道图片块存在。封面仍立即提取，其余图片在实际读章时落盘。
+        if (request.indexedContent &&
+            entryPath != package.coverItem?.entryPath) {
+          final bytes = archive.find(entryPath)!.size;
+          if (bytes > EpubArchive.maxEntryBytes) {
+            throw ImportFailure(
+              ImportErrorCode.unsafeArchive,
+              '单条图片声明过大：$entryPath',
+            );
+          }
+          deferredImageBytes += bytes;
+          if (deferredImageBytes > EpubArchive.maxTotalBytes) {
+            throw const ImportFailure(
+              ImportErrorCode.unsafeArchive,
+              '图片声明总大小超过上限',
+            );
+          }
+          final resolved = ResolvedImage(
+            resourcePath: 'res/$entryPath',
+            width: -1,
+            height: -1,
+          );
+          imageCache[entryPath] = resolved;
+          return resolved;
+        }
         final bytes = archive.readBytes(entryPath);
+        if (entryPath == package.coverItem?.entryPath) onCover?.call(bytes);
         final size = sniffImageSize(bytes);
         final target = p.join(resourceDir, entryPath);
         File(target).parent.createSync(recursive: true);
@@ -92,23 +135,31 @@ class EpubParser {
 
       // 先发布封面，再处理正文；字节随任务回传，不依赖稍后移动的暂存路径。
       final coverItem = package.coverItem;
-      final cover = coverItem == null ? null : resolveImage(coverItem.entryPath);
-      if (cover != null) {
-        onCover?.call(File(p.join(workDir, cover.resourcePath)).readAsBytesSync());
-      }
+      final cover = coverItem == null
+          ? null
+          : resolveImage(coverItem.entryPath);
+      timing?.mark('cover');
 
       // 目录先行：章节标题优先取目录标题
       final tocTitles = <String, String>{};
       final navigationDocuments = <String, String>{};
       final rawToc = _readRawToc(
-        archive, package, tocTitles, navigationDocuments: navigationDocuments,
+        archive,
+        package,
+        tocTitles,
+        navigationDocuments: navigationDocuments,
       );
+      timing?.mark('navigation_read');
       if (rawToc.isEmpty) warnings.add(warningNoToc);
 
       final chapters = <Chapter>[];
+      final sources = <String, List<Object>>{};
       final tocNodes = <TocNode>[];
       final spineHrefs = <String, String>{};
       final total = package.spine.length;
+      var shownPercent = -1;
+      var batchStart = 0;
+      var preparedStatistics = <XhtmlBlocks>[];
       for (var index = 0; index < total; index++) {
         if (isCancelled()) throw const ImportFailure(ImportErrorCode.cancelled);
         final item = package.spine[index];
@@ -118,10 +169,58 @@ class EpubParser {
         final builder = XhtmlBlockBuilder(
           basePath: item.entryPath,
           resolveImage: resolveImage,
+          importTiming: timing,
+          buildTextMap: false,
+          statisticsOnly: request.indexedContent,
         );
-        final result = builder.convert(
-          navigationDocuments.remove(item.entryPath) ?? archive.readText(item.entryPath),
-        );
+        timing?.mark('chapter_setup');
+        final XhtmlBlocks result;
+        if (request.indexedContent) {
+          if (index == batchStart + preparedStatistics.length) {
+            batchStart = index;
+            final texts = <String>[], paths = <String>[];
+            final rawSources = <Uint8List>[];
+            final rawHtml = ProcessingFeatures.rawHtml;
+            var characters = 0;
+            // 小批并行，避免把所有章节及 DOM 同时保留在内存里。
+            // 单个较大的章节照常解析，其余每批最多 16 章／约 512 Ki 字符。
+            for (var at = index; at < total && paths.length < 16; at++) {
+              final path = package.spine[at].entryPath;
+              final navigation = navigationDocuments.remove(path);
+              if (rawHtml) {
+                final source = navigation == null
+                    ? archive.readBytes(path)
+                    : utf8.encode(navigation);
+                rawSources.add(source);
+                // Bound raw input to 512 KiB. A single large chapter still works.
+                characters += source.length;
+              } else {
+                final source = navigation ?? archive.readText(path);
+                texts.add(source);
+                characters += source.length;
+              }
+              paths.add(path);
+              if (characters >= 512 * 1024) break;
+            }
+            timing?.mark('chapter_read_decode');
+            preparedStatistics = XhtmlBlockBuilder.statisticsBatch(
+              texts,
+              paths,
+              resolveImage,
+              timing: timing,
+              rawSources: rawHtml ? rawSources : null,
+              statisticsOnly: matches.isEmpty,
+            );
+          }
+          result = preparedStatistics[index - batchStart];
+        } else {
+          final source =
+              navigationDocuments.remove(item.entryPath) ??
+              archive.readText(item.entryPath);
+          timing?.mark('chapter_read_decode');
+          result = builder.convert(source);
+        }
+        timing?.mark('chapter_convert');
         warnings.addAll(result.warnings);
 
         final title = _chapterTitle(
@@ -133,32 +232,69 @@ class EpubParser {
           chapterId: chapterId,
           blocks: result.blocks,
           tables: result.tables,
+          epubDetailsRevision: kEpubDetailsRevision,
         );
+        if (!matches.isEmpty) matches.add(chapterId, content.blocks);
         final contentPath = 'content/${request.contentVersion}/$chapterId.json';
-        File(p.join(workDir, '$chapterId.json'))
-            .writeAsBytesSync(content.encode(), flush: false);
+        timing?.mark('chapter_metadata');
+        final bytes = request.indexedContent ? null : content.encode();
+        timing?.mark('chapter_json_encode');
+        if (bytes != null) {
+          File(p.join(workDir, '$chapterId.json'))
+              .writeAsBytesSync(bytes, flush: false);
+        }
+        sources[chapterId] = [item.entryPath];
+        timing?.mark('chapter_file_write');
+        if (timing != null) {
+          chapterBytes += bytes?.length ?? 0;
+          chapterCount++;
+        }
         chapters.add(
           Chapter(
             id: chapterId,
             ordinal: index,
             title: title,
             contentPath: contentPath,
-            textLength: content.textLength,
+            textLength: result.textLength,
             href: item.href,
           ),
         );
-        onProgress(0.1 + 0.85 * ((index + 1) / total));
+        timing?.mark('chapter_index');
+        final fraction = 0.1 + 0.85 * ((index + 1) / total);
+        final percent = (fraction * 100).floor();
+        if (percent != shownPercent) {
+          shownPercent = percent;
+          onProgress(fraction);
+        }
+        timing?.mark('progress_send');
+        // 让取消消息有机会到达后台任务，同时避免逐章向界面发送重复百分比。
+        if ((index + 1) % 32 == 0) {
+          await Future<void>.delayed(Duration.zero);
+        }
       }
 
       if (chapters.isEmpty) {
         throw const ImportFailure(ImportErrorCode.emptyContent);
       }
+      if (deferredImageBytes + archive.decodedBytes >
+          EpubArchive.maxTotalBytes) {
+        throw const ImportFailure(
+          ImportErrorCode.unsafeArchive,
+          '正文与图片声明总大小超过上限',
+        );
+      }
 
       tocNodes.addAll(_buildToc(rawToc, spineHrefs, chapters));
+      timing?.mark('toc_build');
 
       final metaTitle = _titleFromFileName(request.displayName, package.title);
       final metaAuthor = package.author;
       onProgress(1);
+      String? sourceDigest;
+      if (request.indexedContent) {
+        sourceDigest = await sourceFileDigest(request.sourcePath);
+      }
+      timing?.mark('source_sha256');
       return BookDocument(
         title: metaTitle,
         author: metaAuthor,
@@ -169,9 +305,31 @@ class EpubParser {
         coverWidth: cover?.width,
         coverHeight: cover?.height,
         warnings: warnings.toList(),
+        tocRevision: kTocRevision,
+        locationMatches: matches.finish(),
+        sourceIndex: request.indexedContent
+            ? SourceContentIndex(
+                format: 'epub',
+                sourceDigest: sourceDigest!,
+                sourceBytes: await File(request.sourcePath).length(),
+                sourceStamp: sourceFingerprint(
+                  await File(request.sourcePath).stat(),
+                ),
+                chapters: sources,
+                images: {
+                  for (final image in imageCache.entries)
+                    image.key: [image.value.width, image.value.height],
+                },
+              )
+            : null,
       );
     } finally {
+      timing?.mark('document_build');
       archive.close();
+      timing?.mark('zip_close');
+      timing?.report(
+        counts: {'chapters': chapterCount, 'chapterJsonBytes': chapterBytes},
+      );
     }
   }
 
@@ -186,10 +344,7 @@ class EpubParser {
         : result.headingTitle;
     if (title != null && title.trim().isNotEmpty) return title;
     final isCover =
-        coverPath != null &&
-        result.blocks.length == 1 &&
-        result.blocks.single.kind == BlockKind.image &&
-        result.blocks.single.resourcePath == 'res/$coverPath';
+        coverPath != null && result.singleImagePath == 'res/$coverPath';
     return isCover ? '封面' : '';
   }
 
@@ -207,19 +362,27 @@ class EpubParser {
       final titles = <String, String>{};
       final navigationDocuments = <String, String>{};
       const EpubParser()._readRawToc(
-        archive, package, titles, navigationDocuments: navigationDocuments,
+        archive,
+        package,
+        titles,
+        navigationDocuments: navigationDocuments,
       );
       return {
         for (final chapter in candidates)
           chapter.id: (() {
             final item = package.spine[chapter.ordinal];
-            final result = XhtmlBlockBuilder(
-              basePath: item.entryPath,
-              resolveImage: (path) =>
-                  ResolvedImage(resourcePath: 'res/$path', width: 1, height: 1),
-            ).convert(
-              navigationDocuments.remove(item.entryPath) ?? archive.readText(item.entryPath),
-            );
+            final result =
+                XhtmlBlockBuilder(
+                  basePath: item.entryPath,
+                  resolveImage: (path) => ResolvedImage(
+                    resourcePath: 'res/$path',
+                    width: 1,
+                    height: 1,
+                  ),
+                ).convert(
+                  navigationDocuments.remove(item.entryPath) ??
+                      archive.readText(item.entryPath),
+                );
             return _chapterTitle(
               titles[item.entryPath],
               result,
@@ -276,10 +439,7 @@ class EpubParser {
       if (package.spine.any((item) => item.entryPath == navItem.entryPath)) {
         navigationDocuments?[navItem.entryPath] = source;
       }
-      entries = parseNavDocument(
-        source,
-        navItem.entryPath,
-      );
+      entries = parseNavDocument(source, navItem.entryPath);
     }
     if (entries.isEmpty) {
       final ncxItem = package.ncxItem;

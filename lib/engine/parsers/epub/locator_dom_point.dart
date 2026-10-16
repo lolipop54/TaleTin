@@ -132,6 +132,9 @@ class LocatorDomMap {
       {'path': _path(segment.node), 'length': segment.rawLength},
   ];
 
+  /// 滚动宿主沿用正文图片顺序，包含 SVG image，排除未计入正文的内联图片。
+  List<List<int>> get imagePaths => [for (final image in _images) _path(image)];
+
   Locator locatorOf(Map<String, dynamic> point) {
     Node node = map.document.body!;
     for (final index in point['path'] as List) {

@@ -6,9 +6,79 @@
   var relocateTimer = null;
   var turnEffect = 'slide';
   var pageProbes = new Map();
+  var geometryVersion = 0;
+  var geometryValues = new Map();
+  var elementRects = new WeakMap(), nodeRects = new WeakMap();
+  var elementCount = 0, textRectCount = 0;
+  var observer = null, watching = false;
+
+  function invalidate() {
+    geometryVersion++;
+    geometryValues.clear(); pageProbes.clear();
+    elementRects = new WeakMap(); nodeRects = new WeakMap();
+    elementCount = 0; textRectCount = 0;
+  }
+
+  function checkGeometry() {
+    if (!watching && document.body) {
+      watching = true;
+      if (window.MutationObserver) {
+        observer = new window.MutationObserver(invalidate);
+        // Reader style writes invalidate explicitly. Exclude body transform/style
+        // attributes so a page translation does not destroy content coordinates.
+        observer.observe(document.documentElement || document.body, {
+          subtree: true, childList: true, characterData: true,
+          attributes: true, attributeFilter: ['src', 'width', 'height', 'class', 'hidden']
+        });
+      }
+      window.addEventListener?.('resize', invalidate);
+      document.addEventListener?.('load', invalidate, true);
+      document.addEventListener?.('error', invalidate, true);
+      document.fonts?.addEventListener?.('loadingdone', invalidate);
+      document.fonts?.addEventListener?.('loadingerror', invalidate);
+    }
+    // Mutations may still be queued in this task when a coordinate is requested.
+    if (observer && observer.takeRecords().length) invalidate();
+    return geometryVersion;
+  }
+
+  function cachedValue(key, compute) {
+    checkGeometry();
+    if (!geometryValues.has(key)) geometryValues.set(key, compute());
+    return geometryValues.get(key);
+  }
+
+  function contentRect(rect) {
+    return { left: toContentX(rect.left), right: toContentX(rect.right),
+      width: rect.width, height: rect.height };
+  }
+
+  function elementRect(element) {
+    var rect = elementRects.get(element);
+    if (!rect) {
+      rect = contentRect(element.getBoundingClientRect());
+      if (elementCount < 4096) { elementRects.set(element, rect); elementCount++; }
+    }
+    return rect;
+  }
+
+  function textRects(node) {
+    var rects = nodeRects.get(node);
+    if (!rects) {
+      var range = document.createRange();
+      range.selectNodeContents(node);
+      rects = Array.from(range.getClientRects(), contentRect);
+      // A very long paragraph still works without retaining an unbounded array.
+      if (textRectCount + rects.length <= 12000) {
+        nodeRects.set(node, rects); textRectCount += rects.length;
+      }
+    }
+    return rects;
+  }
 
   // 分栏时已校正页数，章内翻页直接查范围；末页纠错每次排版只探测一次。
   function probePage(page) {
+    checkGeometry();
     if (!pageProbes.has(page)) {
       pageProbes.set(page, hasContentAt(page * state.width));
     }
@@ -25,12 +95,16 @@
   }
 
   function columnStep() {
+    return cachedValue('columnStep', measureColumnStep);
+  }
+
+  function measureColumnStep() {
     var blocks = document.body.querySelectorAll('p,h1,h2,h3,h4,h5,h6,div,li');
     var first = -1;
     for (var i = 0; i < blocks.length; i++) {
-      var rect = blocks[i].getBoundingClientRect();
+      var rect = elementRect(blocks[i]);
       if (!rect || !rect.width) continue;
-      var left = toContentX(rect.left);
+      var left = rect.left;
       if (first < 0) { first = left; continue; }
       var delta = left - first;
       if (delta > 10) return Math.round(delta);
@@ -44,6 +118,7 @@
   }
 
   function setupColumns() {
+    invalidate();
     var body = document.body;
     var root = document.documentElement;
     if (!body) return;
@@ -75,16 +150,25 @@
     body.style.setProperty('-webkit-column-gap', gap);
     body.style.setProperty('column-fill', 'auto');
     body.style.setProperty('-webkit-column-fill', 'auto');
+    // Resize may change the column width while the body still has the previous
+    // translation. Align it before saving content coordinates for this layout.
+    body.style.setProperty('transition', 'none');
+    body.style.setProperty('transform',
+      'translateX(' + (-state.page * state.width) + 'px)');
   }
 
   function contentWidth() {
+    return cachedValue('contentWidth', measureContentWidth);
+  }
+
+  function measureContentWidth() {
     var maxRight = 0;
     var blocks = document.body.querySelectorAll(
       'p,h1,h2,h3,h4,h5,h6,li,div,img,table,pre,blockquote,figure,section,article');
     for (var i = 0; i < blocks.length; i++) {
-      var rect = blocks[i].getBoundingClientRect();
+      var rect = elementRect(blocks[i]);
       if (!rect || (!rect.width && !rect.height)) continue;
-      var right = toContentX(rect.right);
+      var right = rect.right;
       if (right > maxRight) maxRight = right;
     }
     try {
@@ -102,6 +186,7 @@
   }
 
   function hasContentAt(contentX) {
+    checkGeometry();
     var pageEnd = contentX + state.width;
     try {
       var walker = document.createTreeWalker(
@@ -109,14 +194,12 @@
       var node;
       while ((node = walker.nextNode())) {
         if (!node.nodeValue || !node.nodeValue.trim()) continue;
-        var range = document.createRange();
-        range.selectNodeContents(node);
-        var rects = range.getClientRects();
+        var rects = textRects(node);
         for (var i = 0; i < rects.length; i++) {
           var rect = rects[i];
           if (!rect.width && !rect.height) continue;
-          var left = toContentX(rect.left);
-          var right = toContentX(rect.right);
+          var left = rect.left;
+          var right = rect.right;
           if (left >= contentX && left < pageEnd) return true;
           if (left < contentX && right > contentX) return true;
         }
@@ -124,10 +207,10 @@
       var media = document.body.querySelectorAll(
         'img,svg,video,table,hr,figure');
       for (var j = 0; j < media.length; j++) {
-        var mediaRect = media[j].getBoundingClientRect();
+        var mediaRect = elementRect(media[j]);
         if (!mediaRect || (!mediaRect.width && !mediaRect.height)) continue;
-        var mediaLeft = toContentX(mediaRect.left);
-        var mediaRight = toContentX(mediaRect.right);
+        var mediaLeft = mediaRect.left;
+        var mediaRight = mediaRect.right;
         if (mediaLeft >= contentX && mediaLeft < pageEnd) return true;
         if (mediaLeft < contentX && mediaRight > contentX) return true;
       }
@@ -138,6 +221,10 @@
   }
 
   function textMaxRight() {
+    return cachedValue('textMaxRight', measureTextMaxRight);
+  }
+
+  function measureTextMaxRight() {
     var maxRight = 0;
     try {
       var walker = document.createTreeWalker(
@@ -145,21 +232,19 @@
       var node;
       while ((node = walker.nextNode())) {
         if (!node.nodeValue || !node.nodeValue.trim()) continue;
-        var range = document.createRange();
-        range.selectNodeContents(node);
-        var rects = range.getClientRects();
+        var rects = textRects(node);
         for (var i = 0; i < rects.length; i++) {
           if (!rects[i].width && !rects[i].height) continue;
-          var right = toContentX(rects[i].right);
+          var right = rects[i].right;
           if (right > maxRight) maxRight = right;
         }
       }
       var media = document.body.querySelectorAll(
         'img,svg,video,table,hr,figure');
       for (var j = 0; j < media.length; j++) {
-        var rect = media[j].getBoundingClientRect();
+        var rect = elementRect(media[j]);
         if (!rect || (!rect.width && !rect.height)) continue;
-        var mediaRight = toContentX(rect.right);
+        var mediaRight = rect.right;
         if (mediaRight > maxRight) maxRight = mediaRight;
       }
     } catch (error) {
@@ -229,7 +314,7 @@
   function measure() {
     var body = document.body;
     if (!body || !state.width) return;
-    pageProbes.clear();
+    invalidate();
     if (window.__gtInformation.invalidateBookmarks) window.__gtInformation.invalidateBookmarks();
     state.scrollWidth = body.scrollWidth;
     state.contentWidth = Math.max(
@@ -279,6 +364,8 @@
     contentWidth: contentWidth,
     hasContentAt: hasContentAt,
     hasPage: hasPage,
+    invalidate: invalidate,
+    geometryVersion: checkGeometry,
     measure: measure,
     pageAtFraction: pageAtFraction,
     relayout: relayout,

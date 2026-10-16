@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 
 import 'preset_fonts.dart';
+import '../../core/diagnostics/reader_work_trace.dart';
 
 /// 内置字体与平台确认的设备字体：预览、Flutter 正文和 WebView 共用。
 abstract final class ReadingFonts {
@@ -22,7 +23,14 @@ abstract final class ReadingFonts {
   }();
 
   /// 阅读只准备实际选择的字体；完整名单和所有预览留到字体选择页。
-  static Future<String?> loadSelected(String? family) async {
+  static Future<String?> loadSelected(String? family) =>
+      traceReaderWork('font.load_selected', () => _loadSelected(family), {
+        'family': family,
+        'hasSystemTask': _system != null,
+        'isPreset': PresetFonts.families.containsKey(family),
+      });
+
+  static Future<String?> _loadSelected(String? family) async {
     if (family == null || family == 'sans-serif') return loadSystem();
     // 升级删掉字体，或安装不带内置字体的版本时，先准备真实系统字体。
     // 保留原保存编号，之后换回包含该字体的版本仍能恢复选择。
@@ -59,6 +67,10 @@ abstract final class ReadingFonts {
     String method, {
     String? family,
   }) async {
+    final trace = ReaderWorkTrace.start('font.platform_and_load', {
+      'method': method,
+      'family': family,
+    });
     try {
       final entries =
           await const MethodChannel('gtreader/reading_fonts')
@@ -67,6 +79,8 @@ abstract final class ReadingFonts {
                 family == null ? null : {'family': family},
               ) ??
           [];
+      trace?.mark('platform_reply');
+      trace?.details['entries'] = entries.length;
       final names = <String, String?>{};
       final loading = <Future<void>>[];
       final paths = <String, String>{};
@@ -92,12 +106,15 @@ abstract final class ReadingFonts {
       }
       // 独立字体并行加载，全部完成后才发布名单和预览。
       await Future.wait(loading);
+      trace?.mark('font_bytes_and_registration');
       _paths.addAll(paths);
       _aliases.addAll(aliases);
       _names.addAll(names);
       return names;
     } on MissingPluginException {
       return const {};
+    } finally {
+      trace?.finish();
     }
   }
 

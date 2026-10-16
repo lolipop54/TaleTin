@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../reader/view_models/listening_panel_view_model.dart';
 import '../../reader/view_models/listening_view_state.dart';
+import '../view_models/listening_preferences.dart';
 import '../widgets/settings_slider.dart';
 
 class ListeningRateView extends ConsumerWidget {
@@ -12,6 +13,7 @@ class ListeningRateView extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final speech = ref.watch(listeningViewStateProvider).requireValue;
+    final preferences = ref.watch(listeningPreferencesProvider).requireValue;
     return Scaffold(
       appBar: GtAppBar(title: const Text('语速')),
       body: SafeArea(
@@ -21,7 +23,7 @@ class ListeningRateView extends ConsumerWidget {
             thumbRadius: GtSliderSize.thumbRadiusSmall,
             trackThickness: GtSliderSize.trackThicknessSmall,
             label: '语速',
-            value: speech.speed,
+            value: preferences.speed,
             min: .5,
             max: 2,
             divisions: 15,

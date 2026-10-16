@@ -49,6 +49,12 @@
   /* ---------- 对外接口（Dart 用 evaluateJavascript 调用） ---------- */
 
   window.__gt = {
+    prepareImagePage: function (page) {
+      var target = page === null || page === undefined ? state.page : page;
+      var x = (target - state.page) * state.width;
+      return internal.style.prepareImagesRect(x - state.width, 0,
+        x + state.width * 2, innerHeight);
+    },
     prepareFont: internal.style.prepareFont,
     followTtsPoint: function(point) {
       var rect = window.__gtTts.rect(point);
@@ -89,7 +95,7 @@
             internal.layout.applyTransform(false);
             // 正文与高亮一起出现：等高亮下发（最多 300ms）再揭开，
             // 不然会先看到一段没有底色的正文、隔一下高亮才补上
-            internal.highlight.whenReady(function () {
+            function showReadyPage() { internal.highlight.whenReady(function () {
               trace('highlights-ready');
               internal.highlight.render();
               internal.style.revealContent();
@@ -98,12 +104,15 @@
                 requestAnimationFrame(function () {
                   trace('paint-frames-ready');
                   post('paginated', { pages: state.pages, width: state.width, page: state.page,
+                    deferredImagePixels: !!window.__gtImageDecodeVisible,
                     bookmarkPages: window.__gtInformation.bookmarkPages ? window.__gtInformation.bookmarkPages() : {},
                     probe: internal.layout.renderProbe() });
                   internal.dom.reportRelocate();
                 });
               });
-            }, 300);
+            }, 300); }
+            if (window.__gtImageDecodeVisible) window.__gt.prepareImagePage(state.page).then(showReadyPage);
+            else showReadyPage();
             // 字体与图片解码已在首次测量前等待，不再于章首定时重复遍历整章。
             // 后续字号、视口和资源变化仍由各自的 relayout 入口重新测量。
           });

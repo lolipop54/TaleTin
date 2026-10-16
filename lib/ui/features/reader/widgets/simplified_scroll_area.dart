@@ -22,6 +22,7 @@ import '../../../core/widgets/book_loading.dart';
 import '../view_models/reader_session_view_model.dart';
 import '../view_models/reader_settings_view_model.dart';
 import '../view_models/reader_view_model.dart';
+import '../view_models/reader_source_change.dart';
 import '../view_models/scroll_window.dart';
 import '../view_models/original_layout_controller.dart';
 import '../view_models/automatic_reading.dart';
@@ -158,6 +159,10 @@ class SimplifiedScrollAreaState extends ConsumerState<SimplifiedScrollArea>
 
   void _loadingFailed(Object error, StackTrace stack) {
     if (!mounted) return;
+    if (isSourceChange(error)) {
+      ref.read(readerSourceChangeProvider(widget.bookId).notifier).markChanged();
+      return;
+    }
     _chapterFailed = true;
     _automatic.finish('章节读取失败，已暂停；可再次开始重试');
   }
@@ -193,6 +198,10 @@ class SimplifiedScrollAreaState extends ConsumerState<SimplifiedScrollArea>
           animated: jump != null && _session.speechScrollToken == jump.token);
       } on Object catch (error) {
         if (mounted) {
+          if (isSourceChange(error)) {
+            ref.read(readerSourceChangeProvider(widget.bookId).notifier).markChanged();
+            return;
+          }
           ref.read(readerProvider.notifier).showNotice('正文准备失败：$error');
         }
       }

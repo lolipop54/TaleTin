@@ -19,6 +19,7 @@ import 'package:go_router/go_router.dart';
 
 import '../ui/core/theme/app_theme.dart';
 import '../ui/core/theme/forui_theme.dart';
+import '../ui/core/widgets/gt_scroll_input_scope.dart';
 import 'router/app_router.dart';
 
 /// 应用根 Widget。路由实例随 App 创建，保证状态隔离。
@@ -97,7 +98,8 @@ class _GTReaderAppState extends ConsumerState<GTReaderApp> {
       },
       themeAnimationDuration: const Duration(milliseconds: 220),
       // 应用不再用自己的开关覆盖系统的动画设置。
-      builder: (context, child) => GtForuiTheme(child: child!),
+      builder: (context, child) =>
+          GtForuiTheme(child: GtScrollInputScope(child: child!)),
       localizationsDelegates: const [
         GlobalMaterialLocalizations.delegate,
         GlobalWidgetsLocalizations.delegate,

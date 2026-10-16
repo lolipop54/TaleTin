@@ -36,6 +36,13 @@ String removeInsertedHyphens(String text, List<int> insertions) {
 List<int> insertedHyphensOf(Text node) {
   final parent = node.parent;
   if (parent == null) return const [];
+  // 源书通常没有显示层插入的断点。先检查标记，避免每个缩进/正文文本节点
+  // 都在线性遍历同级节点；章节较长时，这种重复查找会接近平方级开销。
+  if (!parent.attributes.keys.any(
+    (key) => key is String && key.startsWith('data-gt-hyphens-'),
+  )) {
+    return const [];
+  }
   final raw =
       parent.attributes['data-gt-hyphens-${parent.nodes.indexOf(node)}'];
   return raw == null ? const [] : (jsonDecode(raw) as List).cast<int>();

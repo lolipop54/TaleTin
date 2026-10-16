@@ -32,6 +32,7 @@ abstract final class GtIcons {
   static const brightness = 'brightness';
   static const headphones = 'headphones';
   static const autoRead = 'auto-read';
+  static const cycle = 'cycle';
   // 播放与听书
   static const play = 'play';
   static const pause = 'pause';

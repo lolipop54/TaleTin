@@ -24,7 +24,7 @@
           slice = performance.now();
         }
       }
-      for (const image of doc.images) {
+      for (const image of frame.images) {
         const r = image.getBoundingClientRect();
         images.push({top: r.top, bottom: r.bottom, height: r.height});
       }

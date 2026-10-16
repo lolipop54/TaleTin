@@ -6,7 +6,7 @@
   var scaledElements = [];
   var bookFont = null;
   var appliedFamily = '';
-  var appliedBold = false;
+  var appliedFontWeight = 400;
   var appliedFontSize = 0;
   var appliedIndent = true;
   var appliedLineHeight = null;
@@ -210,8 +210,8 @@
       'text-justify: inter-character !important; hyphens: manual !important; }\n';
     var family = options.fontFamily !== undefined
       ? options.fontFamily : appliedFamily;
-    var bold = options.bold !== undefined ? options.bold : appliedBold;
-    var faceChanged = family !== appliedFamily || bold !== appliedBold;
+    var fontWeight = options.fontWeight !== undefined ? options.fontWeight : appliedFontWeight;
+    var faceChanged = family !== appliedFamily || fontWeight !== appliedFontWeight;
     var marginChanged = false;
     var indentChanged = false;
     if (options.indent !== undefined) {
@@ -249,7 +249,7 @@
       css += applyFontSize(fontSizePx);
     }
     appliedFamily = family;
-    appliedBold = bold;
+    appliedFontWeight = fontWeight;
     appliedLineHeight = lineHeight;
     appliedParagraphGap = paragraphGap;
     // 只覆盖正文间距，保留语义标题和纯图片段落的原书布局。
@@ -266,7 +266,10 @@
       css += 'body, body * { font-family: ' + JSON.stringify(family) +
         ', sans-serif !important; }\n';
     }
-    if (bold) css += 'body, body * { font-weight: 700 !important; }\n';
+    // 正常档恢复原书强调层级；半粗/粗体沿用原来的全书字重覆盖范围。
+    if (fontWeight !== 400) {
+      css += 'body, body * { font-weight: ' + fontWeight + ' !important; }\n';
+    }
     var colors = options.colors;
     if (colors) {
       if (colors.bg) {
@@ -316,6 +319,14 @@
   }
 
   function whenContentReady(callback) {
+    // 小章仍走原来的完整解码，避免为了几张小图增加跨 WebView 准备。
+    // 6M 像素约占 24MiB RGBA；只把更大的解码工作拆到目标附近。
+    if (window.__gtImageDecodeVisible) {
+      var pixels = Array.prototype.slice.call(document.images).reduce(function (sum, image) {
+        return sum + image.naturalWidth * image.naturalHeight;
+      }, 0);
+      window.__gtImageDecodeVisible = pixels >= 6 * 1024 * 1024;
+    }
     var waits = [];
     try {
       if (document.fonts && document.fonts.ready) {
@@ -326,7 +337,7 @@
     }
     Array.prototype.slice.call(document.images).forEach(function (image) {
       // 已下载的图片也可能尚未解码，截图不能只等待 load 事件。
-      if (image.decode) {
+      if (!window.__gtImageDecodeVisible && image.decode) {
         waits.push(image.decode().catch(function () {}));
         return;
       }
@@ -343,6 +354,26 @@
     Promise.all(waits).then(callback, callback);
   }
 
+  // 尺寸必须等所有图片 load 后才能量；像素只提前解码目标附近。
+  // 不改 src、宽高或 CSS，保留原书比例、EXIF 方向和分栏结果。
+  var decodedImages = new WeakMap();
+  function prepareImagesRect(left, top, right, bottom) {
+    if (!window.__gtImageDecodeVisible) return Promise.resolve();
+    var waits = [];
+    Array.prototype.slice.call(document.images).forEach(function (image) {
+      if (!image.decode) return;
+      var rect = image.getBoundingClientRect();
+      if (rect.right <= left || rect.left >= right || rect.bottom <= top || rect.top >= bottom) return;
+      var held = decodedImages.get(image);
+      if (!held || held.src !== image.currentSrc) {
+        held = {src: image.currentSrc, task: image.decode().catch(function () {})};
+        decodedImages.set(image, held);
+      }
+      waits.push(held.task);
+    });
+    return Promise.all(waits);
+  }
+
   // 换字体时先下载并解码选中的那一种，旧正文继续显示；空串使用原书字体。
   function prepareFont(family, css) {
     // 字体选择页可能刚把新字体加入目录。只补当前字体的声明，保留旧字体
@@ -356,7 +387,7 @@
     }
     if (!family || !document.fonts) return Promise.resolve();
     // 内置字体可能有独立粗体文件，标题和加粗正文也须准备后再重新分页。
-    return Promise.all([400, 700].map(function (weight) {
+    return Promise.all([400, 500, 700].map(function (weight) {
       return document.fonts.load(weight + ' 16px ' + JSON.stringify(family));
     }));
   }
@@ -382,6 +413,7 @@
     revealContent: revealContent,
     watchImages: watchImages,
     whenContentReady: whenContentReady,
+    prepareImagesRect: prepareImagesRect,
     prepareFont: prepareFont
   };
 })();

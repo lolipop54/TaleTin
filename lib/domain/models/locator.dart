@@ -45,11 +45,13 @@ class Locator {
     this.suffix = '',
     this.resourceHref,
     this.epubCfi,
+    this.needsRelocation = false,
+    this.imageResource,
   });
 
   final String bookId;
 
-  /// 正文版本：重解析后旧锚点靠它判断是否需要做版本映射
+  /// 正文规范化规则版本；源文件改变另由 needsRelocation 标记，不能只比较此值。
   final int contentVersion;
   final String chapterId;
   final String blockId;
@@ -67,6 +69,11 @@ class Locator {
   final String? resourceHref;
   final String? epubCfi;
 
+  /// 源文件已换内容，旧块号不能再直接用于显示或跳转。
+  final bool needsRelocation;
+  /// 图片在标准正文中的资源路径；不与 EPUB 的章节路径混用。
+  final String? imageResource;
+
   Locator copyWith({
     String? chapterId,
     String? blockId,
@@ -75,6 +82,8 @@ class Locator {
     String? exact,
     String? prefix,
     String? suffix,
+    bool? needsRelocation,
+    String? imageResource,
   }) =>
       Locator(
         bookId: bookId,
@@ -88,6 +97,8 @@ class Locator {
         suffix: suffix ?? this.suffix,
         resourceHref: resourceHref,
         epubCfi: epubCfi,
+        needsRelocation: needsRelocation ?? this.needsRelocation,
+        imageResource: imageResource ?? this.imageResource,
       );
 
   Map<String, Object?> toJson() => {
@@ -102,6 +113,8 @@ class Locator {
         if (suffix.isNotEmpty) 'suffix': suffix,
         if (resourceHref != null) 'resourceHref': resourceHref,
         if (epubCfi != null) 'epubCfi': epubCfi,
+        if (needsRelocation) 'needsRelocation': true,
+        if (imageResource != null) 'imageResource': imageResource,
       };
 
   static Locator fromJson(Map<String, Object?> json) => Locator(
@@ -118,6 +131,8 @@ class Locator {
         suffix: json['suffix'] as String? ?? '',
         resourceHref: json['resourceHref'] as String?,
         epubCfi: json['epubCfi'] as String?,
+        needsRelocation: json['needsRelocation'] == true,
+        imageResource: json['imageResource'] as String?,
       );
 
   /// 同一个内容位置的判定口径：章节 + 块 + 偏移 + 倾向。
@@ -135,6 +150,8 @@ class Locator {
       other is Locator &&
       samePosition(other) &&
       contentVersion == other.contentVersion &&
+      needsRelocation == other.needsRelocation &&
+      imageResource == other.imageResource &&
       exact == other.exact &&
       prefix == other.prefix &&
       suffix == other.suffix;

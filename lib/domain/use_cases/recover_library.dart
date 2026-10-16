@@ -13,6 +13,7 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 
 import '../repositories/book_repository.dart';
+import '../models/book.dart';
 import '../services/import_storage.dart';
 
 /// 恢复结果，用于启动日志与调试。
@@ -22,6 +23,7 @@ class RecoveryReport {
     required this.pendingJobs,
     required this.contentMissingBooks,
     this.removedBookDirs = 0,
+    this.releasedTxtBytes = 0,
   });
 
   final int removedStagingDirs;
@@ -30,6 +32,7 @@ class RecoveryReport {
 
   /// 清掉的墓碑书籍残留目录数量
   final int removedBookDirs;
+  final int releasedTxtBytes;
 
   static const empty = RecoveryReport(
     removedStagingDirs: 0,
@@ -47,8 +50,9 @@ class RecoverLibrary {
 
   Future<RecoveryReport> run() async {
     final jobs = await books.pendingJobs();
-    final removedStaging =
-        await storage.cleanupStaging(keepJobIds: const <String>[]);
+    final removedStaging = await storage.cleanupStaging(
+      keepJobIds: const <String>[],
+    );
     for (final job in jobs) {
       await books.deleteJob(job.id);
     }
@@ -65,14 +69,27 @@ class RecoverLibrary {
 
     final libraryBooks = await books.watchActiveBooks().first;
     final missing = <String>[];
+    var releasedTxtBytes = 0;
     for (final book in libraryBooks) {
-      final manifestMissing = !File(p.join(
+      // 已保存来源、尚未完成目录的书在重启后仍可开书准备，不能标成正文丢失。
+      if (book.status == BookStatus.preparing) continue;
+      final content = p.join(
         await storage.bookDirectory(book.id),
         'content',
         '${book.contentVersion}',
-        'manifest.json',
-      )).existsSync();
+      );
+      final manifestMissing = !File(p.join(content, 'manifest.json'))
+          .existsSync();
       if (manifestMissing) missing.add(book.id);
+      if (!manifestMissing &&
+          book.format == BookFormat.txt &&
+          File(p.join(content, 'text.txt')).existsSync()) {
+        releasedTxtBytes += await storage.removeRedundantTxtCopy(
+          book.id,
+          book.contentVersion,
+          await books.chaptersOf(book.id),
+        );
+      }
     }
     if (missing.isNotEmpty) {
       await books.markContentMissing(missing);
@@ -83,6 +100,7 @@ class RecoverLibrary {
       pendingJobs: jobs.length,
       contentMissingBooks: missing.length,
       removedBookDirs: removedBookDirs,
+      releasedTxtBytes: releasedTxtBytes,
     );
   }
 }

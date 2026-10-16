@@ -12,6 +12,7 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 import '../../../../platform/channels/reading_fonts.dart';
+import '../../../../core/diagnostics/opening_experiments.dart';
 import '../../../../data/services/epub_source_repository.dart';
 import 'original_host_controller.dart';
 import 'original_page_capture.dart';
@@ -262,6 +263,9 @@ class _OriginalBodyState extends State<OriginalBody> {
           capture: () => _capture(frame),
           holdPage: (page) => _holdPage(frame, page),
           releasePage: (committed) => _releasePage(frame, committed),
+          preparePage: (page) async {
+            await _evaluate(frame, '__gt.prepareImagePage(${page ?? 'null'})', async: true);
+          },
         );
         _frames.add(frame);
         traceTurn(
@@ -348,6 +352,9 @@ class _OriginalBodyState extends State<OriginalBody> {
   Future<void> _rendered(_ChapterFrame frame) async {
     await _syncFlight;
     if (!_alive(frame)) return;
+    if (OpeningExperiments.visibleImageDecode && frame.host.deferredImagePixels) {
+      await frame.host.prepareImagePage();
+    }
     await _controller?.callAsyncJavaScript(
       functionBody: 'await __gtPager.rendered(${frame.slot}, ${frame.load});',
     );
@@ -366,6 +373,7 @@ class _OriginalBodyState extends State<OriginalBody> {
     await traceTurnStep('hold wait-style', () => frame.updateFlight);
     await traceTurnStep('hold wait-layout', () => _syncFlight);
     if (!_alive(frame)) throw StateError('目标章节已失效');
+    await frame.host.prepareImagePage(page);
     final shown = await traceTurnStep('hold preview-command', () =>
       _controller!.evaluateJavascript(
         source: '__gtPager.previewCapture(${frame.slot}, ${frame.load}, $page)'));
@@ -442,7 +450,7 @@ class _OriginalBodyState extends State<OriginalBody> {
     final c = frame.chapter;
     final key =
         '${c.fontSizePx}|${c.columnMarginPx}|${c.indent}|${c.fontFamily}|'
-        '${c.bold}|${c.themeColors}|${c.lineHeight}|${c.paragraphGapEm}';
+        '${c.fontWeight}|${c.themeColors}|${c.lineHeight}|${c.paragraphGapEm}';
     if (frame.styleKey == key) return;
     frame.styleKey = key;
     if (c.fontFamily.isNotEmpty) {
@@ -460,7 +468,7 @@ class _OriginalBodyState extends State<OriginalBody> {
       marginPx: c.columnMarginPx,
       indent: c.indent,
       fontFamily: c.fontFamily,
-      bold: c.bold,
+      fontWeight: c.fontWeight,
       colors: c.themeColors,
     );
   }
@@ -472,7 +480,7 @@ class _OriginalBodyState extends State<OriginalBody> {
       c.columnMarginPx,
       c.indent,
       c.fontFamily,
-      c.bold,
+      c.fontWeight,
       c.themeColors.toString(),
       c.lineHeight,
       c.paragraphGapEm,
@@ -566,7 +574,12 @@ class _OriginalBodyState extends State<OriginalBody> {
     traceTurn(
       'body event chapter=${frame.chapter.ordinal} slot=${frame.slot} load=${frame.load} web=${_controller?.getViewId()} type=${event['type']} page=${event['page']} pages=${event['pages']} stage=${event['stage']} jsMs=${event['ms']} elapsedMs=${event['elapsedMs']}',
     );
-    if (event['type'] == 'paginated') frame.paginated = true;
+    if (event['type'] == 'paginated') {
+      frame.paginated = true;
+      if (event['deferredImagePixels'] case final bool deferred) {
+        frame.host.deferredImagePixels = deferred;
+      }
+    }
     if (event['type'] == 'ready' && !frame.started) {
       frame.readyWidth = (event['width'] as num?)?.toDouble() ?? _width;
       _resumePreparations();

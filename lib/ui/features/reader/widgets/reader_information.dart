@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../app/di/app_providers.dart';
+import '../../../../app/di/device_status_providers.dart';
 import '../../../../domain/models/reading_settings.dart';
 import '../../../../domain/services/toc_entry_index.dart';
 import '../../../core/theme/reading_theme.dart';
@@ -23,6 +24,8 @@ PageInformation readerInformation(
   bool showReturnProgress = true,
   bool bookmarked = false,
 }) {
+  // 系统分钟、校时、电量及恢复前台都会重建信息；正文排版参数不变。
+  ref.watch(deviceStatusChangesProvider);
   final now = ref.watch(readerClockProvider)();
   final titles = ref.watch(progressTitlesProvider(session.book.id)).value;
   final chapter = session.chapters[chapterIndex];

@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../app/di/app_providers.dart';
 import '../../../../core/errors/import_error.dart';
+import '../../../../core/diagnostics/reader_work_trace.dart';
 import '../../../../domain/models/book.dart';
 import '../../../../domain/models/import_job.dart';
 import '../../../../domain/services/book_parser.dart';
@@ -125,10 +126,8 @@ class ImportState {
   /// 队列里还有任务在跑
   final bool running;
 
-  int get totalBytes => items.fold(
-        0,
-        (sum, item) => sum + (item.document.sizeBytes ?? 0),
-      );
+  int get totalBytes =>
+      items.fold(0, (sum, item) => sum + (item.document.sizeBytes ?? 0));
 
   String get summary => '已选 ${items.length} 本 · ${_formatBytes(totalBytes)}';
 
@@ -150,18 +149,91 @@ class ImportState {
 }
 
 class ImportViewModel extends Notifier<ImportState> {
+  final _reparseKeys = <String>{};
+
+  /// 封面上的重新导入复用旧 bookId；失败重试仍走重解析，不能退回路径查重。
+  void reimport(PickedDocument document, {required String bookId}) {
+    if (_running.contains(document.uri)) return;
+    if (_running.isEmpty && _batches.isEmpty) _cancel.reset();
+    _reparseKeys.add(document.uri);
+    state = state.copyWith(
+      items: _merge(state.items, [
+        ImportItem(document: document, bookId: bookId),
+      ]),
+    );
+    _run({document.uri});
+  }
+
   /// 先发布待导入条目，再后台读取；TXT 编码和章节规则使用流水线自动识别。
   void enqueue(List<PickedDocument> documents) {
-    if (_running.isEmpty) _cancel.reset();
-    final existingIds = ref.read(libraryBooksProvider).value?.map((b) => b.id).toSet() ?? <String>{};
-    final imported = {for (final item in state.items)
-      if (item.stage.isFinished && existingIds.contains(item.bookId)) item.key};
-    final added = [for (final document in documents)
-      if (!_running.contains(document.uri) && !imported.contains(document.uri))
-        ImportItem(document: document)];
+    if (_running.isEmpty && _batches.isEmpty) _cancel.reset();
+    final existingIds =
+        ref.read(libraryBooksProvider).value?.map((b) => b.id).toSet() ??
+        <String>{};
+    final imported = {
+      for (final item in state.items)
+        if (item.stage.isFinished && existingIds.contains(item.bookId))
+          item.key,
+    };
+    final added = [
+      for (final document in documents)
+        if (!_running.contains(document.uri) &&
+            !imported.contains(document.uri))
+          ImportItem(document: document),
+    ];
     state = state.copyWith(items: _merge(state.items, added));
-    _run(added.map((item) => item.key).toSet());
+    unawaited(_registerAndRun(added));
   }
+
+  Future<void> _registerAndRun(List<ImportItem> added) async {
+    final batch = Completer<void>();
+    _batches.add(batch);
+    state = state.copyWith(running: true);
+    try {
+      final useCase = ref.read(importBooksProvider);
+      for (final item in added) {
+        if (_cancel.isCancelled(item.key)) continue;
+        final book = await traceReaderWork(
+          'import.register_source',
+          () => useCase.registerSource(item.document),
+          {'sourceKey': item.key.hashCode, 'bytes': item.document.sizeBytes},
+        );
+        if (_cancel.isCancelled(item.key)) {
+          if (book?.status == BookStatus.preparing) {
+            await ref.read(deleteBooksProvider).run([
+              book!.id,
+            ], now: DateTime.now().toUtc());
+          }
+          continue;
+        }
+        final current = _find(item.key);
+        if (current != null && book != null) {
+          _update(item.key, current.copyWith(bookId: book.id));
+        }
+      }
+      await _run(added.map((item) => item.key).toSet());
+    } catch (error) {
+      for (final item in added) {
+        final current = _find(item.key);
+        if (current != null && !current.stage.isFinished) {
+          _update(
+            item.key,
+            current.copyWith(
+              stage: ImportStage.failed,
+              failure: ImportFailure(ImportErrorCode.unknown, '$error'),
+            ),
+          );
+        }
+      }
+    } finally {
+      _batches.remove(batch);
+      batch.complete();
+      state = state.copyWith(
+        running: _running.isNotEmpty || _batches.isNotEmpty,
+      );
+    }
+  }
+
   final CancelToken _cancel = CancelToken();
 
   /// 正在导入的条目，避免重复点击「重试」把同一本导两遍
@@ -186,7 +258,8 @@ class ImportViewModel extends Notifier<ImportState> {
     state = state.copyWith(picking: true);
     List<PickedDocument> picked;
     try {
-      picked = documents ?? await ref.read(documentPlatformProvider).pickDocuments();
+      picked =
+          documents ?? await ref.read(documentPlatformProvider).pickDocuments();
     } finally {
       state = state.copyWith(picking: false);
     }
@@ -240,8 +313,8 @@ class ImportViewModel extends Notifier<ImportState> {
   /// 已经导入成功的 TXT 会按新规则重新解析并替换正文，复用书籍 ID，
   /// 不产生第二本书。
   void startRetryWithChoice(ImportItem item, TxtImportChoice choice) {
-    final reparse = item.stage == ImportStage.done ||
-        item.stage == ImportStage.duplicate;
+    final reparse =
+        item.stage == ImportStage.done || item.stage == ImportStage.duplicate;
     _update(
       item.key,
       item.copyWith(
@@ -268,8 +341,14 @@ class ImportViewModel extends Notifier<ImportState> {
   /// 取消整批：尚未结束的条目全部从队列移除。
   void cancelAll() {
     _cancel.cancelAll();
+    for (final item in state.items.where((i) => !i.stage.isFinished)) {
+      if (item.bookId case final String id) unawaited(_removeUnprepared(id));
+    }
     state = state.copyWith(
-      items: [for (final item in state.items) if (item.stage.isFinished) item],
+      items: [
+        for (final item in state.items)
+          if (item.stage.isFinished) item,
+      ],
     );
   }
 
@@ -277,12 +356,15 @@ class ImportViewModel extends Notifier<ImportState> {
   void retry(String key) {
     final item = _find(key);
     if (item == null || item.isRunning) return;
-    _update(key, item.copyWith(
-      stage: ImportStage.waiting,
-      copiedBytes: 0,
-      parseFraction: 0,
-      clearFailure: true,
-    ));
+    _update(
+      key,
+      item.copyWith(
+        stage: ImportStage.waiting,
+        copiedBytes: 0,
+        parseFraction: 0,
+        clearFailure: true,
+      ),
+    );
     _run({key});
   }
 
@@ -301,7 +383,10 @@ class ImportViewModel extends Notifier<ImportState> {
   }
 
   /// 依次导入指定条目；单本失败不影响其他书。
-  Future<void> _run(Set<String> keys, {Set<String> reparseKeys = const {}}) async {
+  Future<void> _run(
+    Set<String> keys, {
+    Set<String> reparseKeys = const {},
+  }) async {
     final targets = [
       for (final item in state.items)
         if (keys.contains(item.key) &&
@@ -323,14 +408,21 @@ class ImportViewModel extends Notifier<ImportState> {
       };
       for (final target in targets) {
         final result = await useCase.importOne(
-        target.document,
-        onProgress: _onProgress,
-        cancel: _cancel,
-        txtChoice: choices[target.key],
-        reparse: reparseKeys.contains(target.key),
-      );
+          target.document,
+          onProgress: _onProgress,
+          cancel: _cancel,
+          txtChoice: choices[target.key],
+          reparse:
+              reparseKeys.contains(target.key) ||
+              _reparseKeys.contains(target.key),
+          replaceBookId: _reparseKeys.contains(target.key)
+              ? target.bookId
+              : null,
+          onlyIfPresent: target.bookId != null,
+        );
         remaining.remove(result.key);
         _running.remove(result.key);
+        if (result.stage == ImportStage.done) _reparseKeys.remove(result.key);
         // 取消的条目已经不在队列里，也不需要再更新状态
         if (_cancel.isCancelled(result.key)) continue;
         final current = _find(result.key);
@@ -401,11 +493,15 @@ class ImportViewModel extends Notifier<ImportState> {
 
     if (sample == null) return ImportItem(document: document);
 
-    final format = ref.read(parserRegistryProvider).probe(FileProbe(
-          header: sample,
-          sizeBytes: document.sizeBytes ?? 0,
-          fileName: document.name,
-        ));
+    final format = ref
+        .read(parserRegistryProvider)
+        .probe(
+          FileProbe(
+            header: sample,
+            sizeBytes: document.sizeBytes ?? 0,
+            fileName: document.name,
+          ),
+        );
     if (format != BookFormat.txt) {
       return ImportItem(document: document, format: format);
     }
@@ -428,22 +524,44 @@ class ImportViewModel extends Notifier<ImportState> {
 
   /// 把某条记录从队列里去掉。
   void _remove(String key) {
+    final removed = _find(key);
+    if (removed?.bookId case final String id) {
+      unawaited(_removeUnprepared(id));
+    }
     state = state.copyWith(
-      items: [for (final item in state.items) if (item.key != key) item],
+      items: [
+        for (final item in state.items)
+          if (item.key != key) item,
+      ],
     );
+  }
+
+  Future<void> _removeUnprepared(String id) async {
+    final batch = Completer<void>();
+    _batches.add(batch);
+    final repository = ref.read(bookRepositoryProvider),
+        delete = ref.read(deleteBooksProvider);
+    try {
+      final book = await repository.findById(id);
+      if (book?.status == BookStatus.preparing) {
+        await delete.run([id], now: DateTime.now().toUtc());
+      }
+    } finally {
+      _batches.remove(batch);
+      batch.complete();
+    }
   }
 
   void _update(String key, ImportItem updated) {
     state = state.copyWith(
-      items: [
-        for (final item in state.items) item.key == key ? updated : item,
-      ],
+      items: [for (final item in state.items) item.key == key ? updated : item],
     );
   }
 }
 
-final importProvider =
-    NotifierProvider<ImportViewModel, ImportState>(ImportViewModel.new);
+final importProvider = NotifierProvider<ImportViewModel, ImportState>(
+  ImportViewModel.new,
+);
 
 /// 字节数 → 「12.4 MB」。
 String _formatBytes(int? bytes) {

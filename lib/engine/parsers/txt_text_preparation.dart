@@ -1,40 +1,23 @@
-/// [TextPreparationService] 的实现：编码识别 + 文本转换 + 平台解码。
+/// [TextPreparationService] 的实现：编码识别 + Rust 文本解码。
 library;
 
 import 'dart:typed_data';
+import 'dart:isolate';
+import 'dart:io';
+
+import 'package:direct_read_rust/direct_read_rust.dart';
 
 import '../../domain/services/document_platform.dart';
 import '../../domain/services/text_preparation.dart';
 import 'txt/encoding_detector.dart' as detector;
-import 'txt/txt_text_preparer.dart';
 
 class TxtTextPreparation implements TextPreparationService {
-  TxtTextPreparation({required DocumentPlatform platform})
-      : _platform = platform,
-        _preparer = TxtTextPreparer(
-          transcode: ({
-            required String sourcePath,
-            required String charsetName,
-            required String targetPath,
-          }) =>
-              platform.transcodeToUtf8(
-            sourcePath: sourcePath,
-            charsetName: charsetName,
-            targetPath: targetPath,
-          ),
-          decodeBytes: (bytes, charset) => platform.decodeBytes(bytes, charset),
-        );
-
-  final DocumentPlatform _platform;
-  final TxtTextPreparer _preparer;
+  TxtTextPreparation({required DocumentPlatform platform});
 
   @override
   DetectedEncoding detectEncoding(Uint8List header) {
     final guess = detector.detectEncoding(header);
-    return DetectedEncoding(
-      charset: guess.charset,
-      confident: guess.confident,
-    );
+    return DetectedEncoding(charset: guess.charset, confident: guess.confident);
   }
 
   @override
@@ -43,19 +26,22 @@ class TxtTextPreparation implements TextPreparationService {
     required String targetPath,
     required Uint8List header,
     String? overrideCharset,
-  }) {
-    return _preparer.prepare(
-      sourcePath: sourcePath,
-      targetPath: targetPath,
-      guess: detector.detectEncoding(header),
-      overrideCharset: overrideCharset,
-    );
+  }) async {
+    final charset = overrideCharset ?? detector.detectEncoding(header).charset;
+    // 旧 JSON 修复仍需临时 UTF-8；全部解码在独立后台执行。
+    await Isolate.run(() async {
+      await File(targetPath).parent.create(recursive: true);
+      await transcodeNativeFile(sourcePath, targetPath, charset);
+    });
+    return charset;
   }
 
   @override
   Future<String> preview({required Uint8List bytes, required String charset}) =>
-      _preparer.preview(bytes: bytes, charset: charset);
+      Future.value(
+        decodeNativeText(bytes, charset, stripBom: charset.startsWith('UTF-')),
+      );
 
   @override
-  Future<List<String>> supportedCharsets() => _platform.supportedCharsets();
+  Future<List<String>> supportedCharsets() async => nativeCharsets;
 }

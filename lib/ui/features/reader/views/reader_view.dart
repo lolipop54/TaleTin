@@ -2,9 +2,13 @@ import 'package:taletin/ui/core/widgets/gt_button.dart';
 import 'package:taletin/ui/core/widgets/gt_dialog_action.dart';
 
 import 'dart:async';
+import '../../../../core/diagnostics/reader_work_trace.dart';
 
 import '../widgets/completion_prompt.dart';
 import '../widgets/reader_performance.dart';
+import '../widgets/reader_source_changed_page.dart';
+import '../widgets/source_book_opening.dart';
+import '../view_models/reader_source_change.dart';
 
 import 'dart:io';
 import 'dart:math' as math;
@@ -106,7 +110,9 @@ class ReaderView extends ConsumerWidget {
   final String bookId;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) => _ReaderScope(
+  Widget build(BuildContext context, WidgetRef ref) => SourceBookOpening(
+    bookId: bookId,
+    child: _ReaderScope(
     bookId: bookId,
     child: ListeningFollow(
       bookId: bookId,
@@ -115,7 +121,7 @@ class ReaderView extends ConsumerWidget {
         child: _ReaderBody(bookId: bookId),
       ),
     ),
-  );
+  ));
 }
 
 /// 阅读页的外围处理：窗口亮度与阅读位置。
@@ -268,10 +274,16 @@ class _ReaderScopeState extends ConsumerState<_ReaderScope> {
       ),
       (previous, next) {
         if (next == null || previous == next) return;
+        if (ref.read(readerSourceChangeProvider(widget.bookId))) return;
         unawaited(
           ref
               .read(readerSessionProvider(widget.bookId).notifier)
-              .switchReadingDisplay(next.$1, next.$2),
+              .switchReadingDisplay(next.$1, next.$2).catchError((Object error, StackTrace stack) {
+                if (!mounted) return;
+                if (isSourceChange(error)) {
+                  ref.read(readerSourceChangeProvider(widget.bookId).notifier).markChanged();
+                } else { Error.throwWithStackTrace(error, stack); }
+              }),
         );
       },
     );

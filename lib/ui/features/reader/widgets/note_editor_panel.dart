@@ -83,6 +83,9 @@ class _NoteEditorPanelState extends ConsumerState<NoteEditorPanel>
 
   @override
   Widget build(BuildContext context) {
+    ref.listen(readerSourceChangeProvider(widget.bookId), (_, changed) {
+      if (changed) _controller.sourceChanged();
+    });
     // 返回键要关面板：阅读页把请求转成序号，这里按序号走一次确认流程
     ref.listen(readerProvider.select((s) => s.noteCloseToken), (_, token) {
       if (token != _closeToken) unawaited(_confirmClose());

@@ -2,10 +2,12 @@ import 'package:flutter/material.dart';
 
 import '../../ui/core/widgets/book_loading.dart';
 import '../../ui/core/widgets/frame_fade.dart';
+import '../../core/diagnostics/reader_work_trace.dart';
 
 class ReaderRoutePage extends Page<void> {
-  const ReaderRoutePage({super.key, required this.child});
+  const ReaderRoutePage({super.key, required this.child, this.bookId});
   final Widget child;
+  final String? bookId;
   @override
   Route<void> createRoute(BuildContext context) {
     return PageRouteBuilder<void>(
@@ -13,7 +15,7 @@ class ReaderRoutePage extends Page<void> {
       opaque: false,
       transitionDuration: Duration.zero,
       reverseTransitionDuration: pageFadeDuration,
-      pageBuilder: (_, _, _) => _ReaderEntrance(child: child),
+      pageBuilder: (_, _, _) => _ReaderEntrance(bookId: bookId, child: child),
       transitionsBuilder: (context, animation, _, child) =>
           MediaQuery.disableAnimationsOf(context)
           ? child
@@ -36,8 +38,9 @@ class ReaderPageReady extends InheritedWidget {
 }
 
 class _ReaderEntrance extends StatefulWidget {
-  const _ReaderEntrance({required this.child});
+  const _ReaderEntrance({required this.child, this.bookId});
   final Widget child;
+  final String? bookId;
   @override
   State<_ReaderEntrance> createState() => _ReaderEntranceState();
 }
@@ -50,9 +53,24 @@ class _ReaderEntranceState extends State<_ReaderEntrance>
     duration: pageFadeDuration,
   );
   bool _ready = false, _revealing = false;
+  final _opening = ReaderWorkTrace.start('reader.open');
+  @override
+  void initState() {
+    super.initState();
+    final id = widget.bookId;
+    if (id != null) {
+      BookOpeningTrace.begin(id);
+      BookOpeningTrace.mark(id, 'route_created');
+    }
+  }
+
   Future<void> _reveal() async {
     if (_ready || _revealing) return;
     _revealing = true;
+    _opening?.mark('first_frame_ready');
+    if (widget.bookId case final String id) {
+      BookOpeningTrace.mark(id, 'first_frame_ready');
+    }
     if (!MediaQuery.disableAnimationsOf(context)) {
       try {
         await _opacity.reverse(from: 1).orCancel;
@@ -61,7 +79,18 @@ class _ReaderEntranceState extends State<_ReaderEntrance>
       }
     }
     if (!mounted) return;
+    _opening?.mark('reveal_animation');
+    _opening?.finish();
     setState(() => _ready = true);
+    if (readerWorkTraceEnabled) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        if (widget.bookId case final String id) {
+          BookOpeningTrace.mark(id, 'loading_layer_removed');
+          BookOpeningTrace.finish(id);
+        }
+      });
+    }
   }
 
   @override
@@ -86,6 +115,10 @@ class _ReaderEntranceState extends State<_ReaderEntrance>
   );
   @override
   void dispose() {
+    if (widget.bookId case final String id) {
+      BookOpeningTrace.finish(id, status: _ready ? 'ok' : 'disposed');
+    }
+    _opening?.finish(status: _ready ? 'ok' : 'disposed');
     _opacity.dispose();
     super.dispose();
   }

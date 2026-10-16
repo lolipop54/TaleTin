@@ -1,12 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:taletin/platform/channels/system_toast.dart';
 
 import '../../../../app/di/app_providers.dart';
 import '../../../../domain/models/locator.dart';
 import '../../../../domain/services/reader_image_sequence.dart';
 import '../../../core/widgets/gt_button.dart';
 import '../view_models/reader_session_view_model.dart';
+import '../../../../app/di/source_book_providers.dart';
+import '../view_models/reader_source_change.dart';
+import '../../../../domain/models/book_document.dart';
 import 'reader_gallery_frame.dart';
 import 'reader_gallery_pager.dart';
 
@@ -24,29 +28,52 @@ Future<bool> tryReaderImageGallery(
   final session = ref.read(readerSessionProvider(bookId)).requireValue;
   final contents = ref.read(chapterContentRepositoryProvider);
   final notifier = ref.read(readerSessionProvider(bookId).notifier);
+  final imageChapters = <String, Chapter>{};
   Future<ReaderImageSequence?> sequence({
     bool currentOnly = false,
     bool Function()? isActive,
-  }) => readerImageSequence(
-    contents: contents,
-    book: session.book,
-    chapters: session.chapters,
-    chapterId: chapterId ?? session.chapter.id,
-    resourcePath: resourcePath,
-    blockId: blockId,
-    currentOnly: currentOnly,
-    isActive: isActive,
-  );
+  }) async {
+    final result = await readerImageSequence(
+      contents: contents,
+      book: session.book,
+      chapters: session.chapters,
+      chapterId: chapterId ?? session.chapter.id,
+      resourcePath: resourcePath,
+      blockId: blockId,
+      currentOnly: currentOnly,
+      isActive: isActive,
+    );
+    if (result != null) {
+      for (final image in result.images) {
+        imageChapters[image.path] = session.chapters.firstWhere(
+          (chapter) => chapter.id == image.locator.chapterId,
+        );
+      }
+    }
+    return result;
+  }
+
+  Future<ReaderGalleryFrame> preparedFrame(
+    String path,
+    BuildContext context,
+  ) async {
+    // 查序不提取整本图片。展示目标前读它所在的一章，再解码完整资源。
+    if (imageChapters[path] case final chapter?) {
+      await contents.chapter(bookId, chapter);
+    }
+    if (!context.mounted) throw StateError('图片窗口已关闭');
+    return loadFrame(path, context);
+  }
+
   final initial = await sequence(currentOnly: true);
   if (initial == null) return false;
   if (!context.mounted) return true;
   ReaderGalleryFrame first;
   try {
-    first = await loadFrame(initial.images.single.path, context);
+    first = await preparedFrame(initial.images.single.path, context);
   } catch (_) {
     if (context.mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('图片无法打开，请重试')));
+      SystemToast.show('图片无法打开，请重试').ignore();
     }
     return true;
   }
@@ -63,8 +90,31 @@ Future<bool> tryReaderImageGallery(
       sequence: initial,
       first: first,
       loadSequence: (isActive) => sequence(isActive: isActive),
-      loadFrame: loadFrame,
-      onClose: notifier.goToImage,
+      loadFrame: preparedFrame,
+      onClose: (locator) async {
+        if (ref.read(readerSourceChangeProvider(bookId))) return;
+        final current = ref.read(readerSessionProvider(bookId)).value;
+        if (current == null) return;
+        if (!identical(current.book, session.book)) {
+          final found = await ref
+              .read(sourcePositionResolverProvider)
+              .resolve(
+                locator.copyWith(needsRelocation: true),
+                current.chapters,
+              );
+          if (found == null) return;
+          locator = found;
+        }
+        try {
+          await notifier.goToImage(locator);
+        } catch (error) {
+          if (!isSourceChange(error) &&
+              !ref.read(readerSourceChangeProvider(bookId))) {
+            rethrow;
+          }
+          ref.read(readerSourceChangeProvider(bookId).notifier).markChanged();
+        }
+      },
     ),
   );
   await Navigator.of(context, rootNavigator: true).push(route);

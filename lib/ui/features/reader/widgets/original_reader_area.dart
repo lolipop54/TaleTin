@@ -27,6 +27,7 @@ import '../../../../domain/models/automatic_scan.dart';
 import '../../../../domain/models/tts_state.dart';
 import '../../../../domain/services/listening_service.dart';
 import '../../../../app/di/app_providers.dart';
+import '../../../../core/diagnostics/opening_experiments.dart';
 import '../view_models/listening_view_state.dart';
 import '../../../../domain/models/annotation.dart';
 import '../../../../domain/models/book_document.dart';
@@ -70,6 +71,7 @@ import '../view_models/automatic_reading.dart';
 import 'automatic_scan_area.dart';
 
 part 'original_neighbor_slots.dart';
+part 'original_progress_preparation.dart';
 part 'original_turn_coordinator.dart';
 part 'original_landing_coordinator.dart';
 part 'original_speech_follow.dart';
@@ -207,6 +209,7 @@ class _OriginalReaderAreaState extends ConsumerState<OriginalReaderArea>
 
   /// 已经分栏完成的章；与当前章不一致时说明新章还在排
   int? _paginatedChapter;
+  ({int chapter, double fraction})? _parallelTarget;
 
   /// 宿主页文档已就绪（框架脚本已执行）的章号：高亮下发看它
   int? _documentReadyChapter;
@@ -322,6 +325,7 @@ class _OriginalReaderAreaState extends ConsumerState<OriginalReaderArea>
     // 手柄却落在别的页（真机反馈的「翻页后看不到也拖不动手柄」）
     GestureBinding.instance.pointerRouter.addGlobalRoute(_onGlobalPointer);
     widget.controller.holdPageDuringJump = _holdPageDuringJump;
+    widget.controller.prepareProgressChapter = _prepareProgressChapter;
     widget.controller.visiblePageAnchor = _visiblePageAnchor;
     _slideAnim.addListener(() {
       final tween = _slideTween;
@@ -343,6 +347,7 @@ class _OriginalReaderAreaState extends ConsumerState<OriginalReaderArea>
     _speech.lifecycle.dispose();
     _speech.service.setPageBoundaries(this, const []);
     widget.controller.holdPageDuringJump = null;
+    widget.controller.prepareProgressChapter = null;
     widget.controller.visiblePageAnchor = null;
     _jumpCover?.dispose();
     _finishCurlHandover(false);
@@ -447,7 +452,7 @@ class _OriginalReaderAreaState extends ConsumerState<OriginalReaderArea>
 
         return AutomaticScanArea(key: _scanKey, bookId: widget.bookId,
           page: (bookId: widget.bookId, contentVersion: widget.session.book.contentVersion,
-            layout: (settings.fontSize, settings.fontFamily, settings.bold, settings.indent,
+            layout: (settings.fontSize, settings.fontFamily, settings.fontWeight, settings.indent,
               settings.lineHeight, settings.paragraphGapEm,
               settings.horizontalPadding, widget.theme, contentSize, info.top, info.bottom,
               _highlightSignature(annotations, includeChapter: false)),
@@ -484,7 +489,9 @@ class _OriginalReaderAreaState extends ConsumerState<OriginalReaderArea>
                       initialFraction: 1, margin: margin, settings: settings),
                   if (_next.ordinal != null)
                     _chapter(ordinal: _next.ordinal!, isNeighbor: true,
-                      initialFraction: 0, margin: margin, settings: settings),
+                      initialFraction: _parallelTarget?.chapter == _next.ordinal
+                          ? _parallelTarget!.fraction : 0,
+                      margin: margin, settings: settings),
                 ],
               ),
             ),
@@ -641,7 +648,7 @@ class _OriginalReaderAreaState extends ConsumerState<OriginalReaderArea>
     fontFamily: settings.useOriginalFont
         ? ''
         : settings.fontFamily ?? 'sans-serif',
-    bold: settings.bold,
+    fontWeight: settings.fontWeight,
     // 相邻章各自的落位：上一章落章末、下一章落章首，滑进来时正是要看到的那一页
     initialFraction: initialFraction,
     themeColors: _themeColors(),

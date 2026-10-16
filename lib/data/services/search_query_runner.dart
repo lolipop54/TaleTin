@@ -40,7 +40,7 @@ class SearchQueryRunner {
       final chapter = chapters[ordinal];
       final matches = await source.work(
         bookId,
-        () => cancellation.cancelled
+        () async => cancellation.cancelled
             ? Future.value(<({BookSearchHit hit, int at})>[])
             : searchFileChapter(
                 source.contents.chapterAbsolutePath(bookId, chapter),
@@ -51,6 +51,11 @@ class SearchQueryRunner {
                 ordinal == after?.chapter ? after!.offset : 0,
                 limit - hits.length + 1,
                 '$revision:$epoch',
+                content: await source.contents.chapter(
+                  bookId,
+                  chapter,
+                  textOnly: true,
+                ),
               ),
       );
       if (cancellation.cancelled) return;

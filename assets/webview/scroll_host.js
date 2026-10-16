@@ -16,12 +16,21 @@
   function frameAtTop() {
     return host.frames.findLast(f => f.offsetTop <= scrollY + 0.01) || host.frames[0];
   }
+  host.prepareImagesAt = async (y = scrollY) => {
+    if (!window.__gtImageDecodeVisible) return;
+    await Promise.all(host.frames.map(frame => {
+      const top = y - frame.offsetTop;
+      return frame.contentWindow.__gtHost.style.prepareImagesRect(
+        0, top - innerHeight, innerWidth, top + innerHeight * 2);
+    }));
+  };
+  const revealFrames = () => { for (const frame of host.frames) frame.style.opacity = '1'; };
   host.anchor = () => {
     const frame = frameAtTop();
     if (!frame) return null;
     const doc = frame.contentDocument, y = scrollY - frame.offsetTop;
     if (frame.anchorIndex) return window.gtScrollAnchor.at(frame, y);
-    for (const [i, image] of [...doc.images].entries()) {
+    for (const [i, image] of frame.images.entries()) {
       const r = image.getBoundingClientRect();
       if (r.top <= y + 0.01 && r.bottom > y && r.height > 0) {
         return {index: frame.meta.index, image: i};
@@ -46,7 +55,7 @@
   function localPointY(frame, point) {
     if (!point) return 0;
     const doc = frame.contentDocument;
-    const r = point.image !== undefined ? doc.images[point.image].getBoundingClientRect()
+    const r = point.image !== undefined ? frame.images[point.image].getBoundingClientRect()
       : charRect(doc, nodeAt(doc, point.path), point.offset);
     return r.top;
   }
@@ -74,6 +83,7 @@
     await loaded;
     if (epoch !== host.epoch) { frame.remove(); return null; }
     const doc = frame.contentDocument, win = frame.contentWindow;
+    win.__gtImageDecodeVisible = window.__gtImageDecodeVisible;
     win.__gtHost = {state: {started: false, margin: options.marginPx}};
     const base = doc.createElement('style');
     base.textContent = (options.fontCss || '') + window.gtBaseCss;
@@ -93,6 +103,9 @@
     await new Promise(resolve => win.__gtHost.style.whenContentReady(resolve));
     if (epoch !== host.epoch) { frame.remove(); return null; }
     frame.style.height = Math.max(doc.body.scrollHeight, doc.documentElement.scrollHeight) + 'px';
+    // document.images 只有普通 img，会漏掉 SVG 封面，还会把已跳过的 data: 图算进去。
+    // 与 Locator 共用源节点路径，让打开、位置上报和重开使用相同的图片序号。
+    frame.images = meta.imagePaths.map(path => nodeAt(doc, path));
     try {
       frame.textNodes = meta.nodes.map(item => ({path: item.path, node: nodeAt(doc, item.path)}));
     } catch (error) {
@@ -152,12 +165,17 @@
       // 已加载的 iframe 不换父节点，移动它会让浏览器重新加载并废弃文字节点。
       for (const frame of host.frames) frame.remove();
       for (const frame of next) {
-        frame.style.position = 'static'; frame.style.opacity = '1'; frame.style.pointerEvents = '';
+        frame.style.position = 'static'; frame.style.opacity = window.__gtImageDecodeVisible ? '0' : '1'; frame.style.pointerEvents = '';
       }
       host.frames = next; host.options = options;
       host.paintDecorations?.();
       if (point) host.restore(point); else scrollTo(0, 0);
       host.center = current.meta.index;
+      if (window.__gtImageDecodeVisible) {
+        await host.prepareImagesAt();
+        if (epoch !== host.epoch) return false;
+        revealFrames();
+      }
       await send({type:'window', indices:next.map(f => f.meta.index)});
       if (epoch !== host.epoch) return false;
       host.ready = true; send({type: 'ready'});
@@ -184,6 +202,7 @@
         const from = scrollY, target = Math.max(0, Math.min(host.pointY(point),
           document.documentElement.scrollHeight - innerHeight));
         const motion = host.speechMotion = (host.speechMotion || 0) + 1;
+        if (window.__gtImageDecodeVisible) await host.prepareImagesAt(target);
         await new Promise(resolve => {
           let start;
           function tick(now) {
@@ -210,6 +229,7 @@
       }
       host.frames = next; host.center = current.meta.index;
       host.restore(point); host.paintDecorations?.(); host.resetAutoBaseline?.();
+      if (window.__gtImageDecodeVisible) await host.prepareImagesAt();
       await send({type:'window', indices:next.map(f => f.meta.index)});
       if (epoch !== host.epoch) return false;
       send({type:'ready'});
@@ -249,6 +269,7 @@
       host.frames = next;
       host.paintDecorations?.();
       scrollTo(0, oldY + visible.offsetTop - oldTop);
+      if (window.__gtImageDecodeVisible) await host.prepareImagesAt();
       host.resetAutoBaseline?.();
       await send({type:'window', indices:next.map(f => f.meta.index)});
     } catch (error) {
@@ -287,6 +308,7 @@
   };
   let reporting = false, ended;
   addEventListener('scroll', () => {
+    if (window.__gtImageDecodeVisible) host.prepareImagesAt();
     window.gtReaderPerf?.motion('original.scroll');
     if (!reporting) {
       reporting = true;

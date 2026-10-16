@@ -13,7 +13,7 @@ import '../services/toc_entry_index.dart';
 ///
 /// 只区分「文件不见了」与「内容读不出来」两类：前者是书被外部删除或导入不全，
 /// 后者是文件损坏。界面据此给出不同文案与重试入口（设计文档 9.7）。
-enum ContentErrorCode { missing, corrupted }
+enum ContentErrorCode { missing, corrupted, sourceChanged }
 
 class ContentFailure implements Exception {
   const ContentFailure(this.code, this.detail);
@@ -24,6 +24,7 @@ class ContentFailure implements Exception {
   String get message => switch (code) {
     ContentErrorCode.missing => '正文文件缺失，请重新导入这本书',
     ContentErrorCode.corrupted => '正文文件损坏，无法打开这一章',
+    ContentErrorCode.sourceChanged => '源文件已改变',
   };
 
   @override

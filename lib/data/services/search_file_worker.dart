@@ -17,8 +17,9 @@ Future<List<({BookSearchHit hit, int at})>> searchFileChapter(
   String query,
   int offset,
   int limit,
-  String cacheVersion,
-) => _worker.search(
+  String cacheVersion, {
+  ChapterContent? content,
+}) => _worker.search(
   file,
   title,
   bookId,
@@ -27,6 +28,7 @@ Future<List<({BookSearchHit hit, int at})>> searchFileChapter(
   offset,
   limit,
   cacheVersion,
+  content: content,
 );
 
 final _worker = _ChapterWorker();
@@ -54,8 +56,9 @@ class _ChapterWorker {
     String query,
     int offset,
     int limit,
-    String cacheVersion,
-  ) async {
+    String cacheVersion, {
+    ChapterContent? content,
+  }) async {
     _idle?.cancel();
     _active++;
     final reply = ReceivePort();
@@ -71,6 +74,7 @@ class _ChapterWorker {
         offset,
         limit,
         cacheVersion,
+        content,
       ]);
       final result = await reply.first;
       if (result is String) throw StateError(result);
@@ -100,10 +104,12 @@ void _runChapterWorker(SendPort ready) {
       final chapter =
           cache.remove(key) ??
           SearchChapter(
-            ChapterContent.fromJson(
-              (jsonDecode(File(args[1] as String).readAsStringSync()) as Map)
-                  .cast<String, Object?>(),
-            ),
+            args[9] as ChapterContent? ??
+                ChapterContent.fromJson(
+                  (jsonDecode(
+                    File(args[1] as String).readAsStringSync(),
+                  ) as Map).cast<String, Object?>(),
+                ),
           );
       cache[key] = chapter;
       while (cache.length > 2 ||

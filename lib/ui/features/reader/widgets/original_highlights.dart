@@ -74,7 +74,8 @@ extension _OriginalHighlights on _OriginalReaderAreaState {
     final marks = await ref.read(bookmarksProvider(widget.bookId).future);
     if (!mounted || _hosts[ordinal] != host) return;
     final session = widget.session, chapter = widget.session.chapters[ordinal];
-    final relevant = marks.where((m) => m.locator.chapterId == chapter.id).toList();
+    final relevant = marks.where((m) => !m.locator.needsRelocation &&
+      m.locator.chapterId == chapter.id).toList();
     final points = <Map<String, Object?>>[];
     if (relevant.isNotEmpty) {
       final content = ordinal == session.chapterIndex && session.content != null

@@ -214,6 +214,21 @@ class _BottomControlsState extends ConsumerState<_BottomControls> {
 
   Future<void> _seek(double value) async {
     final version = ++_seekVersion;
+    // 直接记录真实滑块提交，不用自动化入口的耗时替代用户操作。
+    final current = readerWorkTraceEnabled
+        ? ref.read(readerSessionProvider(widget.bookId)).value : null;
+    final settings = readerWorkTraceEnabled
+        ? ref.read(readerSettingsProvider(widget.bookId)).value?.settings : null;
+    final trace = !readerWorkTraceEnabled ? null : ReaderWorkTrace.start(
+      'reader.progress.user', {
+        'bookId': widget.bookId, 'request': version, 'target': value,
+        'fromChapter': current?.chapterIndex, 'fromProgress': current?.bookProgress,
+        'scrolling': current?.scrolling, 'fontFamily': settings?.fontFamily,
+        'originalFont': settings?.useOriginalFont, 'fontSize': settings?.fontSize,
+        'fontWeight': settings?.fontWeight, 'lineHeight': settings?.lineHeight,
+        'paragraphGap': settings?.paragraphGapEm,
+      });
+    var status = 'ok';
     try {
       final notifier = ref.read(readerSessionProvider(widget.bookId).notifier);
       final hold =
@@ -241,6 +256,7 @@ class _BottomControlsState extends ConsumerState<_BottomControls> {
         },
       );
     } catch (_) {
+      status = 'error';
       if (mounted && version == _seekVersion) {
         ref.read(readerProvider.notifier).showNotice('进度跳转未完成，请重试');
       }
@@ -248,6 +264,7 @@ class _BottomControlsState extends ConsumerState<_BottomControls> {
       if (mounted && version == _seekVersion) {
         setState(() => _dragProgress = null);
       }
+      trace?.finish(status: version == _seekVersion ? status : 'superseded');
     }
   }
 
@@ -297,6 +314,7 @@ class _BottomControlsState extends ConsumerState<_BottomControls> {
         top: false,
         child: SafeArea(
           top: false,
+          maintainBottomViewPadding: true,
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [

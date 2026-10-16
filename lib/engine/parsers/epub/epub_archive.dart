@@ -12,8 +12,10 @@ import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
 import 'package:path/path.dart' as p;
+import 'package:direct_read_rust/direct_read_rust.dart';
 
 import '../../../core/errors/import_error.dart';
+import '../../../core/diagnostics/import_timing.dart';
 import '../../normalization/text_decoding.dart';
 
 class EpubArchive {
@@ -21,6 +23,8 @@ class EpubArchive {
 
   final Archive _archive;
   final InputFileStream _input;
+  ImportTiming? importTiming;
+  NativeInflater? _inflater;
 
   /// 条目数上限
   static const int maxEntries = 20000;
@@ -32,6 +36,7 @@ class EpubArchive {
   static const int maxTotalBytes = 1024 * 1024 * 1024;
 
   int _totalWritten = 0;
+  int get decodedBytes => _totalWritten;
 
   /// 打开 ZIP。非 ZIP 内容会在这里抛出 `invalidContainer`。
   static EpubArchive open(String path) {
@@ -64,18 +69,46 @@ class EpubArchive {
   bool contains(String entryPath) => find(entryPath) != null;
 
   /// 读取条目内容；[limit] 用于只读文件头的情况。
-  Uint8List readBytes(String entryPath, {int? limit}) {
+  Uint8List readBytes(String entryPath, {int? limit}) =>
+      importTiming?.detail(
+        'zip_entry_read_inflate',
+        () => _readBytes(entryPath, limit: limit),
+      ) ??
+      _readBytes(entryPath, limit: limit);
+
+  Uint8List _readBytes(String entryPath, {int? limit}) {
     final entry = find(entryPath);
     if (entry == null) {
       throw ImportFailure(ImportErrorCode.invalidContainer, '缺少 $entryPath');
     }
     _checkDeclaredSize(entry, entryPath);
-    final bytes = entry.readBytes();
+    // 保留指向 ZIP 原文件的压缩条目，只返回本次解压的字节。
+    // 不把解压结果挂在 ArchiveFile 上，也不 clear 掉再次读取所需的信息。
+    final raw = entry.rawContent;
+    Uint8List? bytes;
+    // Keep archive's ZIP indexing and encryption handling. Only replace raw
+    // DEFLATE expansion; stored/BZip2 entries keep their existing behavior.
+    if (ProcessingFeatures.nativeInflate &&
+        raw is ZipFile &&
+        raw.compressionMethod == CompressionType.deflate) {
+      final compressed = raw.getStream(decompress: false);
+      final position = compressed.position;
+      try {
+        _inflater ??= NativeInflater();
+        bytes = _inflater!.decode(compressed.toUint8List(), maxEntryBytes);
+      } on NativeInflateLimit {
+        throw const ImportFailure(ImportErrorCode.unsafeArchive, '单条资源过大');
+      } on FormatException {
+        throw const ImportFailure(ImportErrorCode.invalidContainer, '条目无法解压');
+      } finally {
+        compressed.setPosition(position);
+      }
+    } else {
+      bytes = raw?.getStream().toUint8List();
+    }
     if (bytes == null) {
       throw ImportFailure(ImportErrorCode.invalidContainer, '条目无法解压');
     }
-    // 用完立即释放缓存，避免多条目同时驻留内存
-    entry.clear();
     if (bytes.length > maxEntryBytes) {
       throw ImportFailure(ImportErrorCode.unsafeArchive, '单条资源过大');
     }
@@ -90,7 +123,14 @@ class EpubArchive {
   }
 
   /// 读取文本条目：按 BOM / UTF-8 解码（EPUB 内部文档通常是 UTF-8）。
-  String readText(String entryPath) => decodeTextBytes(readBytes(entryPath));
+  String readText(String entryPath) {
+    final bytes = readBytes(entryPath);
+    return importTiming?.detail(
+          'text_decode_transfer',
+          () => decodeTextBytes(bytes),
+        ) ??
+        decodeTextBytes(bytes);
+  }
 
   /// 把资源条目写到目标文件。目标已存在时跳过，避免同一图片重复写盘。
   ///
@@ -100,24 +140,19 @@ class EpubArchive {
     if (entry == null) {
       throw ImportFailure(ImportErrorCode.invalidContainer, '缺少 $entryPath');
     }
-    _checkDeclaredSize(entry, entryPath);
-    final bytes = entry.readBytes();
-    entry.clear();
-    if (bytes == null) return false;
+    final file = File(targetPath);
+    if (file.existsSync()) return true;
+    final bytes = readBytes(entryPath);
     if (limit != null && bytes.length > limit) {
       throw ImportFailure(ImportErrorCode.unsafeArchive, '单条资源过大');
     }
-    _totalWritten += bytes.length;
-    if (_totalWritten > maxTotalBytes) {
-      throw const ImportFailure(ImportErrorCode.unsafeArchive, '解压内容超出上限');
-    }
-    final file = File(targetPath);
     file.parent.createSync(recursive: true);
     file.writeAsBytesSync(bytes, flush: false);
     return true;
   }
 
   void close() {
+    _inflater?.close();
     for (final file in _archive.files) {
       file.clear();
     }

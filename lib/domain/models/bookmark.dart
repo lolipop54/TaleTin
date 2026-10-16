@@ -26,6 +26,7 @@ class Bookmark {
 
   /// 同一个位置只算一个书签（用于「当前位置是否已加书签」）
   bool isAt(Locator other) =>
+      !locator.needsRelocation &&
       locator.chapterId == other.chapterId &&
       locator.blockId == other.blockId &&
       locator.utf16Offset == other.utf16Offset;
