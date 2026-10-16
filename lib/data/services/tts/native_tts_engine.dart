@@ -39,6 +39,9 @@ class NativeTtsEngine implements TtsEngine, PreparedTtsEngine {
   }
 
   @override
+  Future<void> cancelInitialization() => channel.cancelInitialization();
+
+  @override
   Future<List<TtsEngineInfo>> listEngines() async => [
     for (final engine in await channel.listEngines())
       TtsEngineInfo(

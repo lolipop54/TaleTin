@@ -482,6 +482,8 @@ interface TtsHostApi {
    * 真正等待引擎就绪，失败通过 [TtsInitResultDto.ok] 返回，不抛异常。
    */
   fun initialize(enginePackage: String?): TtsInitResultDto
+  /** 取消尚未完成的连接。独立队列立即唤醒 initialize，不能排在其等待后面。 */
+  fun cancelInitialization()
   /** 系统里可见的 TTS 引擎清单；始终包含系统默认引擎。 */
   fun listEngines(): List<TtsEngineDto>
   /** 当前引擎的音色清单。需要先 [initialize]。 */
@@ -559,6 +561,22 @@ interface TtsHostApi {
             val enginePackageArg = args[0] as String?
             val wrapped: List<Any?> = try {
               listOf(api.initialize(enginePackageArg))
+            } catch (exception: Throwable) {
+              TtsApiPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.gtreader.TtsHostApi.cancelInitialization$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { _, reply ->
+            val wrapped: List<Any?> = try {
+              api.cancelInitialization()
+              listOf(null)
             } catch (exception: Throwable) {
               TtsApiPigeonUtils.wrapError(exception)
             }

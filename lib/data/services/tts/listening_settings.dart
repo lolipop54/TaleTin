@@ -21,13 +21,17 @@ class ListeningSettings {
   Future<List<TtsEngineInfo>> listEngines() => engine.listEngines();
 
   /// 浏览其它引擎后恢复正文正在使用的配置，不能悄悄替换音色。
-  Future<List<OfflineVoice>> detectVoices(String? enginePackage) async {
+  Future<List<OfflineVoice>> detectVoices(
+    String? enginePackage, {
+    bool Function()? canRestore,
+  }) async {
     try {
       final init = await engine.initialize(enginePackage: enginePackage);
       if (!init.ok) throw StateError(init.message ?? '引擎不可用');
       return await engine.listVoices();
     } finally {
-      if (voice != null) await apply(value);
+      // 已切到另一个检测时，旧任务不能再连接原引擎，拖住最新选择。
+      if (voice != null && (canRestore?.call() ?? true)) await apply(value);
     }
   }
 

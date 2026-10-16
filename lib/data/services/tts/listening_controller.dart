@@ -65,6 +65,7 @@ class ListeningController implements ListeningService {
   ListeningSleepTimer? _sleep;
   String? _sleepChapter;
   Future<List<OfflineVoice>>? _preparingVoices;
+  int _voiceDetection = 0;
 
   @override
   Future<List<OfflineVoice>> prepareVoices() =>
@@ -101,11 +102,21 @@ class ListeningController implements ListeningService {
 
   @override
   Future<List<OfflineVoice>> detectVoices(String? enginePackage) async {
+    final detection = ++_voiceDetection;
+    // 先让旧结果失效，再从独立平台队列唤醒旧连接；否则新选择会被
+    // _engineTail 和原生串行队列挡住，连续切换时逐次等待完整超时。
+    _invalidate();
+    await engine.cancelInitialization();
+    if (_disposed || detection != _voiceDetection) return const [];
     await pause();
+    if (_disposed || detection != _voiceDetection) return const [];
     final epoch = _invalidate();
     var voices = <OfflineVoice>[];
     await _command(epoch, () async {
-      voices = await settings.detectVoices(enginePackage);
+      voices = await settings.detectVoices(
+        enginePackage,
+        canRestore: () => _current(epoch) && detection == _voiceDetection,
+      );
     });
     return voices;
   }

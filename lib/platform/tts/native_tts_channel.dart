@@ -78,6 +78,8 @@ class NativeTtsChannel {
   Future<TtsInitResultDto> initialize(String? enginePackage) =>
       _hostApi.initialize(enginePackage);
 
+  Future<void> cancelInitialization() => _hostApi.cancelInitialization();
+
   Future<List<TtsEngineDto>> listEngines() => _hostApi.listEngines();
 
   Future<List<TtsVoiceDto>> listVoices() => _hostApi.listVoices();

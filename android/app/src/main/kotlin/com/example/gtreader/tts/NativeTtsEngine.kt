@@ -97,12 +97,22 @@ internal class NativeTtsEngine(
     @Volatile
     private var enginePackage: String = ""
 
-    /** 初始化等待：onInit 回调在主线程，这里等它。 */
-    @Volatile
-    private var initLatch: CountDownLatch? = null
+    /** 每次连接独立持有结果；取消后迟到的回调不能确认下一次连接。 */
+    private class Initialization {
+        val latch = CountDownLatch(1)
+        @Volatile var status = TextToSpeech.ERROR
+        @Volatile var cancelled = false
+    }
 
     @Volatile
-    private var initStatus: Int = TextToSpeech.ERROR
+    private var initialization: Initialization? = null
+
+    /** 从独立消息队列调用，只唤醒等待，不在主线程调用第三方引擎。 */
+    fun cancelInitialization() {
+        val pending = initialization ?: return
+        pending.cancelled = true
+        pending.latch.countDown()
+    }
 
     /**
      * 初始化或换引擎。阻塞调用线程（Pigeon 的后台线程），不阻塞主线程。
@@ -115,17 +125,18 @@ internal class NativeTtsEngine(
             return TtsInitResultDto(ok = true, enginePackage = enginePackage)
         }
 
-        val latch = CountDownLatch(1)
+        val pending = Initialization()
+        // 在投递创建任务之前公开等待对象，刚点切换也能取消尚未创建的连接。
+        initialization = pending
         handler.post {
+            if (pending.cancelled) return@post
             releaseLocked()
             requestedEngine = want
-            initStatus = TextToSpeech.ERROR
-            initLatch = latch
             val listener = TextToSpeech.OnInitListener { status ->
                 // 超时引擎可能迟到；旧回调只能结束自己的等待，不能确认新引擎就绪。
-                if (initLatch === latch) {
-                    initStatus = status
-                    latch.countDown()
+                if (initialization === pending && !pending.cancelled) {
+                    pending.status = status
+                    pending.latch.countDown()
                 }
             }
             tts = try {
@@ -142,12 +153,23 @@ internal class NativeTtsEngine(
             // 事件回调必须挂在实例上才有；每个新建的引擎都要重新挂
             tts?.setOnUtteranceProgressListener(progressListener)
             if (tts == null) {
-                initLatch = null
-                latch.countDown()
+                pending.latch.countDown()
             }
         }
 
-        if (!latch.await(INIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+        val completed = pending.latch.await(INIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        initialization = null
+        if (pending.cancelled) {
+            release()
+            Log.i(TAG, "已取消 TTS 连接：$want")
+            return TtsInitResultDto(
+                ok = false,
+                enginePackage = want.orEmpty(),
+                errorCode = TtsErrorCode.INIT,
+                message = "已取消旧引擎连接",
+            )
+        }
+        if (!completed) {
             Log.w(TAG, "等待 TTS 初始化超时：$want")
             // 超时后引擎可能才建好，留着会是个半死状态，直接收掉；线程保留，允许重试
             release()
@@ -158,13 +180,13 @@ internal class NativeTtsEngine(
                 message = "等待引擎初始化超时",
             )
         }
-        if (initStatus != TextToSpeech.SUCCESS || tts == null) {
+        if (pending.status != TextToSpeech.SUCCESS || tts == null) {
             release()
             return TtsInitResultDto(
                 ok = false,
                 enginePackage = want.orEmpty(),
                 errorCode = TtsErrorCode.INIT,
-                message = "引擎返回初始化失败（status=$initStatus）",
+                message = "引擎返回初始化失败（status=${pending.status}）",
             )
         }
 
@@ -305,6 +327,7 @@ internal class NativeTtsEngine(
      * 之后这个实例不能再 initialize——线程已经没了，post 进去的任务永远不会执行。
      */
     fun dispose() {
+        cancelInitialization()
         handler.removeCallbacks(sleepCheck)
         handler.post { releaseLocked() }
         // quitSafely：先把上面那条释放消息做完再退出线程
@@ -422,7 +445,6 @@ internal class NativeTtsEngine(
 
     private fun releaseLocked() {
         audioPlayer.stop()
-        initLatch = null
         tts?.let { engine ->
             try {
                 engine.stop()

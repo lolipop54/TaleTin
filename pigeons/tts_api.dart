@@ -143,6 +143,9 @@ abstract class TtsHostApi {
   @TaskQueue(type: TaskQueueType.serialBackgroundThread)
   TtsInitResultDto initialize(String? enginePackage);
 
+  /// 取消尚未完成的连接。独立队列立即唤醒 initialize，不能排在其等待后面。
+  void cancelInitialization();
+
   /// 系统里可见的 TTS 引擎清单；始终包含系统默认引擎。
   List<TtsEngineDto> listEngines();
 

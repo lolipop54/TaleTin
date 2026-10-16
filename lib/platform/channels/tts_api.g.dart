@@ -461,6 +461,25 @@ class TtsHostApi {
     return pigeonVar_replyValue! as TtsInitResultDto;
   }
 
+  /// 取消尚未完成的连接。独立队列立即唤醒 initialize，不能排在其等待后面。
+  Future<void> cancelInitialization() async {
+    final pigeonVar_channelName = 'dev.flutter.pigeon.gtreader.TtsHostApi.cancelInitialization$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(null);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    _extractReplyValueOrThrow(
+        pigeonVar_replyList,
+        pigeonVar_channelName,
+        isNullValid: true,
+    )
+    ;
+  }
+
   /// 系统里可见的 TTS 引擎清单；始终包含系统默认引擎。
   Future<List<TtsEngineDto>> listEngines() async {
     final pigeonVar_channelName = 'dev.flutter.pigeon.gtreader.TtsHostApi.listEngines$pigeonVar_messageChannelSuffix';

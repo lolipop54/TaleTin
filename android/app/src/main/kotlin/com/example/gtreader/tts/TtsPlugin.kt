@@ -63,6 +63,8 @@ class TtsPlugin : FlutterPlugin, TtsHostApi {
     override fun initialize(enginePackage: String?): TtsInitResultDto =
         engine.initialize(enginePackage)
 
+    override fun cancelInitialization() = engine.cancelInitialization()
+
     override fun listEngines(): List<TtsEngineDto> = engine.listEngines()
 
     override fun listVoices(): List<TtsVoiceDto> = engine.listVoices()

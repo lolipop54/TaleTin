@@ -143,6 +143,9 @@ abstract class TtsEngine {
   /// 初始化（换引擎时重新初始化）。传 null 用系统默认引擎。
   Future<TtsInitOutcome> initialize({String? enginePackage});
 
+  /// 仅取消尚未完成的连接；不停止已就绪引擎的播放。
+  Future<void> cancelInitialization();
+
   /// 系统里可见的引擎清单，始终包含系统默认引擎。
   Future<List<TtsEngineInfo>> listEngines();
 
