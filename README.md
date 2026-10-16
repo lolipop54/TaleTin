@@ -115,13 +115,23 @@ TaleTin 是一款专注本地阅读的 Android 阅读器。导入自己的 EPUB 
 
 ## 从源码构建
 
-当前工程面向 **Android**，使用 Flutter / Dart 编写界面和阅读逻辑，Kotlin 提供文件访问、系统语音与设备能力。
+当前工程面向 **Android**，使用 Flutter / Dart 编写界面和阅读逻辑，Kotlin 提供文件访问、系统语音与设备能力，Rust 负责 TXT 扫描和 EPUB 正文处理。
 
 ### 环境准备
 
 - Flutter：建议先沿用本项目当前开发环境 **3.47.2**。
 - Dart：`>=3.13.2 <4.0.0`，随 Flutter SDK 安装。
-- Android SDK 与兼容当前 Gradle 的 JDK；Android 源码的 Java / Kotlin 编译目标为 17。
+- Android SDK 与兼容当前 Gradle 的 JDK；Android 源码的 Java / Kotlin 编译目标为 17。Android NDK 使用当前 Flutter 配置的版本。
+- Rust：建议沿用本项目已验证的 **1.98.1**，通过 rustup 安装，并确保 `rustc`、`cargo`、`rustup` 可在终端使用。Rust 是源码构建依赖，手机运行应用时不需要安装。
+
+首次构建前，安装三个 Android 编译目标，并下载锁定的 Rust 依赖。在项目根目录执行：
+
+```bash
+rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+cargo fetch --locked --manifest-path tools/direct_read_rust/Cargo.toml
+```
+
+后续 Flutter 构建会自动调用 Cargo 和 Android NDK，编译并打包对应架构的 Rust 库，不需要手工复制 `.so` 文件。构建钩子使用离线模式；`Cargo.lock` 更新后也需要先重新执行上面的 `cargo fetch` 命令。Windows 上如需运行本机 Flutter 测试，还需要 Visual Studio 的 C++ 桌面开发工具（MSVC）和 `x86_64-pc-windows-msvc` Rust 目标。
 
 先运行 `flutter doctor`，确认 Android 工具链可用。在项目根目录执行：
 
