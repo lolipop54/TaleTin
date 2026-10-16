@@ -104,7 +104,7 @@ mixin _OriginalScrollCommands on ConsumerState<OriginalScrollArea> {
       final point = anchor == null ? null : _point(index, anchor);
       options = {
         ...options,
-        'fontCss': ReadingFonts.cssFor(options['fontFamily'] as String?),
+        'fontCss': originalFontCss(options['fontFamily'] as String?),
       };
       await host!.evaluateJavascript(
         source:

@@ -9,7 +9,7 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
 import '../../../../app/di/app_providers.dart';
-import '../../../../platform/channels/reading_fonts.dart';
+import '../../../../platform/channels/original_webview_warmup.dart';
 import '../../../../domain/models/book_document.dart';
 import '../../../../domain/models/locator.dart';
 import '../../../../engine/normalization/locator_mapper.dart';
@@ -26,6 +26,7 @@ import '../view_models/reader_settings_view_model.dart';
 import '../view_models/reader_view_model.dart';
 import '../view_models/automatic_reading.dart';
 import 'original_scroll_webview.dart';
+import 'original_font_assets.dart';
 import 'original_host_controller.dart';
 import 'scroll_selection_layer.dart';
 import 'reader_display_transition.dart';
@@ -82,6 +83,7 @@ class OriginalScrollAreaState extends ConsumerState<OriginalScrollArea>
   @override
   final _preparing = <int, String>{};
   ScrollHostAssets? _assets;
+  final _preparedView = OriginalWebViewWarmup.takeFirstView();
   String? _submitted;
   @override
   bool _ready = false;
@@ -124,7 +126,9 @@ class OriginalScrollAreaState extends ConsumerState<OriginalScrollArea>
     super.initState();
     _initAutomatic();
     _initSelection();
-    ScrollHostAssets.load().then((value) {
+    final startup = OriginalWebViewWarmup.ensureReady();
+    ScrollHostAssets.load().then((value) async {
+      await startup;
       if (mounted) setState(() => _assets = value);
     });
   }
@@ -337,6 +341,7 @@ class OriginalScrollAreaState extends ConsumerState<OriginalScrollArea>
                 backend: _selectionBackend,
                 theme: widget.settings.theme,
                 child: OriginalScrollWebView(
+                  preparedView: _preparedView,
                   source: widget.original.source,
                   assets: _assets!,
                   onController: (value) => host = value,
@@ -367,6 +372,9 @@ class OriginalScrollAreaState extends ConsumerState<OriginalScrollArea>
 
   @override
   void dispose() {
+    if (_preparedView?.isRunning() ?? false) {
+      unawaited(_preparedView!.dispose());
+    }
     _disposeAutomatic();
     _selectionMotion.dispose();
     _request++;

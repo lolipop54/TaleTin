@@ -399,6 +399,7 @@ class AndroidInAppWebViewWidget extends PlatformInAppWebViewWidget {
     _controller = AndroidInAppWebViewController(
         PlatformInAppWebViewControllerCreationParams(
             id: viewId, webviewParams: params));
+    _controller!.flutterPlatformViewId = id;
     _androidParams.pullToRefreshController?.init(viewId);
     _androidParams.findInteractionController?.init(viewId);
     debugLog(

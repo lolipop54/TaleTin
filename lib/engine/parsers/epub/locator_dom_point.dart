@@ -32,20 +32,40 @@ class LocatorDomMap {
   final ChapterContent content;
   final String href;
 
+  late final _availableImages = {
+    for (final block in map.blocks)
+      if (block.kind == BlockKind.image) block.resourcePath,
+  };
+
   // 不把导入时跳过的 data: 脚注图计入插图序号，后续真实插图仍能双向定位。
-  late final _images = map.document.querySelectorAll('img,image').where((element) {
-    final src = domAttribute(element, 'src') ?? domAttribute(element, 'xlink:href') ?? domAttribute(element, 'href');
-    return src != null && resolveEntryPath(href, src) != null;
+  late final _images = map.document.querySelectorAll('img,image').where((
+    element,
+  ) {
+    final src =
+        domAttribute(element, 'src') ??
+        domAttribute(element, 'xlink:href') ??
+        domAttribute(element, 'href');
+    final path = src == null ? null : resolveEntryPath(href, src);
+    return path != null && _availableImages.contains(path);
   }).toList();
 
   /// 旧书也从原文节点取链接，不改正文块号或重新导入。
   String? linkAt(Locator locator) {
     final index = content.blocks.indexWhere((b) => b.id == locator.blockId);
     if (index < 0) return null;
-    final segment = map.textMap.segmentsOfBlock(map.blocks[index].id)
-        .where((s) => locator.utf16Offset >= s.blockOffset &&
-            locator.utf16Offset < s.blockOffset + s.emittedLength).firstOrNull;
-    for (var element = segment?.node.parent; element != null; element = element.parent) {
+    final segment = map.textMap
+        .segmentsOfBlock(map.blocks[index].id)
+        .where(
+          (s) =>
+              locator.utf16Offset >= s.blockOffset &&
+              locator.utf16Offset < s.blockOffset + s.emittedLength,
+        )
+        .firstOrNull;
+    for (
+      var element = segment?.node.parent;
+      element != null;
+      element = element.parent
+    ) {
       if (element.localName == 'a') return element.attributes['href'];
     }
     return null;
@@ -63,6 +83,14 @@ class LocatorDomMap {
       bookId: locator.bookId,
       contentVersion: locator.contentVersion,
       chapterId: locator.chapterId,
+      // 正文已按归档实际条目确认图片；不存在或大小写写错的引用不能凭空加块。
+      availableImages: {
+        for (final block in content.blocks)
+          if (block.kind == BlockKind.image && block.resourcePath != null)
+            block.resourcePath!.startsWith('res/')
+                ? block.resourcePath!.substring(4)
+                : block.resourcePath!,
+      },
     );
     if (map.blocks.length != content.blocks.length ||
         map.blocks.indexed.any(
@@ -107,7 +135,9 @@ class LocatorDomMap {
 
   /// 阅读定位也可能落在封面或插图；图片没有文字节点，直接定位对应元素。
   Map<String, Object> displayPoint(Locator locator) {
-    final images = content.blocks.where((b) => b.kind == BlockKind.image).toList();
+    final images = content.blocks
+        .where((b) => b.kind == BlockKind.image)
+        .toList();
     final index = images.indexWhere((b) => b.id == locator.blockId);
     if (index < 0) return point(locator);
     final elements = _images;
@@ -142,7 +172,9 @@ class LocatorDomMap {
     }
     if (point['element'] == true) {
       final index = _images.indexOf(node as Element);
-      final images = content.blocks.where((b) => b.kind == BlockKind.image).toList();
+      final images = content.blocks
+          .where((b) => b.kind == BlockKind.image)
+          .toList();
       if (index < 0 || index >= images.length) throw StateError('图片位置不存在');
       return map.mapper.at(images[index], 0);
     }

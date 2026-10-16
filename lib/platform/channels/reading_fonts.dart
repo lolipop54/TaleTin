@@ -129,10 +129,12 @@ abstract final class ReadingFonts {
     return _aliases[available ?? 'sans-serif'] ?? available;
   }
 
-  static String cssFor(String? family) {
+  static String cssFor(String? family, {bool nativeAssets = false}) {
     if (family == null || family.isEmpty) return '';
     final id = resolve(family);
-    if (PresetFonts.families.containsKey(id)) return PresetFonts.cssFor(id!);
+    if (PresetFonts.families.containsKey(id)) {
+      return PresetFonts.cssFor(id!, nativeAssets: nativeAssets);
+    }
     return _paths.containsKey(id)
         ? '@font-face{font-family:"$id";src:url("/__gt_fonts/$id");}'
         : '';

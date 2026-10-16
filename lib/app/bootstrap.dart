@@ -8,9 +8,13 @@ import 'package:taletin/ui/core/widgets/gt_button.dart';
 import 'dart:async';
 import 'dart:io';
 
+import '../platform/channels/original_webview_warmup.dart';
+import '../ui/features/reader/widgets/original_font_assets.dart';
+
 import 'restorable_app.dart';
 
 import 'package:flutter/material.dart';
+import 'package:drift/drift.dart' show BooleanExpressionOperators;
 
 import '../ui/core/theme/forui_theme.dart';
 
@@ -319,6 +323,16 @@ class _StartupGateState extends State<StartupGate> {
 
   Future<BootstrapResult> _start() async {
     final result = await bootstrapApp().timeout(kStartupTimeout);
+    if (Platform.isAndroid) {
+      final epub = await (result.database.select(result.database.books)
+            ..where((book) =>
+                book.format.equals('epub') & book.status.isNotValue('removed'))
+            ..limit(1)).getSingleOrNull();
+      if (epub != null) {
+        // 系统启动画面仍在，先完成唯一预备实例，再允许书架第一帧出现。
+        await OriginalWebViewWarmup.prepareFirstView(originalWebViewSettings());
+      }
+    }
     return result;
   }
 

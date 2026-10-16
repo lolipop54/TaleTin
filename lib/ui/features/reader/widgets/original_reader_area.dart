@@ -27,6 +27,7 @@ import '../../../../domain/models/automatic_scan.dart';
 import '../../../../domain/models/tts_state.dart';
 import '../../../../domain/services/listening_service.dart';
 import '../../../../app/di/app_providers.dart';
+import '../../../../app/router/reader_route_page.dart';
 import '../../../../core/diagnostics/opening_experiments.dart';
 import '../../../../core/diagnostics/bookmark_trace.dart';
 import '../view_models/listening_view_state.dart';
@@ -158,6 +159,21 @@ class _OriginalReaderAreaState extends ConsumerState<OriginalReaderArea>
   int _highlightVersion = 0;
   final _chapterHighlightVersions = <OriginalHostController, int>{};
   final _preload = OriginalPreloadGate();
+  bool _openingObserved = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_openingObserved) return;
+    _openingObserved = true;
+    final shown = ReaderPageReady.shownOf(context);
+    if (shown == null) return;
+    // 当前章照常准备；相邻章及翻页补图等加载层撤掉后再恢复。
+    _preload.hold('opening');
+    shown.then((_) {
+      if (mounted) _preload.release('opening');
+    });
+  }
 
   /// 拖手柄期间的最新落点（手柄位置与手指位置）：一次算完再取最新的一个
   Offset? _pendingDragHandle;

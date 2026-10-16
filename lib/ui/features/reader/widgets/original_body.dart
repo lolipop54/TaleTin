@@ -12,10 +12,12 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 import '../../../../platform/channels/reading_fonts.dart';
+import '../../../../platform/channels/original_webview_warmup.dart';
 import '../../../../core/diagnostics/opening_experiments.dart';
 import '../../../../core/diagnostics/bookmark_trace.dart';
 import '../../../../data/services/epub_source_repository.dart';
 import 'original_host_controller.dart';
+import 'original_font_assets.dart';
 import 'original_page_capture.dart';
 import 'original_preload_gate.dart';
 import 'turn_trace.dart';
@@ -80,16 +82,26 @@ class _OriginalBodyState extends State<OriginalBody> {
   double? _pendingSlide;
   bool _syncing = false;
   _ChapterFrame? _heldFrame;
+  bool _startupPrepared = OriginalWebViewWarmup.isPrepared;
+  final _preparedView = OriginalWebViewWarmup.takeFirstView();
 
   @override
   void initState() {
     super.initState();
     widget.preload.addListener(_resumePreparations);
     widget.slide.addListener(_moveSlide);
+    if (!_startupPrepared) {
+      OriginalWebViewWarmup.ensureReady().then((_) {
+        if (mounted) setState(() => _startupPrepared = true);
+      });
+    }
   }
 
   @override
   void dispose() {
+    if (_preparedView?.isRunning() ?? false) {
+      unawaited(_preparedView!.dispose());
+    }
     widget.preload.removeListener(_resumePreparations);
     widget.slide.removeListener(_moveSlide);
     super.dispose();
@@ -113,6 +125,7 @@ class _OriginalBodyState extends State<OriginalBody> {
   @override
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
+      if (!_startupPrepared) return const SizedBox.expand();
       final changed =
           _width != constraints.maxWidth || _height != constraints.maxHeight;
       final hadSize = _width > 0;
@@ -128,24 +141,13 @@ class _OriginalBodyState extends State<OriginalBody> {
       }
       // 只截正文：翻页图、跳转遮盖与手柄都是父层 Stack 中的兄弟节点。
       return RepaintBoundary(key: _captureBoundary, child: InAppWebView(
+        headlessWebView: _preparedView,
         initialUrlRequest: URLRequest(
           url: WebUri(
             'https://$kEpubSourceHost${kFrameworkPathPrefix}paged_host.html',
           ),
         ),
-        initialSettings: InAppWebViewSettings(
-          useHybridComposition: false,
-          javaScriptEnabled: true,
-          javaScriptCanOpenWindowsAutomatically: false,
-          supportMultipleWindows: false,
-          allowFileAccess: false,
-          allowContentAccess: false,
-          cacheEnabled: false,
-          supportZoom: false,
-          transparentBackground: true,
-          verticalScrollBarEnabled: false,
-          horizontalScrollBarEnabled: false,
-        ),
+        initialSettings: originalWebViewSettings(),
         gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
         onWebViewCreated: (controller) {
           _controller = controller;
@@ -155,6 +157,12 @@ class _OriginalBodyState extends State<OriginalBody> {
             callback: _onHostMessage,
           );
           traceTurn('pager created web=${controller.getViewId()}');
+          if (_preparedView != null) {
+            // 插件接手已有实例时不执行 initialUrlRequest，明确加载真正的宿主页。
+            unawaited(controller.loadUrl(urlRequest: URLRequest(
+              url: WebUri('https://$kEpubSourceHost${kFrameworkPathPrefix}paged_host.html'),
+            )));
+          }
           if (const bool.fromEnvironment('GT_PROFILE_CAPTURE')) {
             unawaited(
               InAppWebViewController.setWebContentsDebuggingEnabled(true),
@@ -457,7 +465,7 @@ class _OriginalBodyState extends State<OriginalBody> {
     if (c.fontFamily.isNotEmpty) {
       await _evaluate(
         frame,
-        'window.__gt && __gt.prepareFont(${jsonEncode(c.fontFamily)}, ${jsonEncode(ReadingFonts.cssFor(c.fontFamily))})',
+        'window.__gt && __gt.prepareFont(${jsonEncode(c.fontFamily)}, ${jsonEncode(originalFontCss(c.fontFamily))})',
         async: true,
       );
       if (!_alive(frame) || frame.styleKey != key) return;

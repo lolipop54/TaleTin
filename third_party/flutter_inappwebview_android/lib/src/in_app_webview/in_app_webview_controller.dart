@@ -83,6 +83,10 @@ class AndroidInAppWebViewController extends PlatformInAppWebViewController
 
   AndroidInAppBrowser? _inAppBrowser;
 
+  // A transferred headless view keeps its string method-channel id, but native
+  // screenshot/presentation APIs need the actual Flutter platform-view number.
+  int? flutterPlatformViewId;
+
   PlatformInAppBrowserEvents? get _inAppBrowserEventHandler =>
       _inAppBrowser?.eventHandler;
 
@@ -2748,7 +2752,7 @@ class AndroidInAppWebViewController extends PlatformInAppWebViewController
 
   @override
   dynamic getViewId() {
-    return id;
+    return flutterPlatformViewId ?? id;
   }
 
   @override

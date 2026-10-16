@@ -9,6 +9,7 @@ int _sequence = 0;
 /// removal. Phase logs can be joined to this record by book ID and wall time.
 abstract final class BookOpeningTrace {
   static final _active = <String, ReaderWorkTrace>{};
+  static bool get isActive => _active.isNotEmpty;
   static void begin(
     String bookId, {
     String entry = 'route',

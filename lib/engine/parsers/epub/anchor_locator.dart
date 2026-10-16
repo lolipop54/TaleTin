@@ -44,15 +44,19 @@ class ChapterAnchorMap {
     required String bookId,
     required int contentVersion,
     required String chapterId,
+    Set<String>? availableImages,
   }) {
     final builder = XhtmlBlockBuilder(
       basePath: resourceHref,
-      resolveImage: (entryPath) => ResolvedImage(
-        // 尺寸不参与位置换算，这里不读文件
-        resourcePath: entryPath,
-        width: 0,
-        height: 0,
-      ),
+      resolveImage: (entryPath) =>
+          availableImages != null && !availableImages.contains(entryPath)
+          ? null
+          : ResolvedImage(
+              // 尺寸不参与位置换算，这里不读文件
+              resourcePath: entryPath,
+              width: 0,
+              height: 0,
+            ),
     );
     final result = builder.convert(sanitizedHtml);
     return ChapterAnchorMap._(
@@ -133,6 +137,7 @@ class ChapterAnchorMap {
       }
       return named;
     }
+
     final raw = find(fragment);
     if (raw != null) return raw;
     // 原样优先，兼容旧书库保存的编码片段，不需要重新导入。

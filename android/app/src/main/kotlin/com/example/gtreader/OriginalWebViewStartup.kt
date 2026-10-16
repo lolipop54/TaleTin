@@ -10,11 +10,15 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.util.concurrent.Executors
 
-/** 只提前执行允许在后台完成的初始化，不创建页面或启动书籍渲染器。 */
+/** 分开处理后台内核准备与静态启动画面下的首帧绘制。 */
 object OriginalWebViewStartup {
     fun register(context: Context, engine: FlutterEngine) {
         MethodChannel(engine.dartExecutor.binaryMessenger, "gtreader/original-startup")
             .setMethodCallHandler { call, reply ->
+                if (call.method == "drawPrepared") {
+                    OriginalWebViewFirstDraw.prepare(engine, call.argument<String>("id")!!, reply)
+                    return@setMethodCallHandler
+                }
                 if (call.method != "warmup") {
                     reply.notImplemented()
                     return@setMethodCallHandler
@@ -27,7 +31,11 @@ object OriginalWebViewStartup {
                         object : WebViewOutcomeReceiver<WebViewStartUpResult, WebViewStartupException> {
                             override fun onResult(result: WebViewStartUpResult) {
                                 executor.shutdown()
-                                reply.success(null)
+                                reply.success(if (call.argument<Boolean>("trace") == true) mapOf(
+                                    "strategy" to "background",
+                                    "mainTotalMs" to result.totalTimeInUiThreadMillis,
+                                    "mainMaxTaskMs" to result.maxTimePerTaskInUiThreadMillis,
+                                ) else null)
                             }
                             override fun onError(error: WebViewStartupException) {
                                 executor.shutdown()

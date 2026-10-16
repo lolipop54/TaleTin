@@ -8,6 +8,7 @@ import '../../../../data/services/epub_source_repository.dart';
 import '../../../../platform/channels/reading_fonts.dart';
 import '../../../../core/diagnostics/opening_experiments.dart';
 import 'reader_performance.dart';
+import 'original_font_assets.dart';
 
 class ScrollHostAssets {
   ScrollHostAssets(
@@ -52,8 +53,10 @@ class OriginalScrollWebView extends StatelessWidget {
     required this.onController,
     required this.onLoaded,
     required this.onMessage,
+    this.preparedView,
   });
   final EpubSourceSession source;
+  final HeadlessInAppWebView? preparedView;
   final ScrollHostAssets assets;
   final ValueChanged<InAppWebViewController> onController;
   final VoidCallback onLoaded;
@@ -61,23 +64,12 @@ class OriginalScrollWebView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => InAppWebView(
+    headlessWebView: preparedView,
     initialUrlRequest: URLRequest(
       url: WebUri('https://$kEpubSourceHost/__gt__/scroll'),
     ),
-    initialSettings: InAppWebViewSettings(
-      useHybridComposition: false,
-      javaScriptEnabled: true,
-      allowFileAccess: false,
-      allowContentAccess: false,
-      cacheEnabled: false,
-      supportZoom: false,
-      verticalScrollBarEnabled: false,
-      horizontalScrollBarEnabled: false,
-      useShouldOverrideUrlLoading: true,
-      transparentBackground: true,
-      disableContextMenu: true,
-    ),
-    onWebViewCreated: (controller) {
+    initialSettings: originalWebViewSettings(scrolling: true),
+    onWebViewCreated: (controller) async {
       onController(controller);
       controller.addJavaScriptHandler(
         handlerName: 'scrollHost',
@@ -86,8 +78,22 @@ class OriginalScrollWebView extends StatelessWidget {
           return onMessage(Map<String, dynamic>.from(args.first as Map));
         },
       );
+      if (preparedView != null) {
+        await controller.setSettings(
+          settings: originalWebViewSettings(scrolling: true),
+        );
+        await controller.loadUrl(
+          urlRequest: URLRequest(
+            url: WebUri('https://$kEpubSourceHost/__gt__/scroll'),
+          ),
+        );
+      }
     },
-    onLoadStop: (_, _) => onLoaded(),
+    onLoadStop: (_, url) {
+      if (url?.host == kEpubSourceHost && url?.path == '/__gt__/scroll') {
+        onLoaded();
+      }
+    },
     onConsoleMessage: (_, message) =>
         debugPrint('[scroll web] ${message.message}'),
     shouldOverrideUrlLoading: (_, action) async {

@@ -75,6 +75,8 @@ dependency_overrides:
     path: third_party/flutter_inappwebview_android
 
 dev_dependencies:
+  # 验证本地 Android 插件接手预创建视图后的通道和截图编号。
+  flutter_inappwebview_android: 1.1.3
   flutter_test:
     sdk: flutter
 

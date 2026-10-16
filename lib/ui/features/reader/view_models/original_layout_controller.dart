@@ -207,7 +207,8 @@ class OriginalLayoutController {
     if (cached != null) return Future.value(cached);
     return _pendingDomMaps.putIfAbsent(
       key,
-      () => _preparePositionMap(key, index, href, content, locator)
+      // chapter.href 相对 OPF；图片资源使用归档根目录路径，不能漏掉 OEBPS 等前缀。
+      () => _preparePositionMap(key, index, source.chapterEntryPath(index), content, locator)
           .whenComplete(() {
             _pendingDomMaps.remove(key);
           }),

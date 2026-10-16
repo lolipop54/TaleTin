@@ -91,14 +91,32 @@ abstract final class PresetFonts {
     }
   }
 
-  static String cssFor(String family) {
+  /// Android WebView 的字体由原生资源读取器直接打开，避免大字体经过平台通道。
+  static const webViewAssetPrefix = '/__gt_assets/';
+
+  static String cssFor(String family, {bool nativeAssets = false}) {
     final font = families[family]!;
     final range = variableWeightRanges[family];
-    String face(String resource, String weight) =>
+    String url(String resource, String file) {
+      if (!nativeAssets) return '/__gt_fonts/$resource';
+      // Flutter APK 中的资源名已经做过一次 URL 编码；Android 取 URI.path
+      // 又会解码一次，因此这里再编码一次，才能正确打开中文文件名。
+      final path = '$root$file'
+          .split('/')
+          .map((part) => Uri.encodeComponent(Uri.encodeComponent(part)))
+          .join('/');
+      return '${webViewAssetPrefix}flutter_assets/$path';
+    }
+
+    String face(String resource, String file, String weight) =>
         '@font-face{font-family:"$family";'
-        'src:url("/__gt_fonts/$resource");font-weight:$weight;font-style:normal;}';
-    return face(family, range == null ? '400' : '${range.min} ${range.max}') +
-        (font.bold == null ? '' : face('$family-bold', '700'));
+        'src:url("${url(resource, file)}");font-weight:$weight;font-style:normal;}';
+    return face(
+          family,
+          font.file,
+          range == null ? '400' : '${range.min} ${range.max}',
+        ) +
+        (font.bold == null ? '' : face('$family-bold', font.bold!, '700'));
   }
 
   static Future<Uint8List?> bytes(String resource) async {

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../ui/core/widgets/book_loading.dart';
@@ -28,11 +30,17 @@ class ReaderPageReady extends InheritedWidget {
   const ReaderPageReady({
     super.key,
     required this.onReady,
+    this.shown,
     required super.child,
   });
   final VoidCallback onReady;
+
+  /// 加载层真正撤掉之后才完成，后台补页不能与首次淡出争用界面线程。
+  final Future<void>? shown;
   static VoidCallback? of(BuildContext context) =>
       context.dependOnInheritedWidgetOfExactType<ReaderPageReady>()?.onReady;
+  static Future<void>? shownOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<ReaderPageReady>()?.shown;
   @override
   bool updateShouldNotify(ReaderPageReady oldWidget) => false;
 }
@@ -53,6 +61,7 @@ class _ReaderEntranceState extends State<_ReaderEntrance>
     duration: pageFadeDuration,
   );
   bool _ready = false, _revealing = false;
+  final _shown = Completer<void>();
   final _opening = ReaderWorkTrace.start('reader.open');
   @override
   void initState() {
@@ -82,22 +91,27 @@ class _ReaderEntranceState extends State<_ReaderEntrance>
     _opening?.mark('reveal_animation');
     _opening?.finish();
     setState(() => _ready = true);
-    if (readerWorkTraceEnabled) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (!_shown.isCompleted) _shown.complete();
+      if (readerWorkTraceEnabled) {
         if (widget.bookId case final String id) {
           BookOpeningTrace.mark(id, 'loading_layer_removed');
           BookOpeningTrace.finish(id);
         }
-      });
-    }
+      }
+    });
   }
 
   @override
   Widget build(BuildContext context) => Stack(
     fit: StackFit.expand,
     children: [
-      ReaderPageReady(onReady: _reveal, child: widget.child),
+      ReaderPageReady(
+        onReady: _reveal,
+        shown: _shown.future,
+        child: widget.child,
+      ),
       if (!_ready)
         Positioned.fill(
           child: AbsorbPointer(
@@ -115,6 +129,7 @@ class _ReaderEntranceState extends State<_ReaderEntrance>
   );
   @override
   void dispose() {
+    if (!_shown.isCompleted) _shown.complete();
     if (widget.bookId case final String id) {
       BookOpeningTrace.finish(id, status: _ready ? 'ok' : 'disposed');
     }

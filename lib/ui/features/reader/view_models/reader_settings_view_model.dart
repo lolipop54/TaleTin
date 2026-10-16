@@ -14,6 +14,7 @@ import '../../../../app/di/app_providers.dart';
 import '../../../../app/di/app_font_providers.dart';
 import '../../../../domain/models/reading_settings.dart';
 import '../../../../platform/channels/reading_fonts.dart';
+import '../../../../platform/channels/preset_fonts.dart';
 import '../../../core/theme/reading_theme.dart';
 import 'reader_settings_mapper.dart';
 import 'reader_view_model.dart';
@@ -104,6 +105,12 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
 
   Future<void> _prepareFont(ReadingSettings settings) async {
     if (settings.layoutMode.isOriginal && settings.useOriginalFont) return;
+    // 原书正文由 WebView 准备内置字体；在这里用 Flutter 再预排一次，
+    // 会同步读取整份中文字体，既阻塞加载动画，也没有参与正文绘制。
+    if (settings.layoutMode.isOriginal &&
+        PresetFonts.families.containsKey(settings.fontFamily)) {
+      return;
+    }
     await ref.read(selectedFontLoaderProvider)(settings.fontFamily);
   }
 
