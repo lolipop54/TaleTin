@@ -46,7 +46,13 @@ extension _OriginalHighlights on _OriginalReaderAreaState {
     final map = await widget.controller.positionMap(session.chapterIndex,
       session.chapter.href!, session.content!, session.currentAnchor!);
     if (!mounted || host != _host || navigation != _navigation) throw StateError('书页已切换');
-    return map.locatorOf(point.cast<String, dynamic>());
+    final locator = map.locatorOf(point.cast<String, dynamic>());
+    traceBookmark('visible-anchor', {
+      'chapter': session.chapterIndex, 'page': _page, 'pages': _pageCount,
+      'navigation': navigation, 'domPoint': point,
+      'locator': bookmarkTraceLocator(locator),
+    });
+    return locator;
   }
 
   /// 书签只改页上的条带，不重新分栏；避免保存书签时撤图、重排造成闪烁。
@@ -83,6 +89,10 @@ extension _OriginalHighlights on _OriginalReaderAreaState {
       final map = await widget.controller.positionMap(ordinal, chapter.href!, content, relevant.first.locator);
       for (final mark in relevant) {
         final point = map.displayPoint(mark.locator);
+        traceBookmark('bookmark-dom', {
+          'id': mark.id, 'chapter': ordinal,
+          'locator': bookmarkTraceLocator(mark.locator), 'domPoint': point,
+        });
         points.add({'id': mark.id, 'point': point});
       }
     }

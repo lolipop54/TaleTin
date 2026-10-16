@@ -89,9 +89,11 @@ class BookshelfState {
       case ShelfFilter.finished:
         result = result.where((b) => b.finished);
     }
-    final q = query.trim();
+    final q = query.trim().toLowerCase();
     if (q.isNotEmpty) {
-      result = result.where((b) => b.title.contains(q) || b.author.contains(q));
+      result = result.where(
+        (b) => b.title.toLowerCase().contains(q) || b.author.toLowerCase().contains(q),
+      );
     }
     final list = result.toList();
     // 每个文件名在本轮只转换一次；同步完成排序后再交给界面显示。

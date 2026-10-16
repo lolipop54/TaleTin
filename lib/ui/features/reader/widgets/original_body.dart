@@ -13,6 +13,7 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 import '../../../../platform/channels/reading_fonts.dart';
 import '../../../../core/diagnostics/opening_experiments.dart';
+import '../../../../core/diagnostics/bookmark_trace.dart';
 import '../../../../data/services/epub_source_repository.dart';
 import 'original_host_controller.dart';
 import 'original_page_capture.dart';
@@ -571,6 +572,24 @@ class _OriginalBodyState extends State<OriginalBody> {
     if (!mounted || matches.isEmpty) return null;
     final frame = matches.first;
     final event = (envelope['event'] as Map).cast<String, Object?>();
+    if (bookmarkTraceEnabled && const {
+      'bookmarkTrace', 'ready', 'paginated', 'relocate', 'page',
+    }.contains(event['type'])) {
+      traceBookmark('web-event', {
+        'chapter': frame.chapter.ordinal,
+        'slot': frame.slot,
+        'load': frame.load,
+        'host': identityHashCode(frame.host),
+        'currentChapter': widget.current,
+        if (event['type'] == 'bookmarkTrace') ...event
+        else ...{
+          for (final key in ['type', 'page', 'pages', 'fraction', 'width',
+            'step', 'columnWidth', 'contentWidth', 'scrollWidth'])
+            if (event.containsKey(key)) key: event[key],
+          'bookmarkPages': frame.host.bookmarkPages,
+        },
+      });
+    }
     traceTurn(
       'body event chapter=${frame.chapter.ordinal} slot=${frame.slot} load=${frame.load} web=${_controller?.getViewId()} type=${event['type']} page=${event['page']} pages=${event['pages']} stage=${event['stage']} jsMs=${event['ms']} elapsedMs=${event['elapsedMs']}',
     );

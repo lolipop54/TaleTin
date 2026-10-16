@@ -86,6 +86,14 @@ class _SettingsSliderState extends State<SettingsSlider>
   Future<void> _settling = Future.value();
   int _request = 0;
 
+  double _snap(double value) {
+    final step = (widget.max - widget.min) / widget.divisions;
+    return (widget.min + ((value - widget.min) / step).round() * step).clamp(
+      widget.min,
+      widget.max,
+    );
+  }
+
   @override
   void dispose() {
     _position.dispose();
@@ -93,6 +101,7 @@ class _SettingsSliderState extends State<SettingsSlider>
   }
 
   void _change(double value) {
+    if (!_dragging) value = _snap(value);
     _request++;
     if (_preview == null) _position.value = widget.value;
     setState(() => _preview = value);
@@ -121,11 +130,7 @@ class _SettingsSliderState extends State<SettingsSlider>
 
   Future<void> _save(double value) async {
     final request = ++_request;
-    final step = (widget.max - widget.min) / widget.divisions;
-    value = (widget.min + ((value - widget.min) / step).round() * step).clamp(
-      widget.min,
-      widget.max,
-    );
+    value = _snap(value);
     setState(() {
       _saving = true;
       _preview = value;
@@ -134,9 +139,8 @@ class _SettingsSliderState extends State<SettingsSlider>
         MediaQuery.disableAnimationsOf(context) ||
         !_position.isAnimating) {
       _position.value = value;
-    } else {
-      _settling = _animateTo(value);
     }
+    // 松手沿用按下时开始的运动，不从半途重新缓出；末帧再对齐保存的步长。
     try {
       await widget.save!(value);
     } catch (_) {
@@ -147,6 +151,7 @@ class _SettingsSliderState extends State<SettingsSlider>
       // 保存可能立即完成，仍等这一次点击运动完成才撤销预览。
       await _settling;
       if (mounted && request == _request) {
+        _position.value = value;
         widget.onPreview?.call(null);
         setState(() {
           _saving = false;
@@ -273,6 +278,7 @@ class _SettingsSliderState extends State<SettingsSlider>
           SliderTheme(
             data: SliderTheme.of(context).copyWith(
               trackHeight: 0,
+              trackShape: _InsetTrack(radius),
               activeTrackColor: Colors.transparent,
               inactiveTrackColor: Colors.transparent,
               disabledActiveTrackColor: Colors.transparent,
@@ -304,7 +310,8 @@ class _SettingsSliderState extends State<SettingsSlider>
                 },
                 child: Slider(
                   // 手柄可以覆盖两侧标识，边缘对应真正的最小/最大值。
-                  padding: EdgeInsets.symmetric(horizontal: radius),
+                  // 留白属于轨道几何，不属于命中区域；端点圆块外半边也能按下拖动。
+                  padding: EdgeInsets.zero,
                   value: value,
                   min: widget.min,
                   max: widget.max,
@@ -343,6 +350,25 @@ class _SettingsSliderState extends State<SettingsSlider>
             ],
           );
   }
+}
+
+class _InsetTrack extends RoundedRectSliderTrackShape {
+  const _InsetTrack(this.radius);
+  final double radius;
+
+  @override
+  Rect getPreferredRect({
+    required RenderBox parentBox,
+    Offset offset = Offset.zero,
+    required SliderThemeData sliderTheme,
+    bool isEnabled = false,
+    bool isDiscrete = false,
+  }) => Rect.fromLTWH(
+    offset.dx + radius,
+    offset.dy + parentBox.size.height / 2,
+    math.max(0, parentBox.size.width - radius * 2),
+    0,
+  );
 }
 
 class _NumberThumb extends SliderComponentShape {

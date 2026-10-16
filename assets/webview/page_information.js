@@ -19,6 +19,15 @@
       } else rect = window.__gtTts.rect(item.point);
       if (rect) bookmarkMap[item.id] = Math.max(0, Math.min(internal.state.pages - 1,
         Math.floor((internal.layout.toContentX(rect.left) + 1) / internal.state.width)));
+      // 复用书签条带本来就要计算的矩形，不新增正文测量或改变定位。
+      if (window.__gtTraceBookmark) internal.post('bookmarkTrace', {
+        stage: 'bookmark-page', id: item.id, point: item.point,
+        page: bookmarkMap[item.id], currentPage: internal.state.page,
+        pages: internal.state.pages, width: internal.state.width,
+        left: rect ? rect.left : null,
+        contentX: rect ? internal.layout.toContentX(rect.left) : null,
+        top: rect ? rect.top : null, ms: performance.now()
+      });
     });
     return bookmarkMap;
   }

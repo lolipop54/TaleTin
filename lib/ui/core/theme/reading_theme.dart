@@ -13,6 +13,9 @@ enum ReadingTheme {
 
   const ReadingTheme(this.label, this.background, this.primary, this.secondary);
 
+  /// 全局设置与书内面板共用展示顺序，枚举顺序不参与持久化变更。
+  static const displayOrder = [white, paper, green, night];
+
   /// 面板里的展示名（明亮/柔和/护眼/夜间按参考图，柔和=paper）
   final String label;
   final Color background;

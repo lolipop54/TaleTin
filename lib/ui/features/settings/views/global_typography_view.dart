@@ -158,7 +158,7 @@ class GlobalTypographyView extends ConsumerWidget {
                           ReadingLimits.maxFontSize - ReadingLimits.minFontSize,
                       format: (v) => v.round().toString(),
                       save: (v) =>
-                          vm.change((s) => s.copyWith(fontSize: v.round())),
+                          vm.change((s) => s.withFontSize(v.round())),
                     ),
                     SettingsSlider(
                       labelStyle: GtText.body(context.gtColors.textPrimary)

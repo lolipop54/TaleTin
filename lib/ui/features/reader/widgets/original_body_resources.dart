@@ -124,6 +124,7 @@ extension _OriginalBodyResources on _OriginalBodyState {
         'window.__gtImageDecodeVisible=${OpeningExperiments.visibleImageDecode};</script>'
         '<script src="${base}reader_perf.js" defer></script>'
         '${turnTraceEnabled ? '<script>window.__gtTraceTurn=true;</script>' : ''}'
+        '${bookmarkTraceEnabled ? '<script>window.__gtTraceBookmark=true;</script>' : ''}'
         '<link rel="stylesheet" href="${base}host.css"/>'
         '<script src="${base}page_information.js" defer></script>'
         '<script src="${base}tts_range.js" defer></script>'

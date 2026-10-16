@@ -20,12 +20,7 @@ class ReaderThemeChoices extends ConsumerWidget {
     final colors = context.gtColors;
     return Row(
       children: [
-        for (final (theme, label) in [
-          (ReadingTheme.white, '明亮'),
-          (ReadingTheme.paper, '柔和'),
-          (ReadingTheme.green, '护眼'),
-          (ReadingTheme.night, '夜间'),
-        ]) ...[
+        for (final theme in ReadingTheme.displayOrder) ...[
           Expanded(
             child: GtButton.raw(
               borderRadius: BorderRadius.circular(GtRadius.control),
@@ -61,7 +56,7 @@ class ReaderThemeChoices extends ConsumerWidget {
                   ),
                   const SizedBox(height: GtSpacing.s1),
                   Text(
-                    label,
+                    theme == ReadingTheme.paper ? '柔和' : theme.label,
                     style: GtText.caption(colors.textSecondary)
                         .copyWith(fontSize: 12),
                   ),

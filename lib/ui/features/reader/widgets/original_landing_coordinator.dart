@@ -24,21 +24,33 @@ extension _OriginalLandingCoordinator on _OriginalReaderAreaState {
         ? (Stopwatch()..start())
         : null;
     // 连续点进度条共用当前页，最后一次跳转落稳后才撤掉，避免旧请求提前揭开。
+    final request = ++_jumpCoverVersion;
     _preload.hold('jump');
-    _heldJumps++;
     try {
-      await traceTurnStep('jump cover',
-          () => _jumpCoverReady ??= _prepareJumpCover());
+      await traceTurnStep(
+        'jump cover',
+        () => _jumpCoverReady ??= _prepareJumpCover(),
+      );
       if (mounted) {
         await traceTurnStep('jump request-and-position', jump);
         // 定位完成后菜单/高亮还会更新；等这一帧的宿主页绘制完成才揭开旧页。
-        await WidgetsBinding.instance.endOfFrame;
-        await _host?.preparation;
-        await _host?.presented();
+        await traceTurnStep(
+          'jump frame request=$request',
+          () => WidgetsBinding.instance.endOfFrame,
+        );
+        await traceTurnStep(
+          'jump preparation request=$request',
+          () async => await _host?.preparation,
+        );
+        await traceTurnStep(
+          'jump presented request=$request',
+          () async => await _host?.presented(),
+        );
       }
     } finally {
       if (watch != null) gtDebugLog('[gt] 跳转完成 ${watch.elapsedMilliseconds}ms');
-      if (--_heldJumps == 0) {
+      // 只由最新目标撤图。已被接管的请求不再持有遮盖，也不能迟到后撤掉新图。
+      if (request == _jumpCoverVersion) {
         if (mounted) _preload.release('jump');
         _jumpCoverReady = null;
         if (mounted) {
@@ -102,6 +114,21 @@ extension _OriginalLandingCoordinator on _OriginalReaderAreaState {
     final navigation = _navigation;
     final notifier = ref.read(readerSessionProvider(widget.bookId).notifier);
     final tocToken = notifier.originalTocPresentationToken;
+    traceBookmark('landing-begin', {
+      'chapter': widget.session.chapterIndex, 'navigation': navigation,
+      'jumpToken': _lastJumpToken, 'fraction': fraction,
+      'exact': bookmarkTraceLocator(exact),
+      'hasText': text?.isNotEmpty == true,
+      'hasTitle': title?.isNotEmpty == true,
+      'hasAnchorId': anchorId?.isNotEmpty == true,
+      'page': _page, 'pages': _pageCount,
+      'fontSize': widget.settings.fontSize,
+      'lineHeight': widget.settings.lineHeight,
+      'paragraphGapEm': widget.settings.paragraphGapEm,
+      'horizontalPadding': widget.settings.horizontalPadding,
+      'fontWeight': widget.settings.fontWeight,
+      'effect': widget.settings.pageTurnEffect.name,
+    });
     if (!_speech.visible) {
       _landingFlight = null;
       return;
@@ -125,7 +152,8 @@ extension _OriginalLandingCoordinator on _OriginalReaderAreaState {
         }
         return;
       }
-    } else if (_curlHandover?.chapter == widget.session.chapterIndex && host.hasHeldPage) {
+    } else if (_curlHandover?.chapter == widget.session.chapterIndex &&
+        host.hasHeldPage) {
       // 目标已由翻页流程定位并绘制，只提交位置，不再按比例定位一遍。
       await host.commitPage(_curlHandover!.page);
     } else if (exact != null) {
@@ -162,6 +190,14 @@ extension _OriginalLandingCoordinator on _OriginalReaderAreaState {
       await _pushHighlights(ref.read(readerHighlightsProvider(widget.bookId)));
     }
     await host.presented();
+    traceBookmark('landing-presented', {
+      'chapter': widget.session.chapterIndex, 'navigation': navigation,
+      'currentNavigation': _navigation,
+      'sameHost': host == _host,
+      'page': _landingPosition?.page, 'pages': _landingPosition?.pageCount,
+      'fraction': _landingPosition?.fraction,
+      'bookmarkPages': host.bookmarkPages,
+    });
     gtDebugLog(
       '[gt] 落页确认 chapter=${widget.session.chapterIndex} visible=${_speech.visible} relocate=${_landingPosition != null}',
     );
@@ -186,7 +222,10 @@ extension _OriginalLandingCoordinator on _OriginalReaderAreaState {
     if (!mounted || navigation != _navigation || host != _host) return;
     _preload.release('landing');
     _preload.requestChapter(null);
-    notifier.completeOriginalTocPresentation(tocToken, widget.session.chapterIndex);
+    notifier.completeOriginalTocPresentation(
+      tocToken,
+      widget.session.chapterIndex,
+    );
     if (annotation != null) notifier.completeAnnotationLanding();
     _releaseSpeechCover();
     _speech.key = null;
@@ -214,7 +253,9 @@ extension _OriginalLandingCoordinator on _OriginalReaderAreaState {
     try {
       await _holdPageDuringJump(() async {
         if (!mounted) return;
-        final notifier = ref.read(readerSessionProvider(widget.bookId).notifier);
+        final notifier = ref.read(
+          readerSessionProvider(widget.bookId).notifier,
+        );
         await notifier.goToChapterFromToc(
           widget.session.chapters[target.ordinal].id,
           anchorId: target.fragment,

@@ -5,9 +5,36 @@
     return { frame: document.getElementById('chapter-' + id), load: null, chapter: null };
   });
   var current = null, slide = 0, capture = null;
+  var pending = [];
 
   function valid(slot, load) {
     return slots[slot] && slots[slot].load === load;
+  }
+
+  // 字体加载、rAF等异步任务属于这一份章节文档。iframe被替换后，浏览器
+  // 可能不再结束旧Promise；由仍存在的外壳结束桥接等待，释放跳转遮盖。
+  function whileLoaded(slot, load, operation) {
+    return new Promise(function (resolve, reject) {
+      var request = { slot: slot, load: load, cancel: function () { resolve(null); } };
+      pending.push(request);
+      function finish(action, value) {
+        var index = pending.indexOf(request);
+        if (index < 0) return; // 已替换文档的迟到回调不处理新请求。
+        pending.splice(index, 1);
+        action(value);
+      }
+      Promise.resolve(operation).then(function (value) {
+        finish(resolve, valid(slot, load) ? value : null);
+      }, function (error) { finish(reject, error); });
+    });
+  }
+
+  function cancelReplaced() {
+    pending = pending.filter(function (request) {
+      if (valid(request.slot, request.load)) return true;
+      request.cancel();
+      return false;
+    });
   }
   function layout() {
     slots.forEach(function (slot, id) {
@@ -39,18 +66,23 @@
           }
         }
       });
+      cancelReplaced();
       layout();
     },
     run: function (slot, load, script) {
       if (!valid(slot, load)) return null;
-      return slots[slot].frame.contentWindow.eval(script);
+      var result = slots[slot].frame.contentWindow.eval(script);
+      return result && typeof result.then === 'function'
+        ? whileLoaded(slot, load, result) : result;
     },
     rendered: async function (slot, load) {
       if (!valid(slot, load)) return false;
-      var child = slots[slot].frame.contentWindow;
-      await new Promise(function (resolve) {
-        child.requestAnimationFrame(function () { child.requestAnimationFrame(resolve); });
-      });
+      // 初次导航可能刚替换about:blank；即使load编号不变，旧子文档的rAF也会
+      // 被浏览器丢弃。使用始终保留的外壳等两帧，实际可读与绘制仍由章节
+      // paginated/relocate和Android visual-state、OnDraw共同确认。
+      await whileLoaded(slot, load, new Promise(function (resolve) {
+        window.requestAnimationFrame(function () { window.requestAnimationFrame(resolve); });
+      }));
       return valid(slot, load);
     },
     post: function (source, slot, load, chapter, message) {

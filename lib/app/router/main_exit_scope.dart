@@ -23,7 +23,18 @@ class _MainExitScopeState extends State<MainExitScope> {
   @override
   void initState() {
     super.initState();
-    _lifecycle = AppLifecycleListener(onInactive: _reset);
+    _lifecycle = AppLifecycleListener(
+      onInactive: _reset,
+      onResume: () {
+        _reset();
+        // audio_service 复用 FlutterEngine，Activity 重建后原生的返回回调需重新登记。
+        // PopScope 的值没有变化时框架不会主动重发，否则返回键会直接交给桌面。
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) unawaited(SystemNavigator.setFrameworkHandlesBack(true));
+        });
+        WidgetsBinding.instance.ensureVisualUpdate();
+      },
+    );
   }
 
   void _reset() {

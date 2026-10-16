@@ -28,6 +28,7 @@ import '../../../../domain/models/tts_state.dart';
 import '../../../../domain/services/listening_service.dart';
 import '../../../../app/di/app_providers.dart';
 import '../../../../core/diagnostics/opening_experiments.dart';
+import '../../../../core/diagnostics/bookmark_trace.dart';
 import '../view_models/listening_view_state.dart';
 import '../../../../domain/models/annotation.dart';
 import '../../../../domain/models/book_document.dart';
@@ -223,7 +224,7 @@ class _OriginalReaderAreaState extends ConsumerState<OriginalReaderArea>
   GlobalKey<OriginalCurlAreaState> _curlKey = GlobalKey();
   ui.Image? _jumpCover;
   Future<void>? _jumpCoverReady;
-  int _heldJumps = 0;
+  int _jumpCoverVersion = 0;
 
   ({int chapter, int page, Completer<bool> ready})? _curlHandover;
 

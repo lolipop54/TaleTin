@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../app/di/app_providers.dart';
+import '../../../../core/diagnostics/bookmark_trace.dart';
 import '../../../../domain/models/bookmark.dart';
 import '../view_models/reader_session_view_model.dart';
 import '../view_models/reader_view_model.dart';
@@ -74,6 +75,7 @@ Future<void> toggleReaderBookmark(WidgetRef ref, String id) async {
   final mark = ref.read(currentBookmarkProvider(id));
   final repository = ref.read(annotationRepositoryProvider);
   if (mark != null) {
+    traceBookmark('remove', {'id': mark.id, 'locator': bookmarkTraceLocator(mark.locator)});
     await repository.removeBookmark(mark.id);
   } else {
     final exact = session.isOriginal && !session.scrolling
@@ -83,10 +85,20 @@ Future<void> toggleReaderBookmark(WidgetRef ref, String id) async {
               ?.visiblePageAnchor
               ?.call()
         : null;
-    await repository.addBookmark(
-      locator: exact ?? anchor,
+    final locator = exact ?? anchor;
+    traceBookmark('save-request', {
+      'locator': bookmarkTraceLocator(locator),
+      'sessionAnchor': bookmarkTraceLocator(anchor),
+      'fromVisibleDom': exact != null,
+      'original': session.isOriginal,
+      'scrolling': session.scrolling,
+      'fraction': session.chapterProgress,
+    });
+    final bookmarkId = await repository.addBookmark(
+      locator: locator,
       quote: session.currentPageExcerpt,
     );
+    traceBookmark('saved', {'id': bookmarkId, 'locator': bookmarkTraceLocator(locator)});
   }
 }
 

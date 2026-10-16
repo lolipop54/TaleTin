@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../../app/di/app_providers.dart';
+import '../../../../../core/diagnostics/bookmark_trace.dart';
 import '../../../../../domain/models/bookmark.dart';
 import '../../../../core/theme/gt_tokens.dart';
 import '../../../../core/theme/reading_theme.dart';
@@ -54,6 +55,14 @@ class BookmarkTab extends ConsumerWidget {
             quoteMaxLines: 3,
             location: _chapterTitleOf(session, bookmark),
             onJump: () async {
+              traceBookmark('jump-request', {
+                'id': bookmark.id,
+                'saved': bookmarkTraceLocator(bookmark.locator),
+                'from': bookmarkTraceLocator(session?.currentAnchor),
+                'fraction': session?.chapterProgress,
+                'original': notifier.layoutMode.isOriginal,
+                'scrolling': session?.scrolling,
+              });
               final vm = ref.read(readerProvider.notifier);
               final hold = notifier.layoutMode.isOriginal
                   ? ref
@@ -64,9 +73,9 @@ class BookmarkTab extends ConsumerWidget {
               Future<void> jump() async {
                 vm.closePanel(collapseControls: true);
                 if (hold != null) {
-                  await hold(() => notifier.goToLocator(bookmark.locator));
+                  await hold(() => notifier.goToBookmark(bookmark));
                 } else {
-                  await notifier.goToLocator(bookmark.locator);
+                  await notifier.goToBookmark(bookmark);
                 }
               }
 
@@ -75,7 +84,10 @@ class BookmarkTab extends ConsumerWidget {
                 await ref
                     .read(readerProgressReturnProvider(bookId).notifier)
                     .jump(jump);
+                // 面板此时已关闭，不再读取页面的ref；实际落点由会话上报日志记录。
+                traceBookmark('jump-complete', {'id': bookmark.id});
               } catch (_) {
+                traceBookmark('jump-failed', {'id': bookmark.id});
                 vm.showNotice('定位失败，请重试');
               }
             },

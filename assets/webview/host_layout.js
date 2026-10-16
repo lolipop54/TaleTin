@@ -287,8 +287,16 @@
   }
 
   function pageAtFraction(fraction) {
-    return Math.max(0, Math.min(
+    var page = Math.max(0, Math.min(
       state.pages - 1, Math.floor(fraction * state.pages + 1e-7)));
+    if (window.__gtTraceBookmark) internal.post('bookmarkTrace', {
+      stage: 'fraction-page', fraction: fraction, product: fraction * state.pages,
+      page: page, previousPage: state.page, pages: state.pages,
+      width: state.width, columnWidth: state.columnWidth,
+      contentWidth: state.contentWidth, scrollWidth: state.scrollWidth,
+      ms: performance.now()
+    });
+    return page;
   }
 
   function clearRelocate() {

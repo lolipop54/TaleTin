@@ -121,8 +121,8 @@ class ListeningVoiceChoices extends AsyncNotifier<VoiceChoices> {
 
   Future<void> detect(String? engine) async {
     final old = state.value;
-    if (old == null || old.busy) return;
-    ++_detection;
+    if (old == null || (old.busy && !old.loadingVoices)) return;
+    final detection = ++_detection;
     state = AsyncData(
       VoiceChoices(
         old.engines,
@@ -136,11 +136,13 @@ class ListeningVoiceChoices extends AsyncNotifier<VoiceChoices> {
     try {
       final voices = await service.detectVoices(engine);
       final engines = await service.listEngines();
-      if (ref.mounted) state = AsyncData(VoiceChoices(engines, voices, engine));
+      if (ref.mounted && detection == _detection) {
+        state = AsyncData(VoiceChoices(engines, voices, engine));
+      }
     } catch (error) {
-      if (ref.mounted) {
+      if (ref.mounted && detection == _detection) {
         state = AsyncData(
-          VoiceChoices(old.engines, old.voices, old.engine, error: '$error'),
+          VoiceChoices(old.engines, const [], engine, error: '$error'),
         );
       }
     }
@@ -170,7 +172,15 @@ class ListeningVoiceChoices extends AsyncNotifier<VoiceChoices> {
     );
   });
 
-  Future<void> openSettings(bool install) => _run((old) async {
+  Future<void> openSettings(bool install) async {
+    final current = state.value;
+    if (current == null) return;
+    if (current.loadingVoices) {
+      // 连接中的引擎不能阻止用户去系统设置处理问题；不排在连接命令后面。
+      await ref.read(ttsSystemSettingsProvider)(current.engine, install);
+      return;
+    }
+    await _run((old) async {
     final open = ref.read(ttsSystemSettingsProvider);
     await ref.read(listeningServiceProvider).pause();
     final opened = await open(old.engine, install);
@@ -181,5 +191,6 @@ class ListeningVoiceChoices extends AsyncNotifier<VoiceChoices> {
       message: opened ? '返回后可重新检测' : '系统未提供此页面，请在系统设置中安装语音数据',
       error: opened ? null : '系统未提供语音设置页面',
     );
-  });
+    });
+  }
 }

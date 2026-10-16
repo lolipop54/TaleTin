@@ -19,7 +19,7 @@ class ReadingThemeCards extends StatelessWidget {
     scrollDirection: Axis.horizontal,
     child: Row(
       children: [
-        for (final theme in ReadingTheme.values)
+        for (final theme in ReadingTheme.displayOrder)
           Padding(
             padding: const EdgeInsets.only(right: 8),
             child: Semantics(

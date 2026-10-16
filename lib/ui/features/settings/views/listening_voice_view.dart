@@ -42,7 +42,8 @@ class _ListeningVoiceViewState extends ConsumerState<ListeningVoiceView> {
 
   Future<bool> _saveSelection() async {
     final data = ref.read(listeningVoiceChoicesProvider).value;
-    if (data?.busy == true) return false;
+    // 连接引擎没有修改音色，可以直接收起；只有已提交的保存才需要等待。
+    if (data?.busy == true && data?.loadingVoices != true) return false;
     if (_draft == null) return true;
     final current = ref.read(listeningViewStateProvider).value?.voice;
     if (_draft!.enginePackage == current?.enginePackage &&
@@ -102,7 +103,7 @@ class _ListeningVoiceViewState extends ConsumerState<ListeningVoiceView> {
           children: [
             for (final engine in data?.engines ?? [])
               FItem(
-                onPress: data!.busy
+                onPress: data!.busy && !data.loadingVoices
                     ? null
                     : () async {
                         final detection = vm.detect(engine.packageName);
@@ -131,7 +132,8 @@ class _ListeningVoiceViewState extends ConsumerState<ListeningVoiceView> {
         ),
       ],
       builder: (context, controller, child) => GtButton.raw(
-        onPressed: data == null || data.busy ? null : controller.toggle,
+        onPressed: data == null || (data.busy && !data.loadingVoices)
+            ? null : controller.toggle,
         child: child!,
       ),
       child: Row(
@@ -276,7 +278,7 @@ class _ListeningVoiceViewState extends ConsumerState<ListeningVoiceView> {
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 12),
               child: GtButton(
-                onPressed: data == null || data.busy
+                onPressed: data == null || (data.busy && !data.loadingVoices)
                     ? null
                     : () {
                         _settingsOpened = true;

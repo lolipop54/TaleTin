@@ -12,6 +12,7 @@ abstract final class GtIcons {
   static const close = 'close';
   static const check = 'check';
   static const checkCircle = 'check-circle';
+  static const circle = 'circle';
   static const search = 'search';
   static const grid = 'grid';
   static const list = 'list';

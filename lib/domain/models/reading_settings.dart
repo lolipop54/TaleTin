@@ -46,7 +46,8 @@ abstract final class ReadingLimits {
   static const double minLineHeight = 1.2;
   static const double maxLineHeight = 2.2;
   static const double minParagraphGapEm = 0;
-  static const double maxParagraphGapEm = 1.5;
+  // 面板允许 30px 段距，在最小字号下也必须能完整保存。
+  static const double maxParagraphGapEm = 30 / minFontSize;
   static const double minHorizontalPadding = 16;
   static const double maxHorizontalPadding = 40;
 
@@ -132,6 +133,12 @@ class ReadingSettings {
 
   /// 段后间距的像素值
   double get paragraphGap => paragraphGapEm * fontSize;
+
+  /// 字号与段距分别调整；仍用原来的 em 字段保存，兼容已有数据。
+  ReadingSettings withFontSize(int size) {
+    final next = size.clamp(ReadingLimits.minFontSize, ReadingLimits.maxFontSize);
+    return copyWith(fontSize: next, paragraphGapEm: paragraphGap / next);
+  }
 
   ReadingSettings copyWith({
     int? fontSize,

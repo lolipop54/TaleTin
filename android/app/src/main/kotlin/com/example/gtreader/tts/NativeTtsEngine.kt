@@ -111,7 +111,7 @@ internal class NativeTtsEngine(
     fun initialize(requested: String?): TtsInitResultDto {
         val want = requested?.takeIf { it.isNotBlank() }
         // 同一个引擎已经在跑：直接复用，不重建（重建会丢掉正在读的内容）
-        if (tts != null && requestedEngine == want) {
+        if (tts != null && requestedEngine == want && enginePackage.isNotEmpty()) {
             return TtsInitResultDto(ok = true, enginePackage = enginePackage)
         }
 
@@ -122,8 +122,11 @@ internal class NativeTtsEngine(
             initStatus = TextToSpeech.ERROR
             initLatch = latch
             val listener = TextToSpeech.OnInitListener { status ->
-                initStatus = status
-                initLatch?.countDown()
+                // 超时引擎可能迟到；旧回调只能结束自己的等待，不能确认新引擎就绪。
+                if (initLatch === latch) {
+                    initStatus = status
+                    latch.countDown()
+                }
             }
             tts = try {
                 if (want == null) {
@@ -156,6 +159,7 @@ internal class NativeTtsEngine(
             )
         }
         if (initStatus != TextToSpeech.SUCCESS || tts == null) {
+            release()
             return TtsInitResultDto(
                 ok = false,
                 enginePackage = want.orEmpty(),

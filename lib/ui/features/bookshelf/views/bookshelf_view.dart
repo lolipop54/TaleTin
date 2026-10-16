@@ -430,7 +430,7 @@ class _ListRow extends ConsumerWidget {
         children: [
           if (selecting) ...[
             GtIcon(
-              selected ? GtIcons.checkCircle : GtIcons.bookmark,
+              selected ? GtIcons.checkCircle : GtIcons.circle,
               size: 20,
               color: selected ? colors.actionPrimary : colors.textMuted,
             ),

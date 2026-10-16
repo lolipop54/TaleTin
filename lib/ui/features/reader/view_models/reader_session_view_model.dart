@@ -27,6 +27,7 @@ export 'reader_session_state.dart';
 
 import '../../../../app/di/app_providers.dart';
 import '../../../../core/diagnostics/reader_work_trace.dart';
+import '../../../../core/diagnostics/bookmark_trace.dart';
 import '../../../../app/di/source_book_providers.dart';
 import '../../../../app/di/app_font_providers.dart';
 import '../../../../domain/models/annotation.dart';
@@ -126,12 +127,6 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
   /// 章内定位请求的序号：同一个位置连跳两次也要能生效
   @override
   int _jumpToken = 0;
-
-  /// 原书模式换章跳转正在进行；拖动滑块期间会连续触发，只保留最后一次目标
-  @override
-  bool _originalJumpInFlight = false;
-  @override
-  ({int index, double fraction})? _queuedOriginalJump;
 
   /// 预取的下一章排版（用于翻页过渡时显示下一页）
   @override
@@ -431,7 +426,6 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
     // 原书模式不做简化排版：切章 + 章首落点，正文由 WebView 画
     if (_mode.isOriginal) {
       await jumpToOriginalChapter(index, fraction: 0);
-      await _flushQueuedOriginalJump();
       return;
     }
     await _layoutChapter(chapterIndex: index, options: _options, anchor: null);
@@ -532,12 +526,20 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
     bool restoringListening = false,
     bool manual = true,
   }) async {
+    traceBookmark('locator-request', {
+      'target': bookmarkTraceLocator(locator),
+      'from': bookmarkTraceLocator(state.value?.currentAnchor),
+      'manual': manual,
+      'restoringListening': restoringListening,
+      'mode': _mode.name,
+    });
     if (locator.needsRelocation) {
       final chapters = state.value?.chapters;
       if (chapters == null) return;
       final resolved = await ref.read(sourcePositionResolverProvider).resolve(locator, chapters);
       if (resolved == null) throw const ReaderFailure('原文已变化，无法准确定位，记录已保留');
       locator = resolved;
+      traceBookmark('locator-resolved', {'target': bookmarkTraceLocator(locator)});
     }
     if (manual && !restoringListening) await beginManualReading();
     if (!restoringListening) _clearRestoredPosition();
@@ -545,7 +547,7 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
     if (session == null) return;
     final index = session.chapters.indexWhere((c) => c.id == locator.chapterId);
     if (index < 0) return;
-    // 原书模式：把 Locator 折成章内比例交给宿主页
+    // 通用原书入口把Locator折成章内比例；书签走goToBookmark的精确DOM落点。
     if (session.scrolling) {
       requestScrollPosition(locator);
       return;
@@ -554,7 +556,6 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
       final fraction = await _fractionOfLocatorIn(index, locator);
       if (fraction == null) return;
       await jumpToOriginalChapter(index, fraction: fraction);
-      await _flushQueuedOriginalJump();
       return;
     }
     if (index == session.chapterIndex && session.layout != null) {
@@ -624,7 +625,6 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
           }
           await traceReaderWork('reader.progress.switch_chapter',
             () => jumpToOriginalChapter(i, fraction: fraction));
-          await _flushQueuedOriginalJump();
           if (landing != null) {
             try {
               // 等真实落页确认；超时只报失败，不用固定延时掩盖闪回。

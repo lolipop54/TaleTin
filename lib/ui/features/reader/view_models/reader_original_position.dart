@@ -30,10 +30,7 @@ mixin _ReaderOriginalPosition on AsyncNotifier<ReaderSession> {
   set _pendingOriginalTitle(String? value);
   int get _jumpToken;
   set _jumpToken(int value);
-  bool get _originalJumpInFlight;
-  set _originalJumpInFlight(bool value);
-  ({int index, double fraction})? get _queuedOriginalJump;
-  set _queuedOriginalJump(({int index, double fraction})? value);
+  int _originalChapterRequest = 0;
   Locator? get _pendingAnchor;
   ({int chapter, double fraction, Completer<void> done})? get _progressLanding;
   ({String chapterId, String? blockId, double progress, Completer<void> done})?
@@ -197,11 +194,12 @@ mixin _ReaderOriginalPosition on AsyncNotifier<ReaderSession> {
     return title;
   }
 
-  /// 原书模式下的跳转（目录、进度滑块、书签回到原文）。
+  /// 原书模式按比例跳转（目录的比例兜底、进度滑块）。
   ///
   /// 换章走 [switchChapterForOriginal] 并记住落点比例；同一章内就发一个
   /// [ReaderSession.originalJump] 请求，由正文区下发给宿主页——原书模式没有简化
-  /// 排版可排，位置一律用「第几章 + 章内比例」表达。
+  /// 排版可排，此入口用「第几章 + 章内比例」表达。
+  /// 书签须走goToBookmark携带精确锚点，不能以文字比例代替版面位置。
   Future<bool> jumpToOriginalChapter(
     int index, {
     required double fraction,
@@ -211,34 +209,13 @@ mixin _ReaderOriginalPosition on AsyncNotifier<ReaderSession> {
     if (index < 0 || index >= session.chapters.length) return false;
     final clamped = fraction.clamp(0.0, 1.0);
     if (index == session.chapterIndex) {
+      // 当前章内跳转也作废正在读取的跨章请求，防止旧请求稍后覆盖这次选择。
+      ++_originalChapterRequest;
       // 同一章只是下发一次定位，代价很小，每次都执行（拖动手感才跟手）
       _requestOriginalJump(clamped);
       return true;
     }
-    // 换章要重新加载文档：拖动进度滑块会连续触发，只保留最后一次目标，
-    // 否则一秒钟会换几十章、每次都重载一遍文档
-    if (_originalJumpInFlight) {
-      _queuedOriginalJump = (index: index, fraction: clamped);
-      return false;
-    }
-    _originalJumpInFlight = true;
-    try {
-      final switched = await switchChapterForOriginal(index, atEnd: false);
-      if (!switched) return false;
-      // switchChapterForOriginal 记的是「章首」，这里按调用方的落点覆盖掉
-      _pendingOriginalFraction = clamped;
-      return true;
-    } finally {
-      _originalJumpInFlight = false;
-    }
-  }
-
-  /// 执行拖动期间被合并掉的那次跳转（目标已经过时的话会自己丢掉）
-  Future<void> _flushQueuedOriginalJump() async {
-    final queued = _queuedOriginalJump;
-    _queuedOriginalJump = null;
-    if (queued == null) return;
-    await jumpToOriginalChapter(queued.index, fraction: queued.fraction);
+    return switchChapterForOriginal(index, atEnd: false, fraction: clamped);
   }
 
   void _requestOriginalJump(
@@ -268,13 +245,20 @@ mixin _ReaderOriginalPosition on AsyncNotifier<ReaderSession> {
     final chapter = session.chapters[index];
     final content = await _contentFor(chapter);
     if (content == null) return null;
-    return fractionOfLocator(
+    final fraction = fractionOfLocator(
       content: content,
       bookId: bookId,
       contentVersion: session.book.contentVersion,
       chapterId: chapter.id,
       locator: locator,
     );
+    traceBookmark('locator-fraction', {
+      'locator': bookmarkTraceLocator(locator),
+      'chapter': index,
+      'chapterLength': content.textLength,
+      'fraction': fraction,
+    });
+    return fraction;
   }
 
   /// 读某章正文：会话里已经是这一章就直接用，否则从内容仓库读；失败返回 null。
@@ -301,7 +285,9 @@ mixin _ReaderOriginalPosition on AsyncNotifier<ReaderSession> {
   Future<bool> switchChapterForOriginal(
     int index, {
     required bool atEnd,
+    double? fraction,
   }) async {
+    final request = ++_originalChapterRequest;
     final session = state.value;
     if (session == null) return false;
     if (index < 0 || index >= session.chapters.length) return false;
@@ -319,9 +305,13 @@ mixin _ReaderOriginalPosition on AsyncNotifier<ReaderSession> {
     }
     // 等正文的这段时间里可能又换过一次章：结果过期就丢掉
     final latest = state.value;
-    if (latest == null || latest.chapters[index].id != chapter.id) return false;
+    if (!ref.mounted || request != _originalChapterRequest ||
+        latest == null || latest.chapters[index].id != chapter.id) {
+      return false;
+    }
 
-    _pendingOriginalFraction = atEnd ? 1 : 0;
+    // 正文和目标比例同一次发布，避免先发布章首，再被另一请求覆盖。
+    _pendingOriginalFraction = fraction ?? (atEnd ? 1 : 0);
     state = AsyncData(
       latest.copyWith(
         chapterIndex: index,
@@ -430,6 +420,13 @@ mixin _ReaderOriginalPosition on AsyncNotifier<ReaderSession> {
         originalFraction: fraction.clamp(0.0, 1.0),
       ),
     );
+    traceBookmark('position-accepted', {
+      'chapter': chapterIndex,
+      'fraction': fraction,
+      'pages': pageCount,
+      'locator': bookmarkTraceLocator(locator),
+      'retainedExact': _originalReportExact != null,
+    });
     final tocLanding = _tocLanding;
     reportDisplayArrival(locator);
     final updated = state.value!;

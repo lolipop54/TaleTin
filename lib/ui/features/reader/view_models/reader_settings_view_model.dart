@@ -107,14 +107,10 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
     await ref.read(selectedFontLoaderProvider)(settings.fontFamily);
   }
 
-  void setFontSize(int size) => _applyOverrides(
-        (o) => o.copyWith(
-          fontSize: size.clamp(
-            ReadingLimits.minFontSize,
-            ReadingLimits.maxFontSize,
-          ),
-        ),
-      );
+  void setFontSize(int size) => _applyOverrides((o) {
+    final next = _global.mergeOver(o).withFontSize(size);
+    return o.copyWith(fontSize: next.fontSize, paragraphGapEm: next.paragraphGapEm);
+  });
 
   void setLineHeight(double value) => _applyOverrides(
         (o) => o.copyWith(
@@ -124,7 +120,7 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
         ),
       );
 
-  /// 段落间距：面板按像素给值，存成相对字号的 em（字号变了间距跟着变）
+  /// 段落间距按像素调整，保存时换算为当前字号对应的 em。
   void setParagraphGap(double pixels) {
     final current = state.value;
     if (current == null) return;
