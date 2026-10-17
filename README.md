@@ -63,7 +63,18 @@ TaleTin 是一款专注本地阅读的 Android 阅读器。导入自己的 EPUB 
     <td align="center"><img src="readme/原书排版.jpg" width="240" alt="保留 EPUB 图文和背景样式的原书排版"></td>
     <td align="center"><img src="readme/阅读记录.jpg" width="240" alt="记录阅读时长与成就"></td>
   </tr>
+    <tr>
+    <th align="center">笔记</th>
+    <th align="center">听书</th>
+    <th align="center">自动阅读</th>
+  </tr>
+  <tr>
+    <td align="center"><img src="readme/笔记.jpg" width="240" alt="使用统一字体和样式的简化排版"></td>
+    <td align="center"><img src="readme/听书.jpg" width="240" alt="保留 EPUB 图文和背景样式的原书排版"></td>
+    <td align="center"><img src="readme/自动阅读.jpg" width="240" alt="记录阅读时长与成就"></td>
+  </tr>
 </table>
+
 
 ## 翻页动画
 
