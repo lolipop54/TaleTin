@@ -15,13 +15,16 @@ import 'package:path/path.dart' as p;
 import 'package:direct_read_rust/direct_read_rust.dart';
 
 import '../../core/diagnostics/import_timing.dart';
+import '../../core/concurrency/background_compute.dart';
 import '../../core/errors/import_error.dart';
 import '../../domain/models/book.dart';
 import '../../domain/models/book_document.dart';
 import '../../domain/models/import_job.dart';
 import '../../domain/services/book_parser.dart';
 import 'epub/epub_parser.dart';
+import 'mobi/mobi_parser.dart';
 import 'txt/txt_parser.dart';
+import 'pdf/pdf_parser.dart';
 import '../normalization/source_position_cache.dart';
 import '../../domain/models/source_position_preparation.dart';
 
@@ -35,21 +38,48 @@ class ParseWorker {
     required CancelToken cancel,
     ParseCover? onCover,
   }) async {
+    if (request.format == BookFormat.pdf) {
+      // PDFium不是线程安全库。PDF的原生任务统一交给主isolate持有的引擎工作队列，
+      // 避免导入worker结束后原生字体回调仍指向已销毁的isolate。
+      final before = File(request.sourcePath).statSync();
+      final document = await const PdfParser().parse(
+        request,
+        onCover: onCover,
+        onProgress: (value) {
+          if (cancel.isCancelled()) {
+            throw const ImportFailure(ImportErrorCode.cancelled);
+          }
+          onProgress(value);
+        },
+      );
+      if (cancel.isCancelled()) {
+        throw const ImportFailure(ImportErrorCode.cancelled);
+      }
+      final after = File(request.sourcePath).statSync();
+      if (before.size != after.size || before.modified != after.modified) {
+        throw const ImportFailure(ImportErrorCode.unknown, '导入期间原文件发生变化，请重试');
+      }
+      await backgroundCompute(_writeManifestSnapshot, (request, document));
+      return document;
+    }
     final receivePort = ReceivePort();
     final isolate = await _spawn(request, receivePort.sendPort);
     final completer = Completer<BookDocument>();
     var settled = false;
+    var cancelling = false;
 
     // 取消即终止 worker（设计文档 6.1）：token 不是事件流，这里按固定间隔轮询
     final cancelWatch = Timer.periodic(const Duration(milliseconds: 200), (_) {
-      if (settled || !cancel.isCancelled()) return;
-      settled = true;
+      if (settled || cancelling || !cancel.isCancelled()) return;
+      cancelling = true;
       isolate.kill(priority: Isolate.immediate);
-      completer.completeError(const ImportFailure(ImportErrorCode.cancelled));
+      // 同步 FFI 调用要先返回才能终止 isolate。等 onExit 后再让导入层
+      // 删除暂存目录，避免原生解析还在写文件时就清理或开始下一本。
     });
 
     receivePort.listen((message) {
       if (settled) return;
+      if (cancelling && message != null) return;
       if (message is Map) {
         if (message['cover'] case final Uint8List bytes) {
           onCover?.call(bytes);
@@ -151,6 +181,19 @@ Future<void> _workerMain(_WorkerRequest message) async {
         onProgress: (fraction) => sendPort.send({'progress': fraction}),
         isCancelled: _neverCancelled,
       );
+    } else if (request.format == BookFormat.pdf) {
+      document = await const PdfParser().parse(
+        request,
+        onCover: (bytes) => sendPort.send({'cover': bytes}),
+        onProgress: (fraction) => sendPort.send({'progress': fraction}),
+      );
+    } else if (request.format.isMobi) {
+      document = await const MobiParser().parse(
+        request,
+        onCover: (bytes) => sendPort.send({'cover': bytes}),
+        onProgress: (fraction) => sendPort.send({'progress': fraction}),
+        isCancelled: _neverCancelled,
+      );
     } else {
       document = await const EpubParser().parse(
         request,
@@ -189,12 +232,18 @@ void _writeManifest(ParseRequest request, BookDocument document) {
   final file = File(p.join(request.workDir, 'manifest.json'));
   file.parent.createSync(recursive: true);
   final manifest = document.toManifestJson();
-  manifest['positionRules'] = sourcePositionRules(request.format.code,
-    charset: request.txt?.charset, chapterPattern: request.txt?.chapterPattern,
-    forceSections: request.txt?.forceSectionFallback ?? false);
+  manifest['positionRules'] = sourcePositionRules(
+    request.format.code,
+    charset: request.txt?.charset,
+    chapterPattern: request.txt?.chapterPattern,
+    forceSections: request.txt?.forceSectionFallback ?? false,
+  );
   file.writeAsStringSync(jsonEncode(manifest), flush: false);
   SourcePositionCache.write(request.workDir, document.locationMatches);
 }
 
 /// worker 内的取消恒为 false：取消由主 isolate 直接终止 worker 完成。
 bool _neverCancelled() => false;
+
+void _writeManifestSnapshot((ParseRequest, BookDocument) input) =>
+    _writeManifest(input.$1, input.$2);

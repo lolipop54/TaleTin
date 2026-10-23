@@ -11,6 +11,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
+import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
 import 'package:direct_read_rust/direct_read_rust.dart';
 
@@ -18,11 +19,44 @@ import '../../../core/errors/import_error.dart';
 import '../../../core/diagnostics/import_timing.dart';
 import '../../normalization/text_decoding.dart';
 
-class EpubArchive {
-  EpubArchive._(this._archive, this._input);
+/// The reader needs named entries, not a particular container representation.
+abstract interface class PublicationEntries {
+  Map<String, int> get sizes;
+  Uint8List readBytes(String path);
+  void close();
+}
 
-  final Archive _archive;
-  final InputFileStream _input;
+/// 支持小批处理的出版物仍保留单条读取，阅读时不必为了批量而预读邻章。
+abstract interface class BatchedPublicationEntries
+    implements PublicationEntries {
+  List<Uint8List> readBytesBatch(List<String> paths);
+}
+
+class EpubArchive {
+  EpubArchive._(this._archive, this._input)
+    : _directory = null,
+      _entries = null,
+      digests = const {};
+
+  /// MOBI 重建后的出版物直接从私有目录读取，共用 EPUB 的路径和输出限制。
+  EpubArchive.directory(String root, {this.digests = const {}})
+    : _directory = p.normalize(p.absolute(root)),
+      _entries = null,
+      _archive = null,
+      _input = null;
+
+  EpubArchive.entries(PublicationEntries entries)
+    : _entries = entries,
+      _directory = null,
+      _archive = null,
+      _input = null,
+      digests = const {};
+
+  final Archive? _archive;
+  final InputFileStream? _input;
+  final String? _directory;
+  final PublicationEntries? _entries;
+  final Map<String, String> digests;
   ImportTiming? importTiming;
   NativeInflater? _inflater;
 
@@ -37,6 +71,33 @@ class EpubArchive {
 
   int _totalWritten = 0;
   int get decodedBytes => _totalWritten;
+  bool get supportsBatchRead => _entries is BatchedPublicationEntries;
+
+  List<Uint8List> readBytesBatch(List<String> paths) {
+    final entries = _entries;
+    if (entries is! BatchedPublicationEntries) {
+      return [for (final path in paths) readBytes(path)];
+    }
+    final names = <String>[];
+    for (final path in paths) {
+      final entry = find(path);
+      if (entry == null) {
+        throw ImportFailure(ImportErrorCode.invalidContainer, '缺少 $path');
+      }
+      _checkDeclaredSize(entry, path);
+      names.add(entry.name);
+    }
+    List<Uint8List> read() => entries.readBytesBatch(names);
+    final result =
+        importTiming?.detail('zip_entry_read_inflate', read) ?? read();
+    for (final bytes in result) {
+      _totalWritten += bytes.length;
+      if (bytes.length > maxEntryBytes || _totalWritten > maxTotalBytes) {
+        throw const ImportFailure(ImportErrorCode.unsafeArchive, '正文与资源超出上限');
+      }
+    }
+    return result;
+  }
 
   /// 打开 ZIP。非 ZIP 内容会在这里抛出 `invalidContainer`。
   static EpubArchive open(String path) {
@@ -55,13 +116,30 @@ class EpubArchive {
     return EpubArchive._(archive, input);
   }
 
-  int get entryCount => _archive.files.length;
+  int get entryCount => _entries?.sizes.length ?? _archive?.files.length ?? 0;
 
   /// 按规范化后的归档内路径查找条目。
   ArchiveFile? find(String entryPath) {
     final normalized = normalizeEntryPath(entryPath);
     if (normalized == null) return null;
-    final entry = _archive.find(normalized);
+    final entries = _entries;
+    if (entries != null) {
+      final size = entries.sizes[normalized];
+      return size == null
+          ? null
+          : ArchiveFile.noCompress(normalized, size, const <int>[]);
+    }
+    final root = _directory;
+    if (root != null) {
+      final file = File(p.join(root, normalized));
+      if (!p.isWithin(root, file.path) || !file.existsSync()) return null;
+      return ArchiveFile.noCompress(
+        normalized,
+        file.lengthSync(),
+        const <int>[],
+      );
+    }
+    final entry = _archive!.find(normalized);
     if (entry == null || entry.isDirectory) return null;
     return entry;
   }
@@ -82,6 +160,33 @@ class EpubArchive {
       throw ImportFailure(ImportErrorCode.invalidContainer, '缺少 $entryPath');
     }
     _checkDeclaredSize(entry, entryPath);
+    if (_entries != null) {
+      final bytes = _entries.readBytes(entry.name);
+      _totalWritten += bytes.length;
+      if (bytes.length > maxEntryBytes || _totalWritten > maxTotalBytes) {
+        throw const ImportFailure(ImportErrorCode.unsafeArchive, '正文与资源超出上限');
+      }
+      return limit != null && bytes.length > limit
+          ? Uint8List.sublistView(bytes, 0, limit)
+          : bytes;
+    }
+    if (_directory != null) {
+      final bytes = File(p.join(_directory, entry.name)).readAsBytesSync();
+      if (digests.isNotEmpty &&
+          sha256.convert(bytes).toString() != digests[entry.name]) {
+        throw const ImportFailure(
+          ImportErrorCode.invalidContainer,
+          '重建的正文或资源损坏，请重新解析',
+        );
+      }
+      _totalWritten += bytes.length;
+      if (_totalWritten > maxTotalBytes) {
+        throw const ImportFailure(ImportErrorCode.unsafeArchive, '正文与资源超出上限');
+      }
+      return limit != null && bytes.length > limit
+          ? Uint8List.sublistView(bytes, 0, limit)
+          : bytes;
+    }
     // 保留指向 ZIP 原文件的压缩条目，只返回本次解压的字节。
     // 不把解压结果挂在 ArchiveFile 上，也不 clear 掉再次读取所需的信息。
     final raw = entry.rawContent;
@@ -152,11 +257,12 @@ class EpubArchive {
   }
 
   void close() {
+    _entries?.close();
     _inflater?.close();
-    for (final file in _archive.files) {
+    for (final file in _archive?.files ?? <ArchiveFile>[]) {
       file.clear();
     }
-    _input.closeSync();
+    _input?.closeSync();
   }
 
   /// 清零解压总量累计。

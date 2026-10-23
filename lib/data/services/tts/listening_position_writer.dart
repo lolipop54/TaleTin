@@ -1,4 +1,5 @@
 import 'dart:async';
+import '../../../core/diagnostics/app_errors.dart';
 
 import '../../../domain/models/locator.dart';
 import '../../../domain/repositories/reading_position_repository.dart';
@@ -39,7 +40,8 @@ class ListeningPositionWriter {
 
   void _schedule() {
     unawaited(
-      flush().catchError((Object error) {
+      flush().catchError((Object error, StackTrace stack) {
+        AppErrors.report(error, stack, operation: '保存听书位置失败');
         onError?.call(error);
       }),
     );

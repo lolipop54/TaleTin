@@ -10,6 +10,8 @@
 /// - 取消只在阶段边界检查，取消后立即释放句柄并清理暂存。
 library;
 
+import 'package:taletin/core/diagnostics/app_errors.dart';
+
 import '../services/library_file_gate.dart';
 import '../services/source_preparation_queue.dart';
 
@@ -98,6 +100,7 @@ class ImportBooksUseCase {
   final PrepareBookContentChange? prepareContentChange;
   final LibraryFileGate? fileGate;
   final LoadSourcePositions? loadSourcePositions;
+
   /// 对照测试可分别关闭流程优化和 Rust 匹配，正式应用默认均开启。
   final bool optimizeLocations;
 
@@ -165,22 +168,26 @@ class ImportBooksUseCase {
     if (uri.scheme != 'file') return null;
     final path = p.normalize(uri.toFilePath());
     final identity = Uri.file(path).toString();
-    final existing = await _books.findByHash(identity);
+    var existing = await _books.findByHash(identity);
     if (existing != null && existing.status != BookStatus.removed) {
       return existing;
     }
     final format = BookFormat.fromCode(
       p.extension(picked.name).replaceFirst('.', '').toLowerCase(),
     );
-    if (format != BookFormat.txt && format != BookFormat.epub) return null;
+    if (format == null) return null;
     final release = await fileGate?.enter();
     try {
+      if (existing?.status == BookStatus.removed) {
+        await _discardRemoved(existing!);
+        existing = null;
+      }
       final book = Book(
         id: existing?.id ?? _uuid.v4(),
         sourceHash: identity,
         title: p.basenameWithoutExtension(picked.name),
         author: '',
-        format: format!,
+        format: format,
         importedAt: existing?.importedAt ?? DateTime.now().toUtc(),
         groupId: existing?.groupId,
         status: BookStatus.preparing,
@@ -202,6 +209,23 @@ class ImportBooksUseCase {
       return book;
     } finally {
       release?.call();
+    }
+  }
+
+  /// 老版本的已删除行仅在用户明确重新导入该来源时清掉，不自动删除其他历史。
+  Future<void> _discardRemoved(Book book) async {
+    final releaseBook = await fileGate?.enterBook(book.id);
+    void Function()? releaseContent;
+    try {
+      releaseContent = await prepareContentChange?.call(book.id);
+      await _books.markRemoved(book.id, DateTime.now().toUtc());
+      final result = await _storage.deleteRecursivelyWithSize(
+        await _storage.bookDirectoryPath(book.id),
+      );
+      if (!result.failed) await _books.deleteJob('delete:${book.id}');
+    } finally {
+      releaseContent?.call();
+      releaseBook?.call();
     }
   }
 
@@ -268,7 +292,8 @@ class ImportBooksUseCase {
       }
 
       stagingDir = await _storage.stagingDirectory(jobId);
-      await _checkSpace(stagingDir, sizeBytes);
+      await _checkSpace(stagingDir,
+        picked.name.toLowerCase().endsWith('.pdf') ? null : sizeBytes);
       await _books.upsertJob(
         ImportJobRecord(id: jobId, stage: 'copying', stagingPath: stagingDir),
       );
@@ -278,6 +303,13 @@ class ImportBooksUseCase {
       final localPath = uri.scheme == 'file'
           ? p.normalize(uri.toFilePath())
           : null;
+      // PDF原页需要随机访问；无法取得本地原文件时明确提示，不能悄悄复制大文件。
+      if (localPath == null && picked.name.toLowerCase().endsWith('.pdf')) {
+        throw const ImportFailure(
+          ImportErrorCode.unknown,
+          '无法直接访问PDF原文件，请从手机目录选择已下载的PDF',
+        );
+      }
       trace?.details['sourceStorage'] = localPath == null
           ? 'platform_copy'
           : localPath.startsWith('/storage/') ||
@@ -316,17 +348,15 @@ class ImportBooksUseCase {
       if (format == null) {
         throw const ImportFailure(ImportErrorCode.unsupportedFormat);
       }
-      if (format == BookFormat.mobi) {
-        throw const ImportFailure(
-          ImportErrorCode.unsupportedFormat,
-          'MOBI 将在后续版本支持',
-        );
-      }
 
       // 同一路径（包含文件名）去重；改名、复制或移动后允许作为新书导入。
-      final existing = reparse && replaceBookId != null
+      var existing = reparse && replaceBookId != null
           ? await _books.findById(replaceBookId)
           : await _books.findByHash(sourceIdentity);
+      if (existing?.status == BookStatus.removed) {
+        await _discardRemoved(existing!);
+        existing = null;
+      }
       if (existing != null &&
           existing.status != BookStatus.removed &&
           existing.status != BookStatus.preparing &&
@@ -391,19 +421,29 @@ class ImportBooksUseCase {
       final beforeParse = localPath == null
           ? null
           : await File(sourcePath).stat();
-      final oldPositions = optimizeLocations && loadSourcePositions != null && existing != null
-          ? await loadSourcePositions!(bookId) : const SourcePositionPreparation();
-      final positionRules = sourcePositionRules(format.code,
+      final oldPositions =
+          optimizeLocations && loadSourcePositions != null && existing != null
+          ? await loadSourcePositions!(bookId)
+          : const SourcePositionPreparation();
+      final positionRules = sourcePositionRules(
+        format.code,
         charset: format == BookFormat.txt
-            ? txtChoice?.charset ?? _textPreparation.detectEncoding(header).charset : null,
+            ? txtChoice?.charset ??
+                  _textPreparation.detectEncoding(header).charset
+            : null,
         chapterPattern: txtChoice?.chapterPattern,
-        forceSections: txtChoice?.forceSectionFallback ?? false);
+        forceSections: txtChoice?.forceSectionFallback ?? false,
+      );
       // 属性没变时可避免连带匹配；最终仍比较本次扫描得到的摘要，才决定复用。
-      final unchangedStamp = beforeParse != null &&
+      final unchangedStamp =
+          beforeParse != null &&
           oldPositions.proof?.rules == positionRules &&
           oldPositions.proof?.stamp == sourceFingerprint(beforeParse);
-      final anchors = [for (final point in oldPositions.anchors)
-        if (!unchangedStamp || point.needsRelocation) point.copyWith(needsRelocation: true)];
+      final anchors = [
+        for (final point in oldPositions.anchors)
+          if (!unchangedStamp || point.needsRelocation)
+            point.copyWith(needsRelocation: true),
+      ];
       final document = await _parse(
         picked: picked,
         format: format,
@@ -486,12 +526,21 @@ class ImportBooksUseCase {
             : null,
       );
       final index = document.sourceIndex;
-      final proof = index == null ? null : SourcePositionProof(
-        index.sourceDigest, positionRules, index.sourceStamp ?? '');
-      final sameContent = optimizeLocations && proof != null &&
+      final proof = index == null
+          ? null
+          : SourcePositionProof(
+              index.sourceDigest,
+              positionRules,
+              index.sourceStamp ?? '',
+            );
+      final sameContent =
+          optimizeLocations &&
+          proof != null &&
           oldPositions.proof?.sameContent(proof) == true;
-      trace?.details.addAll({'samePositionContent': sameContent,
-        'locationQueries': anchors.length});
+      trace?.details.addAll({
+        'samePositionContent': sameContent,
+        'locationQueries': anchors.length,
+      });
       final commit = ImportCommit(
         book: book,
         chapters: document.chapters,
@@ -525,7 +574,12 @@ class ImportBooksUseCase {
         bookId: bookId,
         note: note,
       );
-    } catch (error) {
+    } catch (error, appStack) {
+      if (!cancel.isCancelled(key) &&
+          !(error is ImportFailure &&
+              error.code == ImportErrorCode.cancelled)) {
+        AppErrors.report(error, appStack, operation: '导入书籍失败');
+      }
       if (!committed && replacedBackup != null && replacedContent != null) {
         await _storage.deleteRecursively(replacedContent);
         await _storage.move(from: replacedBackup, to: replacedContent);

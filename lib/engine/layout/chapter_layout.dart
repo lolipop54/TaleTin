@@ -6,11 +6,13 @@
 /// 上层接口（[pages]、[locatorOf]、[pageIndexOf]）不用动。
 library;
 
+import 'dart:async';
 import 'dart:ui' show Size;
 
 import '../../core/diagnostics/reader_work_trace.dart';
 
 import '../../domain/models/book_document.dart';
+import '../../domain/models/content_table.dart';
 import '../../domain/models/locator.dart';
 import '../normalization/locator_mapper.dart';
 import 'block_measure.dart';
@@ -20,6 +22,10 @@ import 'layout_options.dart';
 import 'measured_block.dart';
 import 'english_hyphenation.dart';
 import 'table_layout.dart';
+import 'layout_work_gate.dart';
+import 'measured_block_codec.dart';
+
+part 'chapter_layout_task.dart';
 
 /// 排版任务令牌：参数变化或切章后旧任务作废，结果不再上屏
 /// （设计文档 4.1 第 6 条：丢弃过期排版结果）。
@@ -57,12 +63,33 @@ class ChapterLayout {
     required this.totalLength,
     required this.content,
     required this.options,
-  });
+    this.task,
+    this.isComplete = true,
+    Map<String, MeasuredBlock>? measuredById,
+    Map<String, int>? blockOrders,
+  }) : _measuredLookup = measuredById,
+       _orders = blockOrders;
 
   final String bookId;
   final int contentVersion;
   final String chapterId;
   final String chapterTitle;
+  final ChapterLayoutTask? task;
+  final bool isComplete;
+  Object get identity => task ?? this;
+
+  /// 同一封口页在补排通知后保持身份，图像与手势不随容器替换失效。
+  bool samePageAs(ChapterLayout? other, int pageIndex, [int? otherIndex]) =>
+      other != null &&
+      page(pageIndex) != null &&
+      identical(page(pageIndex), other.page(otherIndex ?? pageIndex));
+
+  Future<ChapterLayout> ensurePage(int index) async =>
+      task == null ? this : task!.ensure(page: index);
+  Future<ChapterLayout> ensureTarget(Locator target) async =>
+      task == null ? this : task!.ensure(target: target);
+  Stream<ChapterLayout> get updates => task?.updates ?? const Stream.empty();
+  void resumeBackground() => task?.resumeBackground();
 
   /// 与 [ChapterContent.blocks] 一一对应的测量结果（含章题装饰块）
   final List<MeasuredBlock> blocks;
@@ -166,12 +193,15 @@ class ChapterLayout {
     return offset < 0 ? 0 : offset;
   }
 
-  MeasuredBlock? _positionOfBlock(String blockId) {
+  Map<String, MeasuredBlock>? _measuredLookup;
+  Map<String, MeasuredBlock> get _measuredById => _measuredLookup ??= () {
+    final result = <String, MeasuredBlock>{};
     for (final block in blocks) {
-      if (block.blockId == blockId) return block;
+      result.putIfAbsent(block.blockId, () => block);
     }
-    return null;
-  }
+    return result;
+  }();
+  MeasuredBlock? _positionOfBlock(String blockId) => _measuredById[blockId];
 
   /// 页首锚点 → 完整 Locator（补齐摘录、前后文）
   Locator _locatorFor(PageAnchor anchor) {
@@ -193,12 +223,15 @@ class ChapterLayout {
 
   /// 块在 [blocks] 中的下标；不在本章时返回 -1。
   /// 章题装饰块是 0，因此正文块的顺序天然排在它后面。
-  int _orderOf(String blockId) {
+  Map<String, int>? _orders;
+  Map<String, int> get _blockOrders => _orders ??= () {
+    final result = <String, int>{};
     for (var i = 0; i < blocks.length; i++) {
-      if (blocks[i].blockId == blockId) return i;
+      result.putIfAbsent(blocks[i].blockId, () => i);
     }
-    return -1;
-  }
+    return result;
+  }();
+  int _orderOf(String blockId) => _blockOrders[blockId] ?? -1;
 
   /// 位置 → 章内页序：从章首重放比较锚点，不做第二套回填算法
   /// （实现计划 5.4）。位置不在本章时返回 null。
@@ -230,7 +263,7 @@ class ChapterLayout {
       }
     }
     // 落在全书该章最后位置之后（例如章尾空块）：归到最后一页
-    return pages.isEmpty ? null : pages.length - 1;
+    return pages.isEmpty || !isComplete ? null : pages.length - 1;
   }
 
   /// 内容顺序比较：先比块序，再比块内偏移，最后比定位倾向。
@@ -329,7 +362,7 @@ class ChapterLayout {
         chapter.title,
       );
       final measured = <MeasuredBlock>[
-        if (!useContentHeading && chapter.title.trim().isNotEmpty)
+        if (content.pdfPage == null && !useContentHeading && chapter.title.trim().isNotEmpty)
           measurer.measureChapterTitle(chapter.title),
       ];
       var batch = 0;

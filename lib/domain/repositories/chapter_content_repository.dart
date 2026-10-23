@@ -7,7 +7,13 @@
 library;
 
 import '../models/book_document.dart';
+import '../models/locator.dart';
 import '../services/toc_entry_index.dart';
+
+typedef TocLocations = ({
+  Map<String, Map<String, double?>> anchors,
+  Map<String, Map<String, double>> headings,
+});
 
 /// 正文读取失败。
 ///
@@ -32,6 +38,14 @@ class ContentFailure implements Exception {
 }
 
 abstract class ChapterContentRepository {
+  /// 文件仓库可在后台把逐章读取和匹配放在一起，避免整章文字往返界面。
+  /// 内存替身保持原有逐章接口；null 表示没有专门的后台实现。
+  Future<Map<String, Locator?>?> matchSourcePositions(
+    String bookId,
+    List<Chapter> chapters,
+    List<Locator> anchors,
+  ) async => null;
+
   /// 读取单章正文。实现内部有小容量缓存，按需读取，不整本进内存。
   Future<ChapterContent> chapter(
     String bookId,
@@ -52,6 +66,11 @@ abstract class ChapterContentRepository {
 
   /// 读取嵌套目录（`manifest.json`）；没有目录时返回空列表，界面降级为平铺。
   Future<List<TocNode>> toc(String bookId, int contentVersion);
+
+  /// Small locations from the same manifest as the TOC. The reading session has
+  /// already verified its current source before preparing progress titles.
+  Future<TocLocations?> tocLocations(String bookId, int contentVersion) async =>
+      null;
 
   /// 拼出正文图片的绝对路径。
   ///

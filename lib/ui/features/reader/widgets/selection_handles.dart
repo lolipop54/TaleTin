@@ -1,7 +1,7 @@
 /// 选区起止手柄（实现计划 S1b）。
 ///
 /// 简化模式的选区靠两个手柄调整：起点手柄改选区开头，终点手柄改结尾。
-/// 手柄画在行下方一小段距离，拖的时候手指不挡着要看的那行字。
+/// 细线贴住文字边界，行底的小圆点保留独立的触摸范围。
 ///
 /// **拖到左上角/右下角并停 0.8 秒翻页**：左上角翻上一页，右下角翻下一页。
 /// 只靠近一条边不会翻页；手指离开角落或松手就取消计时。
@@ -27,24 +27,17 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../app/di/app_providers.dart';
 import '../../../../domain/models/locator.dart';
 import '../../../../engine/layout/chapter_layout.dart';
+import '../../../../engine/selection/selection_rects.dart' show CaretGeometry;
 import '../../../core/theme/gt_tokens.dart';
 import '../../../core/theme/reading_theme.dart';
 import '../view_models/reader_session_view_model.dart';
 import '../view_models/reader_view_model.dart';
-
-/// 触摸目标（移动端最小尺寸）
-const double kHandleTouchSize = 44;
+import 'selection_handle_painter.dart';
+export 'selection_handle_painter.dart';
 
 /// 手柄在测试与调试里的定位键
 const String kHandleStartKey = 'selection-handle-start';
 const String kHandleEndKey = 'selection-handle-end';
-
-/// 手柄圆点半径
-const double kHandleRadius = 8;
-
-/// 圆点中心到高亮底边的距离（竖线长度 + 半径）：
-/// 太短不好抓、太长拖着一根杆，取一小段
-const double kHandleCenterOffset = 22;
 
 /// 停在页边多久才翻页：按用户要求 0.8 秒。
 /// 太短手指路过页沿就会误翻，太长又显得拖沓
@@ -116,6 +109,11 @@ class SelectionHandles extends ConsumerStatefulWidget {
     required this.theme,
     this.paintIdleHandles = true,
     this.onDragChanged,
+    this.caretAt,
+    this.locatorAt,
+    this.selectionSize,
+    this.selectionBounds,
+    this.turnSelection,
   });
 
   final String bookId;
@@ -130,6 +128,15 @@ class SelectionHandles extends ConsumerStatefulWidget {
   /// 静止手柄可以交给书页绘制，触摸层只画正在拖动的一端。
   final bool paintIdleHandles;
   final ValueChanged<bool?>? onDragChanged;
+
+  /// 双页共用一对手柄；回调使用整幅书页坐标，跨中缝不创建第二次选区。
+  final CaretGeometry? Function(Locator, bool)? caretAt;
+  final Locator? Function(Offset)? locatorAt;
+  final Size? selectionSize;
+
+  /// 扩选翻页按可见正文的外侧页角判定，不能把信息行和纸面留白算进去。
+  final Rect? selectionBounds;
+  final Future<Locator?> Function(bool forward)? turnSelection;
 
   @override
   ConsumerState<SelectionHandles> createState() => _SelectionHandlesState();
@@ -154,6 +161,10 @@ class _SelectionHandlesState extends ConsumerState<SelectionHandles> {
 
   /// 手指最近一次在正文盒里的位置：换页后判断手指是否还停在页边用它
   Offset? _fingerPoint;
+
+  Rect get _edgeBounds =>
+      widget.selectionBounds ??
+      (Offset.zero & (widget.selectionSize ?? widget.layout.contentSize));
 
   /// 正在换页：一次只处理一个目标页，换页期间忽略后续移动
   bool _turning = false;
@@ -222,11 +233,13 @@ class _SelectionHandlesState extends ConsumerState<SelectionHandles> {
     // 画的时候按当前这一页来（父级给的页号）：只在**这一端真的落在本页**时画，
     // 落在别的页就不画——所有页面加起来至始至终只有一对手柄。
     // 想够到另一头就拖着本页这一端往页沿停一下翻过去（翻完页端点会落到新页上）。
-    final caret = ref
-        .read(readerEngineProvider)
-        .caretAt(widget.layout, widget.pageIndex, locator, atEnd: atEnd);
+    final caret = widget.caretAt != null
+        ? widget.caretAt!(locator, atEnd)
+        : ref
+              .read(readerEngineProvider)
+              .caretAt(widget.layout, widget.pageIndex, locator, atEnd: atEnd);
     if (!dragging && caret == null) return null;
-    // 手柄画在这一行的下方：竖线顶着高亮底边，中间不留空。
+    // 底边仍作为选文落点；视觉竖线向上贯穿字高，触摸框围绕底部圆点。
     //
     // 拖动时画在手指位置（换页那一瞬间它可能已经不在新页上，按光标算会消失，
     // 手柄一消失手势就被取消）。**不要在这里夹位置**：夹取会让页尾的手柄
@@ -243,7 +256,7 @@ class _SelectionHandlesState extends ConsumerState<SelectionHandles> {
     return Positioned(
       key: ValueKey(atEnd ? kHandleEndKey : kHandleStartKey),
       left: widget.origin.dx + left - kHandleTouchSize / 2,
-      top: widget.origin.dy + wanted,
+      top: widget.origin.dy + wanted - kHandleAnchorOffset,
       width: kHandleTouchSize,
       height: kHandleTouchSize,
       child: GestureDetector(
@@ -258,7 +271,7 @@ class _SelectionHandlesState extends ConsumerState<SelectionHandles> {
           _dragHalfLine = start.height / 2;
           _landedAtEdge = false;
           _dragPoint = Offset(start.left, start.top + _dragHalfLine);
-          _updateEdgeHint(_dragPoint!, widget.layout.contentSize);
+          _updateEdgeHint(_dragPoint!, _edgeBounds.size);
           setState(() {}); // 换到「跟着手指画」
         },
         onPanUpdate: (details) {
@@ -273,27 +286,34 @@ class _SelectionHandlesState extends ConsumerState<SelectionHandles> {
           });
           if (_turning) return; // 目标页还没就绪，先忽略移动（一次只处理一页）
           final page = _currentPage();
-          final contentSize = page.layout.contentSize;
+          final bounds = _edgeBounds;
+          final contentSize = bounds.size;
           final finger = _fingerInContent(details.globalPosition) ?? point;
           _fingerPoint = finger;
           // 到页沿只做一件事：开始/继续翻页倒计时。
           // 不动选区——早先版本在这里把选区「铺到本页页沿」，手指只推出去一点，
           // 高亮就一下跳出去好几个字（用户真机反馈）。
           final direction = pageTurnDirectionFor(
-            handle: point,
-            finger: finger,
+            handle: point - bounds.topLeft,
+            finger: finger - bounds.topLeft,
             contentSize: contentSize,
           );
           if (direction != 0) {
             _startEdgeTimer(direction);
-          } else if (!fingerPushedOut(finger, contentSize, _edgeDirection)) {
+          } else if (!fingerPushedOut(
+            finger - bounds.topLeft,
+            contentSize,
+            _edgeDirection,
+          )) {
             _cancelEdgeTurn(); // 手指真的回到正文里了：不翻了
           }
           _updateEdgeHint(point, contentSize);
           // 不管在不在页外都按落点定位：推出去的过程中高亮连续跟手
-          final target = ref
-              .read(readerEngineProvider)
-              .locatorAtPoint(page.layout, page.pageIndex, point);
+          final target = widget.locatorAt != null
+              ? widget.locatorAt!(point)
+              : ref
+                    .read(readerEngineProvider)
+                    .locatorAtPoint(page.layout, page.pageIndex, point);
           if (target != null) _applySelection(target);
         },
         onPanEnd: (_) => _finishDrag(),
@@ -302,7 +322,7 @@ class _SelectionHandlesState extends ConsumerState<SelectionHandles> {
           painter: widget.paintIdleHandles || dragging
               ? SelectionHandlePainter(
                   color: ref.context.gtColors.actionPrimary,
-                  atEnd: atEnd,
+                  lineHeight: dragging ? _dragHalfLine * 2 : caret!.height,
                 )
               : null,
         ),
@@ -361,6 +381,21 @@ class _SelectionHandlesState extends ConsumerState<SelectionHandles> {
     if (widget.state.selection == null) return;
     _turning = true;
     try {
+      if (widget.turnSelection != null) {
+        final edge = await widget.turnSelection!(direction > 0);
+        if (!mounted || edge == null) return;
+        _landedAtEdge = true;
+        _applySelection(edge);
+        if (_fingerPoint != null &&
+            fingerPushedOut(
+              _fingerPoint! - _edgeBounds.topLeft,
+              _edgeBounds.size,
+              direction,
+            )) {
+          _startEdgeTimer(direction);
+        }
+        return;
+      }
       final notifier = ref.read(readerSessionProvider(widget.bookId).notifier);
       final result = direction > 0
           ? await notifier.nextPage()
@@ -414,7 +449,7 @@ class _SelectionHandlesState extends ConsumerState<SelectionHandles> {
   /// 选区收起来之后（下一条高亮）才会再提示。提示条自己 1.4 秒后消失。
   void _updateEdgeHint(Offset? handle, Size contentSize) {
     if (_hintShown || handle == null) return;
-    final hint = pageEdgeHintFor(handle, contentSize);
+    final hint = pageEdgeHintFor(handle - _edgeBounds.topLeft, contentSize);
     if (hint == null) return;
     _hintShown = true;
     ref.read(readerProvider.notifier).showNotice(hint);
@@ -439,42 +474,4 @@ class SelectionGestureShield extends StatelessWidget {
     onTap: onDismiss,
     child: const SizedBox.expand(),
   );
-}
-
-/// 手柄：一条竖线连到圆点，起点手柄线在圆点左侧、终点手柄线在右侧
-class SelectionHandlePainter extends CustomPainter {
-  const SelectionHandlePainter({required this.color, required this.atEnd});
-
-  final Color color;
-  final bool atEnd;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final fill = Paint()..color = color;
-    // 圆点固定在贴住高亮底边的一小段距离上：盒子做得大是为了好点中，
-    // 视觉上只留圆点和很短的一段竖线
-    final center = Offset(size.width / 2, kHandleCenterOffset);
-    canvas.drawRect(
-      Rect.fromLTRB(
-        center.dx - 1,
-        0,
-        center.dx + 1,
-        center.dy - kHandleRadius + 2,
-      ),
-      fill,
-    );
-    canvas.drawCircle(center, kHandleRadius, fill);
-    canvas.drawCircle(
-      center,
-      kHandleRadius,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.5
-        ..color = const Color(0xFFFFFFFF),
-    );
-  }
-
-  @override
-  bool shouldRepaint(SelectionHandlePainter old) =>
-      old.color != color || old.atEnd != atEnd;
 }

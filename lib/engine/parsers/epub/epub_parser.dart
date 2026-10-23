@@ -54,11 +54,19 @@ class EpubParser {
     required ParseProgress onProgress,
     required bool Function() isCancelled,
     ParseCover? onCover,
+    String? publicationDirectory,
+    Map<String, String> publicationDigests = const {},
+    EpubArchive? entryArchive,
+    Map<String, Object> mobiIndex = const {},
   }) async {
     final timing = traceImportPerf ? ImportTiming('epub_parser') : null;
     var chapterBytes = 0;
     var chapterCount = 0;
-    final archive = EpubArchive.open(request.sourcePath);
+    final archive =
+        entryArchive ??
+        (publicationDirectory == null
+            ? EpubArchive.open(request.sourcePath)
+            : EpubArchive.directory(publicationDirectory));
     final matches = SourcePositionMatcher(request.locationAnchors);
     archive.importTiming = timing;
     timing?.mark('zip_open');
@@ -152,6 +160,23 @@ class EpubParser {
       timing?.mark('navigation_read');
       if (rawToc.isEmpty) warnings.add(warningNoToc);
 
+      final tocFragments = <String, List<String>>{};
+      void collectFragments(List<RawTocEntry> nodes) {
+        for (final node in nodes) {
+          if (node.href != null) {
+            tocFragments
+                .putIfAbsent(node.href!, () => [])
+                .add(node.fragment ?? '');
+          }
+          collectFragments(node.children);
+        }
+      }
+
+      collectFragments(rawToc);
+      // A single TOC entry already points to chapter start in the reader.
+      tocFragments.removeWhere((_, fragments) => fragments.length < 2);
+      final tocPositions = <String, Map<String, double?>>{};
+      final tocHeadings = <String, Map<String, double>>{};
       final chapters = <Chapter>[];
       final sources = <String, List<Object>>{};
       final tocNodes = <TocNode>[];
@@ -181,11 +206,20 @@ class EpubParser {
             final texts = <String>[], paths = <String>[];
             final rawSources = <Uint8List>[];
             final rawHtml = ProcessingFeatures.rawHtml;
+            final batchRead = rawHtml && archive.supportsBatchRead;
             var characters = 0;
             // 小批并行，避免把所有章节及 DOM 同时保留在内存里。
             // 单个较大的章节照常解析，其余每批最多 16 章／约 512 Ki 字符。
             for (var at = index; at < total && paths.length < 16; at++) {
               final path = package.spine[at].entryPath;
+              // MOBI在同一小批中并行整理HTML；原书单章读取入口保持原样。
+              // 批量阶段先按来源声明大小限量，真实输出仍由归档逐项核对。
+              if (batchRead) {
+                paths.add(path);
+                characters += archive.find(path)!.size;
+                if (characters >= 512 * 1024) break;
+                continue;
+              }
               final navigation = navigationDocuments.remove(path);
               if (rawHtml) {
                 final source = navigation == null
@@ -202,6 +236,22 @@ class EpubParser {
               paths.add(path);
               if (characters >= 512 * 1024) break;
             }
+            if (batchRead) {
+              final needed = [
+                for (final path in paths)
+                  if (!navigationDocuments.containsKey(path)) path,
+              ];
+              final prepared = archive.readBytesBatch(needed);
+              var at = 0;
+              for (final path in paths) {
+                final navigation = navigationDocuments.remove(path);
+                rawSources.add(
+                  navigation == null
+                      ? prepared[at++]
+                      : Uint8List.fromList(utf8.encode(navigation)),
+                );
+              }
+            }
             timing?.mark('chapter_read_decode');
             preparedStatistics = XhtmlBlockBuilder.statisticsBatch(
               texts,
@@ -210,6 +260,9 @@ class EpubParser {
               timing: timing,
               rawSources: rawHtml ? rawSources : null,
               statisticsOnly: matches.isEmpty,
+              tocFragments: tocFragments,
+              tocPositions: tocPositions,
+              tocHeadings: tocHeadings,
             );
           }
           result = preparedStatistics[index - batchStart];
@@ -309,13 +362,25 @@ class EpubParser {
         locationMatches: matches.finish(),
         sourceIndex: request.indexedContent
             ? SourceContentIndex(
-                format: 'epub',
+                format: request.format.code,
                 sourceDigest: sourceDigest!,
                 sourceBytes: await File(request.sourcePath).length(),
                 sourceStamp: sourceFingerprint(
                   await File(request.sourcePath).stat(),
                 ),
                 chapters: sources,
+                tocPositions: {
+                  for (final entry in spineHrefs.entries)
+                    if (tocPositions.containsKey(entry.key))
+                      entry.value: tocPositions[entry.key]!,
+                },
+                tocHeadings: {
+                  for (final entry in spineHrefs.entries)
+                    if (tocHeadings.containsKey(entry.key))
+                      entry.value: tocHeadings[entry.key]!,
+                },
+                publication: publicationDigests,
+                mobiIndex: mobiIndex,
                 images: {
                   for (final image in imageCache.entries)
                     image.key: [image.value.width, image.value.height],

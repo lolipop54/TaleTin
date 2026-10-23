@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.1.1+54
+version: 1.2.0+55
 
 environment:
   sdk: ^3.13.2
@@ -28,6 +28,8 @@ environment:
 # the latest version available on pub.dev. To see which dependencies have newer
 # versions available, run `flutter pub outdated`.
 dependencies:
+  mobi_native:
+    path: tools/mobi_native
   direct_read_rust:
     path: tools/direct_read_rust
   flutter:
@@ -64,6 +66,11 @@ dependencies:
   curved_navigation_bar: 1.0.6
   # 书架离线拼音排序，不依赖 Android 系统版本。
   lpinyin: 2.0.3
+  # PDF 原页、文字及大纲；阅读界面与交互仍由本项目负责。
+  pdfrx_engine: 0.6.1
+  pdfium_flutter: 0.3.1
+  image: 4.8.0
+  ffi: ^2.2.0
 
 # Android 实现包打了一行 AGP 9 兼容补丁后放在 third_party/，
 # 原因与移除时机见 third_party/flutter_inappwebview_android/README.gt.md
@@ -106,6 +113,11 @@ flutter:
   uses-material-design: true
  
   assets:
+    - assets/covers/
+    - assets/pics/loading_icon.png
+    - tools/mobi_native/third_party/libmobi/COPYING
+    - tools/mobi_native/third_party/COPYING-GPL-3.0
+    - tools/mobi_native/third_party/MINIZ-LICENSE
     - assets/icons/
     - assets/icons_used/
     - assets/pics/无动画.webp
@@ -115,6 +127,7 @@ flutter:
     - assets/pics/滚动.webp
     - assets/achievements/
     - assets/hyphenation/
+    - assets/licenses/
     - assets/fonts/reading_quote/OFL.txt
     # 原书排版模式的框架页（host.css / host.js），由 WebView 拦截器按虚拟地址提供
     - assets/webview/

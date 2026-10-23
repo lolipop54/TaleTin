@@ -6,6 +6,8 @@ mixin _ReaderOriginalPosition on AsyncNotifier<ReaderSession> {
   LayoutOptions? get _options;
   ReadingPosition? get _listeningRestore;
   set _listeningRestore(ReadingPosition? value);
+  ReadingPosition? get _visualRestore;
+  set _visualRestore(ReadingPosition? value);
   Map<ReadingLayoutMode, Locator> get _restoreArrivals;
   Locator? get _originalExact;
   set _originalExact(Locator? value);
@@ -37,6 +39,7 @@ mixin _ReaderOriginalPosition on AsyncNotifier<ReaderSession> {
   get _tocLanding;
 
   Future<void> persist();
+  void cancelProgressNavigation();
   void reportDisplayArrival(Locator anchor);
   bool _matchesTocLanding(
     ReaderSession session,
@@ -58,12 +61,20 @@ mixin _ReaderOriginalPosition on AsyncNotifier<ReaderSession> {
     return result;
   }
 
+  /// 首次分栏前只查看目标，真正落页时仍由 take 方法取得它。
+  Locator? peekOriginalExactPosition(int chapter) =>
+      state.value?.chapterIndex == chapter ? _originalExact : null;
+  bool get usesContentProgress =>
+      ReaderDeliveryExperiments.contentTarget &&
+      _visualRestore?.progressBasis != ReadingProgressBasis.legacyVisual;
+
   void reportPositionFailure(Object error, StackTrace stack) {
     state = AsyncError(error, stack);
   }
 
   void _clearRestoredPosition() {
     _listeningRestore = null;
+    _visualRestore = null;
     _originalExact = null;
     _originalReportExact = null;
     _restoreArrivals.clear();
@@ -71,7 +82,7 @@ mixin _ReaderOriginalPosition on AsyncNotifier<ReaderSession> {
 
   // 恢复后的页首只是显示位置；没有继续翻页前，保留听书的精确锚点。
   ReadingPosition? _restoredPosition(Locator anchor) {
-    final restored = _listeningRestore;
+    final restored = _listeningRestore ?? _visualRestore;
     if (restored == null) return null;
     final arrival = _restoreArrivals[_mode];
     if (arrival != null && !arrival.samePosition(anchor)) {
@@ -144,6 +155,7 @@ mixin _ReaderOriginalPosition on AsyncNotifier<ReaderSession> {
   /// 切回简化模式时清掉上报来的位置，位置重新由排版结果给出——否则翻页后进度
   /// 会停在切换前那一页。
   void setLayoutMode(ReadingLayoutMode mode) {
+    if (_mode != mode) cancelProgressNavigation();
     _mode = mode;
     final session = state.value;
     if (session == null || mode.isOriginal) return;
@@ -203,6 +215,8 @@ mixin _ReaderOriginalPosition on AsyncNotifier<ReaderSession> {
   Future<bool> jumpToOriginalChapter(
     int index, {
     required double fraction,
+    Locator? exact,
+    ChapterContent? preparedContent,
   }) async {
     final session = state.value;
     if (session == null) return false;
@@ -212,18 +226,26 @@ mixin _ReaderOriginalPosition on AsyncNotifier<ReaderSession> {
       // 当前章内跳转也作废正在读取的跨章请求，防止旧请求稍后覆盖这次选择。
       ++_originalChapterRequest;
       // 同一章只是下发一次定位，代价很小，每次都执行（拖动手感才跟手）
-      _requestOriginalJump(clamped);
+      _requestOriginalJump(clamped, exact: exact);
       return true;
     }
-    return switchChapterForOriginal(index, atEnd: false, fraction: clamped);
+    return switchChapterForOriginal(
+      index,
+      atEnd: false,
+      fraction: clamped,
+      exact: exact,
+      preparedContent: preparedContent,
+    );
   }
 
   void _requestOriginalJump(
     double fraction, {
     String? anchorId,
     String? title,
+    Locator? exact,
   }) {
     _clearRestoredPosition();
+    _originalExact = exact;
     final session = state.value;
     if (session == null) return;
     state = AsyncData(
@@ -269,8 +291,15 @@ mixin _ReaderOriginalPosition on AsyncNotifier<ReaderSession> {
     try {
       return await ref
           .read(chapterContentRepositoryProvider)
-          .chapter(bookId, chapter);
-    } on Object {
+          .chapter(
+            bookId,
+            chapter,
+            textOnly: session.book.format == BookFormat.pdf && _mode.isOriginal,
+          );
+    } on Object catch (error, stack) {
+      if (session.book.format == BookFormat.pdf) {
+        AppErrors.report(error, stack, operation: '读取PDF页面失败');
+      }
       return null;
     }
   }
@@ -286,6 +315,8 @@ mixin _ReaderOriginalPosition on AsyncNotifier<ReaderSession> {
     int index, {
     required bool atEnd,
     double? fraction,
+    Locator? exact,
+    ChapterContent? preparedContent,
   }) async {
     final request = ++_originalChapterRequest;
     final session = state.value;
@@ -296,22 +327,32 @@ mixin _ReaderOriginalPosition on AsyncNotifier<ReaderSession> {
     final chapter = session.chapters[index];
     final ChapterContent content;
     try {
-      content = await ref
-          .read(chapterContentRepositoryProvider)
-          .chapter(bookId, chapter);
+      content =
+          preparedContent ??
+          await ref
+              .read(chapterContentRepositoryProvider)
+              .chapter(
+                bookId,
+                chapter,
+                textOnly:
+                    session.book.format == BookFormat.pdf && _mode.isOriginal,
+              );
     } on Object {
       // 这一章正文读不出来：不换章，用户留在原处（换过去只会得到一个空页）
       return false;
     }
     // 等正文的这段时间里可能又换过一次章：结果过期就丢掉
     final latest = state.value;
-    if (!ref.mounted || request != _originalChapterRequest ||
-        latest == null || latest.chapters[index].id != chapter.id) {
+    if (!ref.mounted ||
+        request != _originalChapterRequest ||
+        latest == null ||
+        latest.chapters[index].id != chapter.id) {
       return false;
     }
 
     // 正文和目标比例同一次发布，避免先发布章首，再被另一请求覆盖。
     _pendingOriginalFraction = fraction ?? (atEnd ? 1 : 0);
+    _originalExact = exact;
     state = AsyncData(
       latest.copyWith(
         chapterIndex: index,
@@ -357,7 +398,9 @@ mixin _ReaderOriginalPosition on AsyncNotifier<ReaderSession> {
     required double fraction,
     required String firstText,
     int? pageCount,
+    Locator? pageAnchor,
   }) async {
+    if (ref.read(readingWindowProvider).exiting.value) return;
     final session = state.value;
     if (session == null) return;
     if (chapterIndex < 0 || chapterIndex >= session.chapters.length) return;
@@ -380,6 +423,7 @@ mixin _ReaderOriginalPosition on AsyncNotifier<ReaderSession> {
     if (_originalReportExact != null) _exactOriginalFraction = fraction;
     final locator =
         _originalReportExact ??
+        pageAnchor ??
         locatorForTextFragment(
           content: content,
           bookId: bookId,
@@ -401,7 +445,8 @@ mixin _ReaderOriginalPosition on AsyncNotifier<ReaderSession> {
     // 在路上（翻页后 240ms 才报），放它进来会把会话拉回上一章——
     // 用户看到的就是「拖过去了，画面又跳回原来那一页」。
     final latest = state.value;
-    if (latest == null ||
+    if (ref.read(readingWindowProvider).exiting.value ||
+        latest == null ||
         !_mode.isOriginal ||
         chapterIndex != latest.chapterIndex ||
         latest.chapters[chapterIndex].id != chapter.id) {
@@ -418,6 +463,9 @@ mixin _ReaderOriginalPosition on AsyncNotifier<ReaderSession> {
         content: content,
         originalAnchor: locator,
         originalFraction: fraction.clamp(0.0, 1.0),
+        originalContentProgress:
+            usesContentProgress &&
+            (pageAnchor != null || _originalReportExact != null),
       ),
     );
     traceBookmark('position-accepted', {

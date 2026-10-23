@@ -22,7 +22,8 @@ class BackupView extends ConsumerWidget {
     final c = context.gtColors;
     // 操作结果用短提示，不在按钮之间临时插入文字。
     ref.listen(backupViewProvider, (previous, next) {
-      if (previous?.busy == true && !next.busy && next.message.isNotEmpty) {
+      // 失败由统一诊断入口提示，不能让普通结果Toast覆盖带编号的错误Toast。
+      if (previous?.busy == true && !next.busy && !next.failed && next.message.isNotEmpty) {
         SystemToast.show(next.message).ignore();
       }
     });

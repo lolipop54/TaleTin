@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
+import '../../../../core/diagnostics/app_errors.dart';
 import '../../../../engine/layout/scroll_chapter.dart';
 import 'reader_performance.dart';
 
@@ -60,16 +61,25 @@ class ScrollResources extends ChangeNotifier {
         target.picture = await vg.loadPicture(SvgFileLoader(file), null);
       } else {
         final done = Completer<ImageInfo?>();
-        final stream = FileImage(file).resolve(ImageConfiguration.empty);
+        final provider = FileImage(file);
+        final stream = provider.resolve(ImageConfiguration.empty);
         late final ImageStreamListener listener;
         listener = ImageStreamListener((info, _) {
           if (done.isCompleted) { info.dispose(); } else { done.complete(info); }
-        }, onError: (Object error, StackTrace? stack) => done.complete(null));
+        }, onError: (Object error, StackTrace? stack) {
+          AppErrors.report(error, stack ?? StackTrace.current,
+              operation: '正文图片加载失败', notify: false);
+          if (!done.isCompleted) done.complete(null);
+        });
         stream.addListener(listener);
-        try { target.image = await done.future; }
+        try {
+          target.image = await done.future;
+          if (target.image == null) await provider.evict();
+        }
         finally { stream.removeListener(listener); }
       }
-    } on Object {
+    } on Object catch (error, stack) {
+      AppErrors.report(error, stack, operation: '正文图片加载失败', notify: false);
       // 损坏或缺失图片保留原尺寸并显示替代文字，不影响后面的阅读位置。
     }
     target.loaded = true;

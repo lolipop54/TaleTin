@@ -1,5 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:async';
+import 'dart:isolate';
 
 import 'package:drift/drift.dart';
 
@@ -10,6 +12,8 @@ import '../../domain/repositories/chapter_content_repository.dart';
 import '../../domain/services/book_progress.dart';
 import '../../engine/normalization/text_anchor.dart';
 import '../database/app_database.dart';
+import '../repositories/file_chapter_content_repository.dart';
+import '../../domain/services/library_file_gate.dart';
 
 enum NoteExportFormat {
   markdown('md', 'text/markdown'),
@@ -27,12 +31,39 @@ class ExportedNotes {
 
 /// 同一本书集中输出，书内按创建时间排序；已移除书籍仍保留笔记。
 class NotesExportService {
-  NotesExportService(this.database, this.work, this.contents);
+  NotesExportService(this.database, this.work, this.contents, {this.fileGate});
   final AppDatabase database;
   final Directory work;
   final ChapterContentRepository contents;
+  final LibraryFileGate? fileGate;
 
   Future<ExportedNotes> create(
+    NoteExportFormat format,
+    BackupOperation operation, {
+    String? bookId,
+  }) async {
+    final source = contents;
+    if (source is! FileChapterContentRepository) {
+      return _create(format, operation, bookId: bookId);
+    }
+    // 导出独立持有只读正文会话，文件替换必须等它结束；数据库仍复用同一连接和事务。
+    final release = await fileGate?.freeze();
+    try {
+      return await _exportInBackground(
+        database,
+        work.path,
+        source.libraryRoot,
+        source.cacheRoot,
+        format,
+        operation,
+        bookId,
+      );
+    } finally {
+      release?.call();
+    }
+  }
+
+  Future<ExportedNotes> _create(
     NoteExportFormat format,
     BackupOperation operation, {
     String? bookId,
@@ -118,13 +149,16 @@ class _NotePositions {
   final ChapterContentRepository contents;
   String? _bookId, _chapterId;
   List<Chapter> _chapters = [];
+  Map<String, int> _chapterIndices = {};
   ChapterContent? _content;
 
   Future<String> resolve(Map<String, Object?> data, Locator locator) async {
     final bookId = data['book_id'] as String;
     final total = data['book_length'] as int;
     // 移除书籍会清理正文；旧笔记正文版本也可能已失效，不能编造位置。
-    if (total <= 0 || locator.needsRelocation || locator.contentVersion != data['book_version']) {
+    if (total <= 0 ||
+        locator.needsRelocation ||
+        locator.contentVersion != data['book_version']) {
       return '未知';
     }
     if (_bookId != bookId) {
@@ -145,10 +179,13 @@ class _NotePositions {
           ),
       ];
       _bookId = bookId;
+      _chapterIndices = {
+        for (var i = 0; i < _chapters.length; i++) _chapters[i].id: i,
+      };
       _chapterId = null;
       _content = null;
     }
-    final index = _chapters.indexWhere((c) => c.id == locator.chapterId);
+    final index = _chapterIndices[locator.chapterId] ?? -1;
     if (index < 0) return '未知';
     if (_chapterId != locator.chapterId) {
       _chapterId = locator.chapterId;
@@ -255,3 +292,95 @@ String _escape(Object? value) => '${value ?? ''}'
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;')
     .replaceAllMapped(RegExp(r'[\\`*_{}\[\]()#+.!|]'), (m) => '\\${m[0]}');
+
+// connect/computation使用独立作用域，防止Dart闭包把主库、进度回调一起捕获。
+typedef _ExportInput = (
+  String,
+  String,
+  String?,
+  NoteExportFormat,
+  String?,
+  SendPort,
+  String,
+);
+Future<ExportedNotes> _exportInBackground(
+  AppDatabase db,
+  String work,
+  String library,
+  String? cache,
+  NoteExportFormat format,
+  BackupOperation operation,
+  String? bookId,
+) async {
+  await Directory(work).create(recursive: true);
+  operation.check();
+  final token = await Directory(work).createTemp('notes-worker-');
+  final cancel = '${token.path}/cancel';
+  final progress = ReceivePort();
+  final sub = progress.listen((dynamic message) {
+    final (phase, done, total) = message as (String, int, int);
+    operation.onProgress?.call(phase, done, total);
+    if (operation.cancelled) File(cancel).writeAsStringSync('cancel');
+  });
+  final timer = Timer.periodic(const Duration(milliseconds: 100), (_) {
+    if (operation.cancelled) File(cancel).writeAsStringSync('cancel');
+  });
+  try {
+    final input = (
+      work,
+      library,
+      cache,
+      format,
+      bookId,
+      progress.sendPort,
+      cancel,
+    );
+    final result = await db.computeWithDatabase(
+      connect: AppDatabase.new,
+      computation: _exportComputation(input),
+    );
+    // 很短的导出可能早于取消信号送达；交付前仍检查界面的最终取消状态。
+    if (operation.cancelled) {
+      await result.file.parent.delete(recursive: true);
+      operation.check();
+    }
+    return result;
+  } finally {
+    timer.cancel();
+    await sub.cancel();
+    progress.close();
+    await token.delete(recursive: true);
+  }
+}
+
+Future<ExportedNotes> Function(AppDatabase) _exportComputation(
+  _ExportInput input,
+) => (db) async {
+  final (work, library, cache, format, bookId, progress, cancel) = input;
+  final contents = FileChapterContentRepository(
+    libraryRoot: library,
+    cacheRoot: cache,
+  );
+  final operation = _NotesOperation(
+    cancel,
+    onProgress: (phase, done, total) => progress.send((phase, done, total)),
+  );
+  try {
+    return await NotesExportService(
+      db,
+      Directory(work),
+      contents,
+    )._create(format, operation, bookId: bookId);
+  } finally {
+    await contents.close();
+  }
+};
+
+class _NotesOperation extends BackupOperation {
+  _NotesOperation(this.cancelPath, {super.onProgress});
+  final String cancelPath;
+  @override
+  void check() {
+    if (File(cancelPath).existsSync()) throw const BackupCancelled();
+  }
+}

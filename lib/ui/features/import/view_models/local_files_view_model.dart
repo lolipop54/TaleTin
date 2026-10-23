@@ -1,3 +1,11 @@
+import 'package:taletin/core/diagnostics/app_errors.dart';
+
+import 'dart:async';
+
+import '../../../../data/services/local_files_compute.dart';
+import '../../../../domain/services/local_files_order.dart';
+export '../../../../domain/services/local_files_order.dart';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../app/di/local_book_files_provider.dart';
@@ -6,27 +14,6 @@ import 'import_view_model.dart';
 import '../../../../domain/services/local_book_files.dart';
 
 enum LocalFilesMode { smart, folders }
-
-enum LocalFilesSort {
-  time('按时间倒序排序'), name('按文件名称排序'), size('按文件大小排序');
-  const LocalFilesSort(this.label);
-  final String label;
-}
-
-/// 文件夹始终在前；同值时按名称和路径固定次序，避免刷新后跳动。
-int compareLocalFiles(LocalBookEntry a, LocalBookEntry b, LocalFilesSort sort) {
-  if (a.directory != b.directory) return a.directory ? -1 : 1;
-  if (!a.directory) {
-    final primary = switch (sort) {
-      LocalFilesSort.time => b.modified.compareTo(a.modified),
-      LocalFilesSort.size => b.size.compareTo(a.size),
-      LocalFilesSort.name => a.initial.compareTo(b.initial),
-    };
-    if (primary != 0) return primary;
-  }
-  final name = a.sortName.toLowerCase().compareTo(b.sortName.toLowerCase());
-  return name != 0 ? name : a.path.compareTo(b.path);
-}
 
 class LocalFilesState {
   const LocalFilesState({
@@ -41,6 +28,7 @@ class LocalFilesState {
     this.visited = 0,
     this.imported = const {},
     this.scanning = false,
+    this.visibleEntries,
   });
   final LocalFilesMode mode;
   final String? path;
@@ -50,17 +38,20 @@ class LocalFilesState {
   final String? message;
   final String query;
   final LocalFilesSort? sortOrder;
-  LocalFilesSort get sort => sortOrder ?? (mode == LocalFilesMode.smart
-      ? LocalFilesSort.time : LocalFilesSort.name);
+  LocalFilesSort get sort =>
+      sortOrder ??
+      (mode == LocalFilesMode.smart
+          ? LocalFilesSort.time
+          : LocalFilesSort.name);
   final int visited;
   final Set<String> imported;
   final bool scanning;
-  List<LocalBookEntry> get visible => entries
-      .where(
-        (e) =>
-            e.name.toLowerCase().contains(query.toLowerCase()),
-      )
-      .toList();
+  final List<LocalBookEntry>? visibleEntries;
+  List<LocalBookEntry> get visible =>
+      visibleEntries ??
+      entries
+          .where((e) => e.name.toLowerCase().contains(query.toLowerCase()))
+          .toList();
   LocalFilesState copy({
     LocalFilesMode? mode,
     String? path,
@@ -74,6 +65,7 @@ class LocalFilesState {
     int? visited,
     Set<String>? imported,
     bool? scanning,
+    List<LocalBookEntry>? visibleEntries,
   }) => LocalFilesState(
     mode: mode ?? this.mode,
     path: clearPath ? null : path ?? this.path,
@@ -86,6 +78,9 @@ class LocalFilesState {
     visited: visited ?? this.visited,
     imported: imported ?? this.imported,
     scanning: scanning ?? this.scanning,
+    visibleEntries:
+        visibleEntries ??
+        (entries == null && query == null ? this.visibleEntries : null),
   );
 }
 
@@ -95,38 +90,84 @@ final localFilesProvider =
     );
 
 class LocalFilesViewModel extends Notifier<LocalFilesState> {
-  int _request = 0;
+  int _request = 0, _presentation = 0;
   List<LocalBookEntry> _roots = [];
   List<LocalBookEntry> _smartEntries = [];
   Set<String> _smartImported = {};
   @override
   LocalFilesState build() {
-    ref.onDispose(() => _request++);
+    ref.onDispose(() {
+      _request++;
+      _presentation++;
+    });
     return const LocalFilesState(busy: true);
   }
 
-  void filter({String? query}) => state = state.copy(query: query);
-  void sortBy(LocalFilesSort sort) {
-    final entries = [...state.entries]..sort((a, b) => compareLocalFiles(a, b, sort));
-    state = state.copy(entries: entries, sortOrder: sort);
+  void filter({String? query}) {
+    state = state.copy(query: query, visibleEntries: state.visible);
+    _refreshPresentation();
   }
+
+  void sortBy(LocalFilesSort sort) {
+    state = state.copy(sortOrder: sort, visibleEntries: state.visible);
+    _refreshPresentation();
+  }
+
+  void _refreshPresentation() {
+    final revision = ++_presentation;
+    final entries = state.entries, query = state.query, sort = state.sort;
+    void publish(LocalFilePresentation result) {
+      if (ref.mounted &&
+          revision == _presentation &&
+          identical(entries, state.entries)) {
+        state = state.copy(
+          entries: result.entries,
+          visibleEntries: result.visible,
+        );
+      }
+    }
+
+    if (entries.length < 256) {
+      publish(localFilePresentation((entries, sort, query)));
+    } else {
+      unawaited(
+        prepareLocalFiles(entries, sort, query).then(publish).catchError((
+          Object e,
+          StackTrace stack,
+        ) {
+          if (ref.mounted && revision == _presentation) {
+            AppErrors.report(e, stack, operation: '整理本地文件失败');
+          }
+        }),
+      );
+    }
+  }
+
   void toggle(LocalBookEntry entry) {
-    if (state.busy || state.imported.contains(entry.path) || _queued(entry)) return;
+    if (state.busy || state.imported.contains(entry.path) || _queued(entry)) {
+      return;
+    }
     final selected = {...state.selected};
     if (selected.remove(entry.path) == null) selected[entry.path] = entry;
     state = state.copy(selected: selected);
   }
 
   bool get allSelected {
-    final files = state.visible.where((e) => !e.directory &&
-      !state.imported.contains(e.path) && !_queued(e));
-    return files.isNotEmpty && files.every((e) => state.selected.containsKey(e.path));
+    final files = state.visible.where(
+      (e) => !e.directory && !state.imported.contains(e.path) && !_queued(e),
+    );
+    return files.isNotEmpty &&
+        files.every((e) => state.selected.containsKey(e.path));
   }
 
   void toggleAll() {
     if (state.busy) return;
-    final files = state.visible.where((e) => !e.directory &&
-      !state.imported.contains(e.path) && !_queued(e)).toList();
+    final files = state.visible
+        .where(
+          (e) =>
+              !e.directory && !state.imported.contains(e.path) && !_queued(e),
+        )
+        .toList();
     final all = files.every((e) => state.selected.containsKey(e.path));
     final selected = {...state.selected};
     for (final e in files) {
@@ -141,6 +182,7 @@ class LocalFilesViewModel extends Notifier<LocalFilesState> {
 
   void cancel() {
     _request++;
+    _presentation++;
     state = state.copy(busy: false, message: '已取消，保留上次列表');
   }
 
@@ -150,10 +192,15 @@ class LocalFilesViewModel extends Notifier<LocalFilesState> {
     final files = ref.read(localBookFilesProvider);
     // 切到智能导入立即显示该模式；目录内部导航仍保留旧目录直到读完。
     final switchToSmart = mode == LocalFilesMode.smart && state.mode != mode;
-    state = state.copy(busy: true, visited: 0, scanning: mode == LocalFilesMode.smart,
-      mode: switchToSmart ? mode : null, clearPath: switchToSmart,
+    state = state.copy(
+      busy: true,
+      visited: 0,
+      scanning: mode == LocalFilesMode.smart,
+      mode: switchToSmart ? mode : null,
+      clearPath: switchToSmart,
       entries: switchToSmart ? _smartEntries : null,
-      imported: switchToSmart ? _smartImported : null);
+      imported: switchToSmart ? _smartImported : null,
+    );
     try {
       if (!await files.hasAccess() && !await files.requestAccess()) {
         if (request == _request) {
@@ -164,7 +211,7 @@ class LocalFilesViewModel extends Notifier<LocalFilesState> {
       if (request != _request) return;
       _roots = await files.roots();
       if (request != _request) return;
-      final entries = <LocalBookEntry>[];
+      var entries = <LocalBookEntry>[];
       var skipped = 0;
       if (mode == LocalFilesMode.folders) {
         entries.addAll(path == null ? _roots : await files.list(path));
@@ -195,10 +242,17 @@ class LocalFilesViewModel extends Notifier<LocalFilesState> {
         }
       }
       if (request != _request) return;
-      final sort = state.copy(mode: mode).sort;
-      entries.sort((a, b) => compareLocalFiles(a, b, sort));
       final imported = await _findImported(entries, request);
       if (request != _request) return;
+      late LocalFilePresentation prepared;
+      while (true) {
+        final sort = state.copy(mode: mode).sort, query = state.query;
+        prepared = await prepareLocalFiles(entries, sort, query);
+        if (request != _request) return;
+        if (sort == state.copy(mode: mode).sort && query == state.query) break;
+      }
+      _presentation++;
+      entries = prepared.entries;
       if (mode == LocalFilesMode.smart) {
         _smartEntries = entries;
         _smartImported = imported;
@@ -208,26 +262,35 @@ class LocalFilesViewModel extends Notifier<LocalFilesState> {
         path: path,
         clearPath: path == null,
         entries: entries,
+        visibleEntries: prepared.visible,
         imported: imported,
-        selected: {...state.selected}..removeWhere((path, _) => imported.contains(path)),
+        selected: {...state.selected}
+          ..removeWhere((path, _) => imported.contains(path)),
         busy: false,
         message: skipped > 0 ? '扫描完成，$skipped 个目录无法读取，已跳过' : null,
       );
-    } catch (_) {
+    } catch (appError, appStack) {
+      AppErrors.report(appError, appStack, operation: '扫描本地文件失败');
       if (request == _request) {
         state = state.copy(busy: false, message: '读取失败，请检查文件权限后重试');
       }
     }
   }
 
-  bool _queued(LocalBookEntry entry) => ref.read(importProvider).items.any(
-    (item) => item.key == entry.document.uri && !item.stage.isFinished);
+  bool _queued(LocalBookEntry entry) => ref
+      .read(importProvider)
+      .items
+      .any((item) => item.key == entry.document.uri && !item.stage.isFinished);
 
-  Future<Set<String>> _findImported(List<LocalBookEntry> entries, int request) async {
+  Future<Set<String>> _findImported(
+    List<LocalBookEntry> entries,
+    int request,
+  ) async {
     final books = await ref.read(libraryBooksProvider.future);
     if (request != _request) return {};
-    return ref.read(localImportMatcherProvider).findImported(entries, books,
-      cancelled: () => request != _request);
+    return ref
+        .read(localImportMatcherProvider)
+        .findImported(entries, books, cancelled: () => request != _request);
   }
 
   /// 导入期间返回文件页时，书架变化后重新匹配，整体发布已导入状态。
@@ -237,8 +300,12 @@ class LocalFilesViewModel extends Notifier<LocalFilesState> {
     state = state.copy(busy: true, scanning: false);
     final imported = await _findImported(state.entries, request);
     if (request != _request) return;
-    state = state.copy(busy: false, imported: imported,
-      selected: {...state.selected}..removeWhere((path, _) => imported.contains(path)));
+    state = state.copy(
+      busy: false,
+      imported: imported,
+      selected: {...state.selected}
+        ..removeWhere((path, _) => imported.contains(path)),
+    );
   }
 
   Future<void> up() async {
@@ -263,7 +330,8 @@ class LocalFilesViewModel extends Notifier<LocalFilesState> {
       try {
         await files.delete(path);
         removed.add(path);
-      } catch (_) {
+      } catch (appError, appStack) {
+        AppErrors.report(appError, appStack, operation: '删除源文件失败');
         /* 保留失败项供重试。 */
       }
     }

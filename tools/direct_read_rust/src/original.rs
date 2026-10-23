@@ -62,28 +62,7 @@ fn stylesheets(source: &str) -> Vec<String> {
     }
     result
 }
-impl Original {
-    pub fn new(dictionary: &[u8]) -> Self {
-        Self {
-            english: (!dictionary.is_empty()).then(|| English::new(dictionary)),
-            output: Vec::new(),
-            times: [0; 5],
-        }
-    }
-    pub fn transform(&mut self, raw: &[u8]) -> Vec<u8> {
-        let clock = std::time::Instant::now();
-        let (bytes, id) = if raw.starts_with(&[0xff, 0xfe]) {
-            (&raw[2..], 1)
-        } else if raw.starts_with(&[0xfe, 0xff]) {
-            (&raw[2..], 2)
-        } else {
-            (raw.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(raw), 0)
-        };
-        let source = crate::text::decode(bytes, id);
-        let links = stylesheets(&source);
-        self.times[0] = clock.elapsed().as_micros() as u64;
-        let dom = parse_document(Dom::for_original(), Default::default()).one(source);
-        self.times[1] = clock.elapsed().as_micros() as u64;
+pub(crate) fn sanitize_dom(dom: &Dom) {
         // Inspect the original arena so detached subtrees never enter the output.
         for node in dom.nodes.borrow().iter() {
             let name = tag(node);
@@ -133,6 +112,30 @@ impl Original {
                 }
             }
         }
+}
+impl Original {
+    pub fn new(dictionary: &[u8]) -> Self {
+        Self {
+            english: (!dictionary.is_empty()).then(|| English::new(dictionary)),
+            output: Vec::new(),
+            times: [0; 5],
+        }
+    }
+    pub fn transform(&mut self, raw: &[u8]) -> Vec<u8> {
+        let clock = std::time::Instant::now();
+        let (bytes, id) = if raw.starts_with(&[0xff, 0xfe]) {
+            (&raw[2..], 1)
+        } else if raw.starts_with(&[0xfe, 0xff]) {
+            (&raw[2..], 2)
+        } else {
+            (raw.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(raw), 0)
+        };
+        let source = crate::text::decode(bytes, id);
+        let links = stylesheets(&source);
+        self.times[0] = clock.elapsed().as_micros() as u64;
+        let dom = parse_document(Dom::for_original(), Default::default()).one(source);
+        self.times[1] = clock.elapsed().as_micros() as u64;
+        sanitize_dom(&dom);
         let head = dom
             .nodes
             .borrow()

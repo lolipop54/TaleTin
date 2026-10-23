@@ -3,6 +3,7 @@
   'use strict';
   var internal = window.__gtHost = window.__gtHost || {};
   var state = internal.state;
+  if (state.indexComplete === undefined) state.indexComplete = true;
   var relocateTimer = null;
   var turnEffect = 'slide';
   var pageProbes = new Map();
@@ -11,6 +12,13 @@
   var elementRects = new WeakMap(), nodeRects = new WeakMap();
   var elementCount = 0, textRectCount = 0;
   var observer = null, watching = false;
+
+  function contentChanged(records) {
+    return records.some(function (record) {
+      var target = record.target;
+      return target === document.body || (document.body && document.body.contains(target));
+    });
+  }
 
   function invalidate() {
     geometryVersion++;
@@ -23,7 +31,9 @@
     if (!watching && document.body) {
       watching = true;
       if (window.MutationObserver) {
-        observer = new window.MutationObserver(invalidate);
+        observer = new window.MutationObserver(function (records) {
+          if (contentChanged(records)) invalidate();
+        });
         // Reader style writes invalidate explicitly. Exclude body transform/style
         // attributes so a page translation does not destroy content coordinates.
         observer.observe(document.documentElement || document.body, {
@@ -38,7 +48,7 @@
       document.fonts?.addEventListener?.('loadingerror', invalidate);
     }
     // Mutations may still be queued in this task when a coordinate is requested.
-    if (observer && observer.takeRecords().length) invalidate();
+    if (observer && contentChanged(observer.takeRecords())) invalidate();
     return geometryVersion;
   }
 
@@ -50,7 +60,7 @@
 
   function contentRect(rect) {
     return { left: toContentX(rect.left), right: toContentX(rect.right),
-      width: rect.width, height: rect.height };
+      width: rect.width, height: rect.height, top: rect.top, bottom: rect.bottom };
   }
 
   function elementRect(element) {
@@ -74,6 +84,12 @@
       }
     }
     return rects;
+  }
+
+  function textRangeRects(node, from, to) {
+    var range = document.createRange();
+    range.setStart(node, from); range.setEnd(node, to);
+    return Array.from(range.getClientRects(), contentRect);
   }
 
   // 分栏时已校正页数，章内翻页直接查范围；末页纠错每次排版只探测一次。
@@ -123,7 +139,8 @@
     var root = document.documentElement;
     if (!body) return;
     var margin = Math.max(0, state.margin || 0);
-    state.columnWidth = Math.max(1, state.width - margin * 2);
+    // 页序仍指一屏；双页把一屏分成两栏，DOM定位、选文和书签继续用真实坐标。
+    state.columnWidth = Math.max(1, state.width / (window.__gtInformation.spread() ? 2 : 1) - margin * 2);
     var width = state.columnWidth + 'px';
     var gap = (margin * 2) + 'px';
     root.style.setProperty('height', '100%');
@@ -314,12 +331,15 @@
       if (reportPosition !== false) internal.dom.reportRelocate();
       return;
     }
-    internal.post('page', { page: state.page, pages: state.pages });
+    internal.post('page', { page: state.page, pages: state.indexComplete ? state.pages : null,
+      knownPages: state.pages, indexComplete: state.indexComplete });
     clearRelocate();
     relocateTimer = setTimeout(internal.dom.reportRelocate, duration + 20);
   }
 
   function measure() {
+    if (internal.index) internal.index.cancel();
+    state.indexComplete = true;
     var body = document.body;
     if (!body || !state.width) return;
     invalidate();
@@ -345,13 +365,13 @@
     var restored = false;
     if (anchor) {
       var x = internal.dom.anchorOffsetX(anchor);
-      if (x > 0 || savedProgress === 0) {
+        if (x !== null && x >= 0) {
         state.page = Math.max(
           0, Math.min(Math.floor(x / state.width), state.pages - 1));
         restored = true;
       }
     }
-    if (!restored && savedProgress !== undefined) {
+      if (!restored && typeof savedProgress === 'number') {
       state.page = pageAtFraction(savedProgress);
     }
     applyTransform(false);
@@ -366,6 +386,14 @@
   }
 
   internal.layout = {
+    textRects: textRects, textRangeRects: textRangeRects,
+    elementRect: elementRect,
+    seedIndex: function (width, occupied) {
+      geometryValues.set('contentWidth', width);
+      geometryValues.set('textMaxRight', width);
+      occupied.forEach(function (page) { pageProbes.set(page, true); });
+      pageProbes.set(state.pages, false);
+    },
     applyTransform: applyTransform,
     clearRelocate: clearRelocate,
     columnStep: columnStep,

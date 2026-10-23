@@ -11,8 +11,9 @@ void paintFoldMesh(
   Color paper,
   Offset midpoint,
   Offset normal,
-  double radius,
-) {
+  double radius, {
+  Image? backImage,
+}) {
   if (radius < 0.001) return;
   final shader = ImageShader(
     image,
@@ -41,6 +42,36 @@ void paintFoldMesh(
   }
 
   for (var side = 0; side < 2; side++) {
+    final selectedImage = side == 1 && backImage != null ? backImage : image;
+    final backShader = side == 1 && backImage != null
+        ? ImageShader(
+            backImage,
+            TileMode.clamp,
+            TileMode.clamp,
+            Float64List.fromList([
+              1,
+              0,
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0,
+              1,
+            ]),
+            filterQuality: FilterQuality.low,
+          )
+        : null;
+    final sideTexture = backShader == null
+        ? texture
+        : (Paint()..shader = backShader);
     final positions = <Offset>[], coordinates = <Offset>[];
     final colors = <Color>[];
     for (var i = side * 12; i < (side + 1) * 12; i++) {
@@ -62,7 +93,7 @@ void paintFoldMesh(
           ? const Color(0xFF000000).withValues(alpha: bend * 0.24)
           : Color.alphaBlend(
               const Color(0xFFFFFFFF).withValues(alpha: bend * 0.18),
-              paper.withValues(alpha: 0.90),
+              paper.withValues(alpha: backImage == null ? 0.90 : 0),
             );
       // 裁切后的凸多边形拆成扇形三角形；纹理坐标仍对应原尺寸书页。
       for (var j = 1; j + 1 < points.length; j++) {
@@ -71,25 +102,29 @@ void paintFoldMesh(
           positions.add(p + normal * (project(a) + (d - a) * scale - d));
           coordinates.add(
             Offset(
-              p.dx * image.width / size.width,
-              p.dy * image.height / size.height,
+              p.dx * selectedImage.width / size.width,
+              p.dy * selectedImage.height / size.height,
             ),
           );
           colors.add(shade);
         }
       }
     }
-    if (positions.isEmpty) continue;
+    if (positions.isEmpty) {
+      backShader?.dispose();
+      continue;
+    }
     final page = Vertices(
       VertexMode.triangles,
       positions,
       textureCoordinates: coordinates,
     );
     final shading = Vertices(VertexMode.triangles, positions, colors: colors);
-    canvas.drawVertices(page, BlendMode.src, texture);
+    canvas.drawVertices(page, BlendMode.src, sideTexture);
     canvas.drawVertices(shading, BlendMode.dst, Paint());
     page.dispose();
     shading.dispose();
+    backShader?.dispose();
   }
   shader.dispose();
 }

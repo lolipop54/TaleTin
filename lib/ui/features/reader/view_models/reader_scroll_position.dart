@@ -2,11 +2,13 @@ part of 'reader_session_view_model.dart';
 
 /// 滚动位置仍由同一会话保存；显示器只回报已准备、已落位的正文。
 mixin _ReaderScrollPosition on AsyncNotifier<ReaderSession> {
+  ReadingLayoutMode get _mode;
   String get bookId;
   Locator? get _pendingAnchor;
   int get _jumpToken;
   set _jumpToken(int value);
   Future<void> persist();
+  void cancelProgressNavigation();
   void reportDisplayArrival(Locator anchor);
   Future<void> goToLocator(
     Locator locator, {
@@ -48,15 +50,28 @@ mixin _ReaderScrollPosition on AsyncNotifier<ReaderSession> {
     final chapter = session.chapters[index];
     final content = await ref
         .read(chapterContentRepositoryProvider)
-        .chapter(bookId, chapter);
+        .chapter(
+          bookId,
+          chapter,
+          textOnly: session.book.format == BookFormat.pdf && _mode.isOriginal,
+        );
     if (!ref.mounted || request != _chapterRequest) return;
-    final locator = locatorForFraction(
-      content: content,
-      bookId: bookId,
-      contentVersion: session.book.contentVersion,
-      chapterId: chapter.id,
-      fraction: fraction,
-    );
+    // 扫描页只有图片，没有可表示页尾的文字偏移；原页滚动直接保留纵向比例。
+    final locator = session.book.format == BookFormat.pdf && _mode.isOriginal
+        ? content.pdfPage!.anchorAt(
+            content,
+            bookId,
+            chapter.id,
+            fraction,
+            contentVersion: session.book.contentVersion,
+          )
+        : locatorForFraction(
+            content: content,
+            bookId: bookId,
+            contentVersion: session.book.contentVersion,
+            chapterId: chapter.id,
+            fraction: fraction,
+          );
     if (locator != null) requestScrollPosition(locator);
   }
 
@@ -100,6 +115,11 @@ mixin _ReaderScrollPosition on AsyncNotifier<ReaderSession> {
   Future<void> setScrolling(bool enabled) async {
     final session = state.value;
     if (session == null || session.scrolling == enabled) return;
+    cancelProgressNavigation();
+    ++_chapterRequest;
+    final pending = _scrollLanding;
+    _scrollLanding = null;
+    if (pending != null && !pending.isCompleted) pending.complete();
     final anchor = scrollOpeningAnchor;
     state = AsyncData(
       session.copyWith(
@@ -115,6 +135,7 @@ mixin _ReaderScrollPosition on AsyncNotifier<ReaderSession> {
     ChapterContent content,
     Locator anchor, {
     int? jumpToken,
+    bool atEnd = false,
   }) {
     final session = state.value;
     if (session == null || !session.scrolling) return false;
@@ -124,6 +145,7 @@ mixin _ReaderScrollPosition on AsyncNotifier<ReaderSession> {
     state = AsyncData(
       session.copyWith(
         chapterIndex: index,
+        pdfAtEnd: session.book.format == BookFormat.pdf && atEnd,
         content: content,
         scrollAnchor: anchor,
         clearOriginalPosition: true,

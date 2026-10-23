@@ -1,3 +1,4 @@
+import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'package:taletin/ui/core/widgets/gt_app_bar.dart';
 import 'package:taletin/ui/core/widgets/gt_button.dart';
 import 'package:flutter/material.dart';
@@ -31,9 +32,10 @@ class _StorageState extends ConsumerState<StorageView> {
       if (mounted) {
         SystemToast.show(clear ? '缓存已清理，容量已更新' : '容量已更新').ignore();
       }
-    } catch (_) {
+    } catch (appError, appStack) {
+      AppErrors.report(appError, appStack, operation: '存储清理失败', notify: false);
       if (mounted) {
-        SystemToast.show('操作未完成，请重试').ignore();
+        AppErrors.report(appError, appStack, operation: '存储清理失败');
       }
     } finally {
       if (mounted) setState(() => busy = false);

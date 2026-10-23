@@ -6,7 +6,7 @@ library;
 
 /// 导入失败原因。
 enum ImportErrorCode {
-  /// 扩展名与真实内容都不是支持的格式（含 MOBI，阶段 6 前明确拒绝）
+  /// 扩展名与真实内容都不是支持的格式，或格式包含不支持的加密／版式。
   unsupportedFormat('unsupportedFormat'),
   emptyFile('emptyFile'),
   tooLarge('tooLarge'),

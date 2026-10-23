@@ -25,6 +25,8 @@ extension _OriginalSelectionDrag on _OriginalReaderAreaState {
   /// 手柄拖动开始：标记正在拖（翻页扩选期间选区要留着）
   void _beginSelectionDrag(bool atEnd) {
     _selection.dragging = true;
+    // 命中行中部也使用端点字高，不能取混合字体底色切出的细带高度。
+    _selection.dragHalfLine = _selection.heightFor(atEnd) / 2;
     unawaited(_host?.selectionHandleDrag(atEnd));
   }
 
@@ -82,7 +84,10 @@ extension _OriginalSelectionDrag on _OriginalReaderAreaState {
     final href = session.chapter.href;
     if (host == null || content == null || href == null) return;
     final version = _selection.version;
-    final point = await host.selectionPointAt(_toViewport(handle));
+    // 手柄的锚点在行底部，命中文字要取行中间；直接用行底会吸到下一行。
+    final point = await host.selectionPointAt(
+      _toViewport(handle - Offset(0, _selection.dragHalfLine)),
+    );
     if (point == null || !_selectionCurrent(version, host)) return;
     final map = await _selectionMapFor(session.chapterIndex, href, content);
     if (map == null || !_selectionCurrent(version, host)) return;
@@ -197,7 +202,9 @@ extension _OriginalSelectionDrag on _OriginalReaderAreaState {
       final handle = _selection.dragHandle;
       final hit = handle == null
           ? null
-          : await host.selectionPointAt(_toViewport(handle));
+          : await host.selectionPointAt(
+              _toViewport(handle - Offset(0, _selection.dragHalfLine)),
+            );
       final point = hit ?? edge;
       final target = point == null ? null : map.pointLocatorAt(point);
       gtDebugLog(
@@ -266,13 +273,15 @@ extension _OriginalSelectionDrag on _OriginalReaderAreaState {
 
 /// 原书选区的起止手柄：拖着改选区两端（整段选区只有一对手柄）。
 ///
-/// 手柄位置按选区矩形算：起点贴第一行左下、终点贴最后一行右下，画在行下方
-/// 一小段距离处。拖动时手柄改画在手指位置，不再按矩形算——换页那一瞬间
+/// 手柄位置取真实首末字边界，细线向上贯穿字高、带白边的小圆点紧贴底边。
+/// 拖动时手柄改画在手指位置，不再按矩形算——换页那一瞬间
 /// 端点可能已经不在新页上，按矩形算会让手柄消失，手势被判取消。
 class _OriginalSelectionHandles extends StatefulWidget {
   const _OriginalSelectionHandles({
     required this.startAnchor,
     required this.endAnchor,
+    required this.startHeight,
+    required this.endHeight,
     required this.onDragStart,
     required this.onDrag,
     required this.onDragEnd,
@@ -282,6 +291,7 @@ class _OriginalSelectionHandles extends StatefulWidget {
   /// 起点/终点手柄的落点（阅读页坐标）；不在本页的那一端为 null，就不画
   final Offset? startAnchor;
   final Offset? endAnchor;
+  final double startHeight, endHeight;
 
   final ValueChanged<bool> onDragStart;
 
@@ -301,6 +311,7 @@ class _OriginalSelectionHandlesState extends State<_OriginalSelectionHandles> {
   bool _atEnd = true;
   Offset? _handle;
   Offset _grabOffset = Offset.zero;
+  double _dragHeight = 0;
 
   @override
   Widget build(BuildContext context) =>
@@ -314,7 +325,7 @@ class _OriginalSelectionHandlesState extends State<_OriginalSelectionHandles> {
     return Positioned(
       key: ValueKey(atEnd ? kOriginalHandleEndKey : kOriginalHandleStartKey),
       left: anchor.dx - kHandleTouchSize / 2,
-      top: anchor.dy,
+      top: anchor.dy - kHandleAnchorOffset,
       width: kHandleTouchSize,
       height: kHandleTouchSize,
       child: GestureDetector(
@@ -326,6 +337,7 @@ class _OriginalSelectionHandlesState extends State<_OriginalSelectionHandles> {
         onPanStart: (details) {
           setState(() {
             _atEnd = atEnd;
+            _dragHeight = atEnd ? widget.endHeight : widget.startHeight;
             // 识别拖动前的位移也要算进去；只累计 delta 会永远落后手指一段。
             _handle = _localOf(details.globalPosition) - _grabOffset;
           });
@@ -343,7 +355,10 @@ class _OriginalSelectionHandlesState extends State<_OriginalSelectionHandles> {
         onPanCancel: _finish,
         child: CustomPaint(
           painter: dragging
-              ? _HandlePainter(color: widget.color, atEnd: atEnd)
+              ? SelectionHandlePainter(
+                  color: widget.color,
+                  lineHeight: _dragHeight,
+                )
               : null,
         ),
       ),
@@ -369,40 +384,4 @@ class _OriginalSelectionHandlesState extends State<_OriginalSelectionHandles> {
   /// 一端的落点：起点贴第一行左下、终点贴最后一行右下（由父级按页算好）
   Offset? _anchorOf(bool atEnd) =>
       atEnd ? widget.endAnchor : widget.startAnchor;
-}
-
-/// 手柄：一条竖线连到圆点（与简化模式同一个画法，两种排版手感一致）
-class _HandlePainter extends CustomPainter {
-  const _HandlePainter({required this.color, required this.atEnd});
-
-  final Color color;
-  final bool atEnd;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final fill = Paint()..color = color;
-    final center = Offset(size.width / 2, kHandleCenterOffset);
-    canvas.drawRect(
-      Rect.fromLTRB(
-        center.dx - 1,
-        0,
-        center.dx + 1,
-        center.dy - kHandleRadius + 2,
-      ),
-      fill,
-    );
-    canvas.drawCircle(center, kHandleRadius, fill);
-    canvas.drawCircle(
-      center,
-      kHandleRadius,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.5
-        ..color = const Color(0xFFFFFFFF),
-    );
-  }
-
-  @override
-  bool shouldRepaint(_HandlePainter old) =>
-      old.color != color || old.atEnd != atEnd;
 }

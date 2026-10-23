@@ -8,6 +8,7 @@ import '../../normalization/locator_mapper.dart';
 import 'anchor_locator.dart';
 import 'epub_archive.dart';
 import 'epub_dom.dart';
+import 'stored_dom_positions.dart';
 
 /// 用块序和源节点路径定位，重复句不参与搜索，旧书无需重新导入。
 Map<String, Object> locatorDomPoint(
@@ -22,15 +23,74 @@ Future<LocatorDomMap> parseLocatorDomMap(
   String html,
   String href,
   ChapterContent content,
-  Locator locator,
-) => Isolate.run(() => LocatorDomMap.parse(html, href, content, locator));
+  Locator locator, {
+  bool prepareProgressMap = false,
+  bool prepareStored = false,
+}) => Isolate.run(() {
+  final result = LocatorDomMap.parse(html, href, content, locator);
+  if (prepareStored) {
+    final stored = LocatorDomMap.fromPrepared(
+      result.preparedData,
+      href,
+      content,
+      locator,
+    );
+    if (prepareProgressMap) stored.progressMap;
+    return stored;
+  }
+  // 位置映射随目标网页并行准备；不能回到主线程才遍历全章生成发送数据。
+  if (prepareProgressMap) result.progressMap;
+  return result;
+});
 
 /// 每个净化资源只解析一次；路径相对 body，框架节点不得插入正文之前。
 class LocatorDomMap {
-  LocatorDomMap._(this.map, this.content, this.href);
-  final ChapterAnchorMap map;
+  LocatorDomMap._(this._map, this.content, this.href) : _stored = null;
+  LocatorDomMap.fromPrepared(
+    Map<String, dynamic> data,
+    this.href,
+    this.content,
+    Locator identity,
+  ) : _map = null,
+      _stored = StoredDomPositions(data, content, identity);
+  final ChapterAnchorMap? _map;
+  final StoredDomPositions? _stored;
+  ChapterAnchorMap get map => _map!;
+
+  /// 缓存表不保留DOM树，但选句、跨页扩选仍需要同一份文字位置换算器。
+  LocatorMapper get mapper => _stored?.mapper ?? map.mapper;
   final ChapterContent content;
   final String href;
+  late final _preparedIndices = {
+    for (final (index, block) in map.blocks.indexed) block.id: index,
+  };
+
+  late final Map<String, dynamic> preparedData =
+      _stored?.data ??
+      {
+        'rows': [
+          for (final s in map.textMap.segments)
+            [
+              _preparedIndices[s.blockId]!,
+              _path(s.node),
+              s.node.text,
+              s.blockOffset,
+              s.hiddenLeading,
+              s.emittedLength,
+              s.absorbedLeading,
+              s.displayBreaks,
+              _linkOf(s.node),
+            ],
+        ],
+        'images': imagePaths,
+      };
+
+  String? _linkOf(Node node) {
+    for (var e = node.parent; e != null; e = e.parent) {
+      if (e.localName == 'a') return e.attributes['href'];
+    }
+    return null;
+  }
 
   late final _availableImages = {
     for (final block in map.blocks)
@@ -51,6 +111,7 @@ class LocatorDomMap {
 
   /// 旧书也从原文节点取链接，不改正文块号或重新导入。
   String? linkAt(Locator locator) {
+    if (_stored != null) return _stored.linkAt(locator);
     final index = content.blocks.indexWhere((b) => b.id == locator.blockId);
     if (index < 0) return null;
     final segment = map.textMap
@@ -104,6 +165,7 @@ class LocatorDomMap {
 
   /// 范围终点取最早边界，起点越过折叠空白；避免末尾空白越入下一节点。
   Map<String, Object> point(Locator locator, {bool end = false}) {
+    if (_stored != null) return _stored.point(locator, end: end);
     final index = content.blocks.indexWhere((b) => b.id == locator.blockId);
     if (index < 0) throw StateError('听书位置的正文块不存在');
     final segments = map.textMap.segmentsOfBlock(map.blocks[index].id);
@@ -135,6 +197,7 @@ class LocatorDomMap {
 
   /// 阅读定位也可能落在封面或插图；图片没有文字节点，直接定位对应元素。
   Map<String, Object> displayPoint(Locator locator) {
+    if (_stored != null) return _stored.displayPoint(locator);
     final images = content.blocks
         .where((b) => b.kind == BlockKind.image)
         .toList();
@@ -157,15 +220,61 @@ class LocatorDomMap {
   });
 
   /// 发给宿主的已知文本节点；每个文档只解析一次，之后复用节点引用。
-  List<Map<String, Object>> get nodes => [
-    for (final segment in map.textMap.segments)
-      {'path': _path(segment.node), 'length': segment.rawLength},
-  ];
+  List<Map<String, Object>> get nodes =>
+      _stored?.nodes ??
+      [
+        for (final segment in map.textMap.segments)
+          {'path': _path(segment.node), 'length': segment.rawLength},
+      ];
 
   /// 滚动宿主沿用正文图片顺序，包含 SVG image，排除未计入正文的内联图片。
-  List<List<int>> get imagePaths => [for (final image in _images) _path(image)];
+  List<List<int>> get imagePaths =>
+      _stored?.images ?? [for (final image in _images) _path(image)];
+
+  /// 发给网页的内容坐标表，只含路径、累计长度和既有空白折叠参数。
+  /// 网页按同一规则算信息行进度，不能拿临时已知页数当作全章页数。
+  late final Map<String, Object> progressMap =
+      _stored?.progressMap ?? _buildProgressMap();
+
+  Map<String, Object> _buildProgressMap() {
+    final offsets = <String, int>{};
+    var total = 0;
+    for (final block in content.blocks) {
+      offsets[block.id] = total;
+      total += blockTextOf(block).length + 1;
+    }
+    // 历史块号可能与本次 DOM 解析的块号不同；沿用已验证的块序对应关系。
+    final mappedOffsets = {
+      for (var i = 0; i < map.blocks.length; i++)
+        map.blocks[i].id: offsets[content.blocks[i].id]!,
+    };
+    final images = content.blocks
+        .where((b) => b.kind == BlockKind.image)
+        .toList();
+    return {
+      'total': total,
+      'nodes': [
+        for (final s in map.textMap.segments)
+          {
+            'path': _path(s.node),
+            'start': mappedOffsets[s.blockId]! + s.blockOffset,
+            'hidden': s.hiddenLeading,
+            'length': s.emittedLength,
+            'absorbed': s.absorbedLeading,
+            'breaks': s.displayBreaks,
+          },
+        for (final (index, image) in _images.indexed)
+          {
+            'path': _path(image),
+            'start': offsets[images[index].id]!,
+            'element': true,
+          },
+      ],
+    };
+  }
 
   Locator locatorOf(Map<String, dynamic> point) {
+    if (_stored != null) return _stored.locatorOf(point);
     Node node = map.document.body!;
     for (final index in point['path'] as List) {
       node = node.nodes[index as int];

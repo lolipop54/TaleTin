@@ -2,9 +2,10 @@ import 'package:drift/drift.dart';
 
 import '../../domain/rules/achievement_rules.dart';
 import '../../domain/repositories/achievement_repository.dart';
+import '../../domain/models/reading_statistics.dart';
 import '../database/app_database.dart';
-import 'drift_reading_statistics_repository.dart';
 import 'drift_book_completion_repository.dart';
+import '../services/statistics_compute.dart';
 
 class DriftAchievementRepository implements AchievementRepository {
   DriftAchievementRepository(this.db);
@@ -29,9 +30,25 @@ class DriftAchievementRepository implements AchievementRepository {
       'DELETE FROM achievements WHERE rule_version < ? OR achievement_id NOT IN (${List.filled(ids.length, '?').join(',')})',
       [achievementRuleVersion, ...ids],
     );
-    final stats = await DriftReadingStatisticsRepository(db).load();
+    // 面板收放会暂停/恢复计时，并触发本次检查。四类成就只需要每日汇总
+    // 和已读记录；不要在动画期间把全部历史会话、片段解码成 Dart 对象。
+    final days = await db
+        .customSelect('SELECT * FROM daily_stats ORDER BY local_date')
+        .get();
+    final stats = ReadingStatistics(
+      days: days.map(
+        (r) => DailyReadingStats(
+          date: r.read('local_date'),
+          visualMs: r.read('visual_ms'),
+          audioMs: r.read('audio_ms'),
+          totalMs: r.read('total_union_ms'),
+        ),
+      ),
+      sessions: const [],
+      segments: const [],
+    );
     final completions = await DriftBookCompletionRepository(db).load();
-    final facts = AchievementFacts(statistics: stats, completions: completions);
+    final facts = await computeAchievementFacts(stats, completions);
     if (silently) {
       await db.customStatement(
         'UPDATE achievements SET presented=1 WHERE presented=0',

@@ -27,35 +27,49 @@ extension _PageTurnInput on _PageTurnAreaState {
       _pointer = event.pointer;
       _responseTrace.begin(event.pointer, event.timeStamp);
       // 按下时决定整轮是否接收。忙碌中起手即使拖到空闲，也不能半途接管。
-      _ignorePointer = _finishingInput || _committing || _controller.isAnimating;
+      _ignorePointer = _finishingInput || _committing || _controller.isAnimating ||
+          !(widget.inputAllowed?.call() ?? true);
+      _logPointerDown(event);
       traceTurn('down $_traceInput animating=${_controller.isAnimating}');
       if (_ignorePointer) {
         readerPerf('${widget.traceLabel}.${widget.effect.name}.ignored', 0);
         return;
       }
       _pointerCancelled = false;
+      if (_needsDragFrames) _dragFrames.motion();
       _responseTrace.activate(_pointer);
       widget.onInteractionStart?.call();
     },
     onPointerMove: (event) {
+      if (!_ignorePointer && _needsDragFrames) _dragFrames.motion();
       _responseTrace.move(event.pointer, event.timeStamp);
       _tracePointer(event);
     },
-    onPointerUp: _tracePointer,
+    onPointerUp: (event) {
+      _dragFrames.stop();
+      _tracePointer(event);
+    },
     onPointerCancel: (event) {
+      _dragFrames.stop();
       _tracePointer(event);
       if (!_ignorePointer) _pointerCancelled = true;
     },
     child: ReaderDragDetector(
       onTapUp: (details) {
+        if (!_ignorePointer) _turnLog?.event('gesture.tap');
         if (!_ignorePointer) _finishInput(() => _onTapUp(details, width));
       },
       onHorizontalDragStart: (details) {
+        if (!_ignorePointer) {
+          _turnLog?.operationActive = true;
+          _turnLog?.event('gesture.drag');
+        }
         _responseTrace.recognized(_pointer);
         traceTurn('recognizer start $_traceInput');
         if (!_ignorePointer) _onDragStart(details);
       },
       onHorizontalDragUpdate: (details) {
+        if (!_ignorePointer) _logDrag(details);
         if (turnTraceEnabled) {
           traceTurnSample('drag-$_pointer', [
             details.sourceTimeStamp?.inMicroseconds,

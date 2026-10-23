@@ -15,13 +15,25 @@ import 'toc_rows.dart';
 import 'toc_scrollbar.dart';
 import '../../../../../domain/services/toc_entry_index.dart';
 import 'toc_tree.dart';
+import '../../../../../domain/models/book_document.dart';
+import '../../view_models/toc_presentation_provider.dart';
 
 /// 目录页签：真实目录、搜索和打开时当前章置顶，跳转返回提示显示在正文中。
 class TocTab extends ConsumerStatefulWidget {
-  const TocTab({super.key, required this.bookId, required this.query});
+  const TocTab({
+    super.key,
+    required this.bookId,
+    required this.query,
+    this.leadingAction,
+    this.descending,
+    this.onOrderChanged,
+  });
 
   final String bookId;
   final String query;
+  final Widget? leadingAction;
+  final bool? descending;
+  final VoidCallback? onOrderChanged;
 
   @override
   ConsumerState<TocTab> createState() => _TocTabState();
@@ -29,8 +41,14 @@ class TocTab extends ConsumerStatefulWidget {
 
 class _TocTabState extends ConsumerState<TocTab> {
   Set<int>? _expanded;
+  List<TocVolume>? _shownVolumes, _defaultVolumes;
+  Set<int> _defaultExpanded = {}, _shownExpanded = {};
+  TocRowsResult? _shownRows;
+  bool _shownDescending = false, _rowsReady = false;
+  String _shownQuery = '';
   ScrollController? _listController;
-  bool _descending = false;
+  bool _localDescending = false;
+  bool get _descending => widget.descending ?? _localDescending;
   double? _pendingScrollOffset;
 
   @override
@@ -47,10 +65,16 @@ class _TocTabState extends ConsumerState<TocTab> {
     final notifier = ref.read(readerSessionProvider(widget.bookId).notifier);
     final query = widget.query.trim();
     final currentChapterId = session?.chapter.id;
-    final volumes = buildTocVolumes(
-      tocAsync.value ?? const [],
-      session?.chapters ?? const [],
+    final tree = ref.watch(
+      tocVolumesProvider((
+        tocAsync.value ?? const <TocNode>[],
+        session?.book.format.code == 'pdf' && (tocAsync.value?.isEmpty ?? true)
+            ? const <Chapter>[]
+            : session?.chapters ?? const <Chapter>[],
+      )),
     );
+    if (tree.hasValue) _shownVolumes = tree.requireValue;
+    final volumes = _shownVolumes ?? const <TocVolume>[];
     final entries =
         ref.watch(progressTitlesProvider(widget.bookId)).value ?? [];
     var currentEntry = session == null || entries.isEmpty
@@ -74,24 +98,31 @@ class _TocTabState extends ConsumerState<TocTab> {
     final currentTocTitle =
         currentEntry?.title ?? currentTocTitleOf(session, volumes);
     final currentAnchorId = currentEntry?.anchorId;
-    final expanded = _expanded ?? {for (var i = 0; i < volumes.length; i++) i};
-    final searching = query.isNotEmpty;
-    final visible = [
-      for (var i = 0; i < volumes.length; i++)
-        if (!searching || volumes[i].matches(query)) i,
-    ];
-    final rows = flattenTocRows(
-      volumes,
-      visible,
-      expanded,
-      query,
-      searching: searching,
-      descending: _descending,
+    if (!identical(_defaultVolumes, volumes)) {
+      _defaultVolumes = volumes;
+      _defaultExpanded = {for (var i = 0; i < volumes.length; i++) i};
+    }
+    final requestedExpanded = _expanded ?? _defaultExpanded;
+    final prepared = ref.watch(
+      tocRowsProvider((volumes, requestedExpanded, query, _descending)),
     );
+    _rowsReady = tree.hasValue && prepared.hasValue;
+    if (_rowsReady) {
+      _shownRows = prepared.requireValue;
+      _shownExpanded = requestedExpanded;
+      _shownDescending = _descending;
+      _shownQuery = query;
+    }
+    final expanded = _shownExpanded;
+    final searching = _shownQuery.isNotEmpty;
+    final visible = _shownRows?.visible ?? const <int>[];
+    final rows = _shownRows?.rows ?? const <TocRow>[];
     final metrics = TocRowMetrics.resolve(context, colors);
     final extents = [for (final row in rows) metrics.extentOf(row)];
 
-    if (session == null || (tocAsync.isLoading && !tocAsync.hasValue)) {
+    if (session == null ||
+        _shownRows == null ||
+        (tocAsync.isLoading && !tocAsync.hasValue)) {
       return const Padding(
         padding: EdgeInsets.symmetric(vertical: GtSpacing.s8),
         child: Center(
@@ -99,12 +130,9 @@ class _TocTabState extends ConsumerState<TocTab> {
         ),
       );
     }
-    final chapterCount = volumes.fold<int>(
-      0,
-      (sum, volume) => sum + volume.chapters.length,
-    );
+    final chapterCount = _shownRows!.count;
     return FrameFade(
-      revision: _descending,
+      revision: _shownDescending,
       // 淡化旧画面时必须有不透明底色，防止新旧文字透叠在一起。
       child: ColoredBox(
         color: colors.surface,
@@ -139,9 +167,9 @@ class _TocTabState extends ConsumerState<TocTab> {
   Widget _orderBar(BuildContext context, int chapterCount) {
     final colors = context.gtColors;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(
+      padding: EdgeInsets.fromLTRB(
         GtSpacing.s5,
-        0,
+        widget.leadingAction == null ? 0 : GtSpacing.s2,
         GtSpacing.s3,
         GtSpacing.s1,
       ),
@@ -149,18 +177,21 @@ class _TocTabState extends ConsumerState<TocTab> {
         children: [
           Expanded(
             child: Text(
-              '共$chapterCount章',
+              sessionIsPdf ? '共$chapterCount项' : '共$chapterCount章',
               style: GtText.caption(colors.textMuted).copyWith(fontSize: 12),
             ),
           ),
+          if (widget.leadingAction != null) widget.leadingAction!,
           GtButton(
             key: const Key('toc-order-button'),
             style: GtButton.compactStyle,
-            onPressed: () => setState(() {
-              _descending = !_descending;
-              // 换序后的第一帧直接从新顺序的顶部显示，由 FrameFade 保留旧画面。
-              _pendingScrollOffset = 0;
-            }),
+            onPressed:
+                widget.onOrderChanged ??
+                () => setState(() {
+                  _localDescending = !_descending;
+                  // 换序后的第一帧直接从新顺序的顶部显示，由 FrameFade 保留旧画面。
+                  _pendingScrollOffset = 0;
+                }),
             child: Text(
               _descending ? '倒序' : '正序',
               style: GtText.caption(colors.actionPrimary)
@@ -171,6 +202,10 @@ class _TocTabState extends ConsumerState<TocTab> {
       ),
     );
   }
+
+  bool get sessionIsPdf =>
+      ref.read(readerSessionProvider(widget.bookId)).value?.book.format.code ==
+      'pdf';
 
   /// 首帧直接把当前章放在第一行，不先显示顶部再跳到当前章。
   Widget _rowList(
@@ -193,7 +228,8 @@ class _TocTabState extends ConsumerState<TocTab> {
         final available = constraints.maxHeight.isFinite
             ? constraints.maxHeight
             : contentHeight;
-        if (_listController == null || _pendingScrollOffset != null) {
+        if (_listController == null ||
+            (_rowsReady && _pendingScrollOffset != null)) {
           final previousController = _listController;
           var offset = _pendingScrollOffset ?? 0.0;
           if (_pendingScrollOffset == null) {
@@ -283,7 +319,7 @@ class _TocTabState extends ConsumerState<TocTab> {
         child: Row(
           children: [
             RotatedBox(
-              quarterTurns: open && _descending ? 2 : 0,
+              quarterTurns: open && _shownDescending ? 2 : 0,
               child: GtIcon(
                 open ? GtIcons.chevronDown : GtIcons.chevronRight,
                 size: 22,

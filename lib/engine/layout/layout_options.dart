@@ -9,6 +9,7 @@ import 'package:flutter/painting.dart';
 
 import '../../domain/models/book_document.dart';
 import '../../domain/models/reading_settings.dart';
+import '../../core/diagnostics/reader_delivery_experiments.dart';
 
 /// 标题相对正文的字号增量（按 h1–h6）
 const List<double> _headingSizeDelta = [6, 4, 3, 2, 1, 1];
@@ -71,24 +72,28 @@ class LayoutOptions {
     final weight = FontWeight.values[settings.fontWeight ~/ 100 - 1];
     return switch (kind) {
       BlockKind.heading => TextStyle(
-          fontSize: base + _headingSizeDelta[(level ?? 1).clamp(1, 6) - 1],
-          fontWeight: settings.fontWeight == 700 ? FontWeight.w700 : FontWeight.w600,
-          height: _headingLineHeight,
-          fontFamily: family,
-        ),
+        fontSize: base + _headingSizeDelta[(level ?? 1).clamp(1, 6) - 1],
+        fontWeight: settings.fontWeight == 700
+            ? FontWeight.w700
+            : FontWeight.w600,
+        height: _headingLineHeight,
+        fontFamily: family,
+      ),
       BlockKind.footnote => TextStyle(
-          fontSize: base - _footnoteSizeDelta,
-          fontWeight: weight,
-          height: settings.lineHeight,
-          fontFamily: family,
-        ),
+        fontSize: base - _footnoteSizeDelta,
+        fontWeight: weight,
+        height: settings.lineHeight,
+        fontFamily: family,
+      ),
       _ => TextStyle(
-          fontSize: base,
-          height: settings.lineHeight,
-          fontWeight: bold && settings.fontWeight < 600 ? FontWeight.w600 : weight,
-          fontStyle: italic ? FontStyle.italic : FontStyle.normal,
-          fontFamily: family,
-        ),
+        fontSize: base,
+        height: settings.lineHeight,
+        fontWeight: bold && settings.fontWeight < 600
+            ? FontWeight.w600
+            : weight,
+        fontStyle: italic ? FontStyle.italic : FontStyle.normal,
+        fontFamily: family,
+      ),
     };
   }
 
@@ -103,11 +108,19 @@ class LayoutOptions {
   String get layoutSignature {
     final scaler = textScaler;
     // 采样几个字号点：既能区分线性倍数，也能区分非线性缩放曲线
-    final scalerKey = [
-      scaler.scale(10).toStringAsFixed(2),
-      scaler.scale(20).toStringAsFixed(2),
-      scaler.scale(40).toStringAsFixed(2),
-    ].join(',');
+    final exact = ReaderDeliveryExperiments.incremental;
+    final scalerKey =
+        (exact
+                ? [
+                    for (var size = 1; size <= settings.fontSize + 8; size++)
+                      scaler.scale(size.toDouble()).toString(),
+                  ]
+                : [
+                    scaler.scale(10).toStringAsFixed(2),
+                    scaler.scale(20).toStringAsFixed(2),
+                    scaler.scale(40).toStringAsFixed(2),
+                  ])
+            .join(',');
     return [
       'v$engineVersion',
       'f${settings.fontFamily ?? 'system'}',
@@ -117,15 +130,15 @@ class LayoutOptions {
       'g${settings.paragraphGapEm}',
       'p${settings.horizontalPadding}',
       'i${settings.indent ? 1 : 0}',
-      'w${contentSize.width.toStringAsFixed(1)}',
-      'h${contentSize.height.toStringAsFixed(1)}',
+      'w${exact ? contentSize.width : contentSize.width.toStringAsFixed(1)}',
+      'h${exact ? contentSize.height : contentSize.height.toStringAsFixed(1)}',
       'ts$scalerKey',
     ].join('|');
   }
 
   /// 该块能否被拆到两页（图片、分隔线不可拆）
   static bool isSplittable(BlockKind kind) => switch (kind) {
-        BlockKind.image || BlockKind.divider => false,
-        _ => true,
-      };
+    BlockKind.image || BlockKind.divider => false,
+    _ => true,
+  };
 }

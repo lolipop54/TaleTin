@@ -31,6 +31,7 @@ import io.flutter.embedding.engine.FlutterEngine
 class MainActivity : AudioServiceActivity(), DocumentPicker {
     // 诊断包只记触摸边界，对照 Android 收到事件与 Flutter 接到事件的时差。
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        ReaderTurnLog.touch(event)
         if (PageCapture.traceInput && event.actionMasked != MotionEvent.ACTION_MOVE) {
             Log.i("GT_TURN_NATIVE", "wall=${System.currentTimeMillis()} touch=${event.actionMasked} down=${event.downTime} event=${event.eventTime} received=${SystemClock.uptimeMillis()} x=${event.x} y=${event.y} pointers=${event.pointerCount}")
         }
@@ -62,6 +63,7 @@ class MainActivity : AudioServiceActivity(), DocumentPicker {
     }
 
     override fun onDestroy() {
+        ReaderTurnLog.detach()
         PageCapture.setForeground(false)
         super.onDestroy()
     }
@@ -71,21 +73,42 @@ class MainActivity : AudioServiceActivity(), DocumentPicker {
     private val mainHandler = Handler(Looper.getMainLooper())
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        ErrorDiagnostics.install(applicationContext)
         super.onCreate(savedInstanceState)
         // 进程被回收后重建时，选择器结果已经无法交付，清掉悬挂回调
         pendingPick = null
+        if (savedInstanceState == null ||
+            (!savedInstanceState.getBoolean("external_book_handled") && !ExternalBookOpen.hasPending)) {
+            ExternalBookOpen.accept(this, intent)
+        }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putBoolean("external_book_handled", !ExternalBookOpen.hasPending)
+        super.onSaveInstanceState(outState)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        ExternalBookOpen.accept(this, intent)
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        ExternalBookOpen.register(flutterEngine)
         backupDocuments = BackupDocuments(this, flutterEngine)
         localBookFiles = LocalBookFiles(this, flutterEngine)
         PageCapture.register(flutterEngine)
+        OriginalScrollDraw.register(flutterEngine)
         OriginalWebViewStartup.register(applicationContext, flutterEngine)
         ReadingWindow.register(this, flutterEngine)
         DeviceStatus(applicationContext, flutterEngine)
         SystemToast.register(applicationContext, flutterEngine)
+        ErrorDiagnostics.register(applicationContext, flutterEngine)
+        ReaderTurnLog.register(this, flutterEngine)
         ReadingFonts.register(applicationContext, flutterEngine)
+        OriginalBookResources.register(applicationContext, flutterEngine)
         TtsSettingsLauncher.register(this, flutterEngine)
         // 听书的原生 TTS：挂在引擎上，不跟 Activity 生命周期走（离线听书实现计划 第 5 节）
         TtsPlugin.register(flutterEngine)
@@ -111,7 +134,7 @@ class MainActivity : AudioServiceActivity(), DocumentPicker {
                 addCategory(Intent.CATEGORY_OPENABLE)
                 // 系统选择器按 MIME 类型筛选，返回后再核对文件后缀。
                 type = "*/*"
-                putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("text/plain", "application/epub+zip"))
+                putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("text/plain", "application/epub+zip", "application/pdf", "application/x-mobipocket-ebook", "application/vnd.amazon.ebook", "application/octet-stream"))
                 putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
             }
             pendingPick = onResult
@@ -161,10 +184,13 @@ class MainActivity : AudioServiceActivity(), DocumentPicker {
         // text/plain 也可能对应 .log 等文件，只让 TXT、EPUB 进入导入列表。
         val supported = documents.filter {
             it.name.endsWith(".txt", ignoreCase = true) ||
-                it.name.endsWith(".epub", ignoreCase = true)
+                it.name.endsWith(".epub", ignoreCase = true) ||
+                it.name.endsWith(".mobi", ignoreCase = true) ||
+                it.name.endsWith(".azw3", ignoreCase = true) ||
+                it.name.endsWith(".pdf", ignoreCase = true)
         }
         if (supported.size != documents.size) {
-            Toast.makeText(this, "仅支持选择 TXT、EPUB 文件", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "仅支持选择 TXT、EPUB、MOBI、AZW3、PDF 文件", Toast.LENGTH_SHORT).show()
         }
         return supported
     }
@@ -187,6 +213,10 @@ class MainActivity : AudioServiceActivity(), DocumentPicker {
             }
         } catch (_: Exception) {
             // 个别提供方不支持查询，退回 URI 末段作为名称
+        }
+        if (name.endsWith(".pdf", ignoreCase = true)) {
+            val local = ExternalBookOpen.localFile(this, uri, null)
+            if (local != null) return PickedDocumentDto(Uri.fromFile(local).toString(), local.name, local.length())
         }
         return PickedDocumentDto(uri.toString(), name, size)
     }

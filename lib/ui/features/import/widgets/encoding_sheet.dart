@@ -1,3 +1,4 @@
+import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'package:taletin/ui/core/widgets/gt_button.dart';
 import 'package:flutter/material.dart';
 
@@ -101,7 +102,8 @@ class _EncodingSheetState extends State<EncodingSheet> {
         _preview = text.replaceAll(RegExp(r'\s+\n'), '\n').trim();
         _previewLoading = false;
       });
-    } catch (error) {
+    } catch (error, appStack) {
+      AppErrors.report(error, appStack, operation: '编码预览失败');
       if (!mounted) return;
       setState(() {
         _preview = '无法用 $charset 解码该文件：$error';

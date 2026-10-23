@@ -8,10 +8,10 @@ library;
 /// 排版模式（设计文档 2.4「排版模式」）。
 ///
 /// - [simplified]：简化排版，Flutter 自研分页（默认）；
-/// - [original]：原书排版，WebView 按原书 CSS 渲染（EPUB 专属，见
+/// - [original]：原书排版，WebView 按原书 CSS 渲染（支持原书样式的格式，见
 ///   `docs/原书排版模式实现计划.md`）。
 ///
-/// 只有 EPUB 能选原书排版；TXT 没有原书样式，界面不出现这个开关。
+/// EPUB、MOBI、AZW3 可选原书排版；PDF 对应原页模式，TXT 不显示此开关。
 enum ReadingLayoutMode {
   simplified('simplified'),
   original('original');
@@ -22,9 +22,9 @@ enum ReadingLayoutMode {
 
   /// 解码：值不认识时回退简化排版（单项越界只回退该项，设计文档 7.2）
   static ReadingLayoutMode fromCode(Object? code) => values.firstWhere(
-        (mode) => mode.code == code,
-        orElse: () => ReadingLayoutMode.simplified,
-      );
+    (mode) => mode.code == code,
+    orElse: () => ReadingLayoutMode.simplified,
+  );
 
   /// 是否用 WebView 渲染原书样式
   bool get isOriginal => this == ReadingLayoutMode.original;
@@ -32,11 +32,18 @@ enum ReadingLayoutMode {
 
 /// 点按和拖动共用的翻页方式；独立于分页与排版模式。
 enum PageTurnEffect {
-  none('无动画'), slide('平移翻页'), cover('覆盖翻页'), curl('仿真翻页'), scroll('滚动');
+  none('无动画'),
+  slide('平移翻页'),
+  cover('覆盖翻页'),
+  curl('仿真翻页'),
+  scroll('滚动');
+
   const PageTurnEffect(this.label);
   final String label;
   static PageTurnEffect fromCode(Object? code) => values.firstWhere(
-    (value) => value.name == code, orElse: () => PageTurnEffect.curl);
+    (value) => value.name == code,
+    orElse: () => PageTurnEffect.curl,
+  );
 }
 
 /// 参数取值范围与默认值（设计文档 9.3 Token 表）。
@@ -64,8 +71,9 @@ abstract final class ReadingLimits {
 ///
 /// 简化排版默认使用系统字体；原书排版默认保留原书字体。
 /// 库里存了全局默认值或单书覆盖时，以库里那份为准。
-const ReadingSettings kBuiltinReadingSettings =
-    ReadingSettings(fontFamily: 'sans-serif');
+const ReadingSettings kBuiltinReadingSettings = ReadingSettings(
+  fontFamily: 'sans-serif',
+);
 
 // 旧版本只保存 bold；缺少单书字段仍表示跟随全局，不能误写成 400。
 int? _readFontWeight(Map<String, Object?> json) {
@@ -94,6 +102,9 @@ class ReadingSettings {
     this.pageTurnEffect = PageTurnEffect.curl,
     this.autoScrollSpeed = 24,
     this.autoScanSeconds = 8,
+    this.bookEdges = false,
+    this.landscape = false,
+    this.landscapeSpread = false,
     this.autoKeepAwake = true,
   });
 
@@ -123,20 +134,30 @@ class ReadingSettings {
   final int fontWeight;
   final bool useOriginalFont;
 
-  /// 排版模式（简化 / 原书）；原书模式只对 EPUB 生效
+  /// 排版模式（简化 / 原书）；PDF 对应原页模式，TXT 不显示此设置
   final ReadingLayoutMode layoutMode;
   final PageTurnEffect pageTurnEffect;
+
   /// 滚动速度用逻辑像素/秒；扫描耗时单独保存，互不换算。
   final double autoScrollSpeed;
   final int autoScanSeconds;
+  final bool bookEdges;
+  final bool landscape;
+  final bool landscapeSpread;
   final bool autoKeepAwake;
+
+  /// 双页偏好始终可设置，仅横屏阅读时启用。PDF原页由界面设置层排除。
+  bool get spreadEnabled => landscape && landscapeSpread;
 
   /// 段后间距的像素值
   double get paragraphGap => paragraphGapEm * fontSize;
 
   /// 字号与段距分别调整；仍用原来的 em 字段保存，兼容已有数据。
   ReadingSettings withFontSize(int size) {
-    final next = size.clamp(ReadingLimits.minFontSize, ReadingLimits.maxFontSize);
+    final next = size.clamp(
+      ReadingLimits.minFontSize,
+      ReadingLimits.maxFontSize,
+    );
     return copyWith(fontSize: next, paragraphGapEm: paragraphGap / next);
   }
 
@@ -155,37 +176,47 @@ class ReadingSettings {
     PageTurnEffect? pageTurnEffect,
     double? autoScrollSpeed,
     int? autoScanSeconds,
+    bool? bookEdges,
+    bool? landscape,
+    bool? landscapeSpread,
     bool? autoKeepAwake,
-  }) =>
-      ReadingSettings(
-        fontSize: (fontSize ?? this.fontSize)
-            .clamp(ReadingLimits.minFontSize, ReadingLimits.maxFontSize),
-        lineHeight: (lineHeight ?? this.lineHeight)
-            .clamp(ReadingLimits.minLineHeight, ReadingLimits.maxLineHeight),
-        paragraphGapEm: (paragraphGapEm ?? this.paragraphGapEm).clamp(
-          ReadingLimits.minParagraphGapEm,
-          ReadingLimits.maxParagraphGapEm,
-        ),
-        horizontalPadding: (horizontalPadding ?? this.horizontalPadding).clamp(
-          ReadingLimits.minHorizontalPadding,
-          ReadingLimits.maxHorizontalPadding,
-        ),
-        indent: indent ?? this.indent,
-        fontWeight: fontWeight ?? this.fontWeight,
-        useOriginalFont: useOriginalFont ?? this.useOriginalFont,
-        fontOnlyInReader: fontOnlyInReader ?? this.fontOnlyInReader,
-        fontFamily: clearFontFamily ? null : (fontFamily ?? this.fontFamily),
-        layoutMode: layoutMode ?? this.layoutMode,
-        pageTurnEffect: pageTurnEffect ?? this.pageTurnEffect,
-        autoScrollSpeed: (autoScrollSpeed ?? this.autoScrollSpeed).clamp(12, 80),
-        autoScanSeconds: (autoScanSeconds ?? this.autoScanSeconds).clamp(2, 30),
-        autoKeepAwake: autoKeepAwake ?? this.autoKeepAwake,
-      );
+  }) => ReadingSettings(
+    fontSize: (fontSize ?? this.fontSize).clamp(
+      ReadingLimits.minFontSize,
+      ReadingLimits.maxFontSize,
+    ),
+    lineHeight: (lineHeight ?? this.lineHeight).clamp(
+      ReadingLimits.minLineHeight,
+      ReadingLimits.maxLineHeight,
+    ),
+    paragraphGapEm: (paragraphGapEm ?? this.paragraphGapEm).clamp(
+      ReadingLimits.minParagraphGapEm,
+      ReadingLimits.maxParagraphGapEm,
+    ),
+    horizontalPadding: (horizontalPadding ?? this.horizontalPadding).clamp(
+      ReadingLimits.minHorizontalPadding,
+      ReadingLimits.maxHorizontalPadding,
+    ),
+    indent: indent ?? this.indent,
+    fontWeight: fontWeight ?? this.fontWeight,
+    useOriginalFont: useOriginalFont ?? this.useOriginalFont,
+    fontOnlyInReader: fontOnlyInReader ?? this.fontOnlyInReader,
+    fontFamily: clearFontFamily ? null : (fontFamily ?? this.fontFamily),
+    layoutMode: layoutMode ?? this.layoutMode,
+    pageTurnEffect: pageTurnEffect ?? this.pageTurnEffect,
+    autoScrollSpeed: (autoScrollSpeed ?? this.autoScrollSpeed).clamp(12, 80),
+    autoScanSeconds: (autoScanSeconds ?? this.autoScanSeconds).clamp(2, 30),
+    bookEdges: bookEdges ?? this.bookEdges,
+    landscape: landscape ?? this.landscape,
+    landscapeSpread: landscapeSpread ?? this.landscapeSpread,
+    autoKeepAwake: autoKeepAwake ?? this.autoKeepAwake,
+  );
 
   /// 「单书覆盖 > 全局设置 > 内置默认」的字段级合并（设计文档 2.3）。
   ///
   /// [overrides] 里为 null 的项表示未覆盖，沿用下层值。
-  ReadingSettings mergeOver(ReadingSettingsOverrides overrides) => ReadingSettings(
+  ReadingSettings mergeOver(ReadingSettingsOverrides overrides) =>
+      ReadingSettings(
         fontSize: overrides.fontSize ?? fontSize,
         lineHeight: overrides.lineHeight ?? lineHeight,
         paragraphGapEm: overrides.paragraphGapEm ?? paragraphGapEm,
@@ -199,26 +230,32 @@ class ReadingSettings {
         pageTurnEffect: overrides.pageTurnEffect ?? pageTurnEffect,
         autoScrollSpeed: overrides.autoScrollSpeed ?? autoScrollSpeed,
         autoScanSeconds: overrides.autoScanSeconds ?? autoScanSeconds,
+        bookEdges: overrides.bookEdges ?? bookEdges,
+        landscape: overrides.landscape ?? landscape,
+        landscapeSpread: overrides.landscapeSpread ?? landscapeSpread,
         autoKeepAwake: overrides.autoKeepAwake ?? autoKeepAwake,
       );
 
   Map<String, Object?> toJson() => {
-        'fontSize': fontSize,
-        'lineHeight': lineHeight,
-        'paragraphGapEm': paragraphGapEm,
-        'horizontalPadding': horizontalPadding,
-        'indent': indent,
-        'fontWeight': fontWeight,
-        'useOriginalFont': useOriginalFont,
-        'fontOnlyInReader': fontOnlyInReader,
-        if (fontFamily != null) 'fontFamily': fontFamily,
-        // 老数据没有这一项：读出来就是默认的简化排版（加键不迁移 schema）
-        'layoutMode': layoutMode.code,
-        'pageTurnEffect': pageTurnEffect.name,
-        'autoScrollSpeed': autoScrollSpeed,
-        'autoScanSeconds': autoScanSeconds,
-        'autoKeepAwake': autoKeepAwake,
-      };
+    'fontSize': fontSize,
+    'lineHeight': lineHeight,
+    'paragraphGapEm': paragraphGapEm,
+    'horizontalPadding': horizontalPadding,
+    'indent': indent,
+    'fontWeight': fontWeight,
+    'useOriginalFont': useOriginalFont,
+    'fontOnlyInReader': fontOnlyInReader,
+    if (fontFamily != null) 'fontFamily': fontFamily,
+    // 老数据没有这一项：读出来就是默认的简化排版（加键不迁移 schema）
+    'layoutMode': layoutMode.code,
+    'pageTurnEffect': pageTurnEffect.name,
+    'autoScrollSpeed': autoScrollSpeed,
+    'autoScanSeconds': autoScanSeconds,
+    'bookEdges': bookEdges,
+    'landscape': landscape,
+    'landscapeSpread': landscapeSpread,
+    'autoKeepAwake': autoKeepAwake,
+  };
 
   /// 解码设置：单项越界或类型不对只回退该项，不影响其它项
   /// （设计文档 7.2 实现约定）。
@@ -255,13 +292,19 @@ class ReadingSettings {
       indent: indent is bool ? indent : base.indent,
       fontWeight: _readFontWeight(json) ?? 400,
       useOriginalFont: json['useOriginalFont'] is bool
-          ? json['useOriginalFont'] as bool : true,
+          ? json['useOriginalFont'] as bool
+          : true,
       fontOnlyInReader: json['fontOnlyInReader'] as bool? ?? true,
       fontFamily: family is String && family.isNotEmpty ? family : null,
       layoutMode: ReadingLayoutMode.fromCode(json['layoutMode']),
       pageTurnEffect: PageTurnEffect.fromCode(json['pageTurnEffect']),
-      autoScrollSpeed: (json['autoScrollSpeed'] as num?)?.toDouble().clamp(12, 80) ?? 24,
-      autoScanSeconds: (json['autoScanSeconds'] as num?)?.toInt().clamp(2, 30) ?? 8,
+      autoScrollSpeed:
+          (json['autoScrollSpeed'] as num?)?.toDouble().clamp(12, 80) ?? 24,
+      autoScanSeconds:
+          (json['autoScanSeconds'] as num?)?.toInt().clamp(2, 30) ?? 8,
+      bookEdges: json['bookEdges'] as bool? ?? false,
+      landscape: json['landscape'] as bool? ?? false,
+      landscapeSpread: json['landscapeSpread'] as bool? ?? false,
       autoKeepAwake: json['autoKeepAwake'] as bool? ?? true,
     );
   }
@@ -278,25 +321,35 @@ class ReadingSettings {
       other.useOriginalFont == useOriginalFont &&
       other.fontFamily == fontFamily &&
       other.fontOnlyInReader == fontOnlyInReader &&
-      other.layoutMode == layoutMode && other.pageTurnEffect == pageTurnEffect &&
-      other.autoScrollSpeed == autoScrollSpeed && other.autoScanSeconds == autoScanSeconds &&
+      other.layoutMode == layoutMode &&
+      other.pageTurnEffect == pageTurnEffect &&
+      other.autoScrollSpeed == autoScrollSpeed &&
+      other.autoScanSeconds == autoScanSeconds &&
+      other.bookEdges == bookEdges &&
+      other.landscape == landscape &&
+      other.landscapeSpread == landscapeSpread &&
       other.autoKeepAwake == autoKeepAwake;
 
   @override
   int get hashCode => Object.hash(
-        fontSize,
-        lineHeight,
-        paragraphGapEm,
-        horizontalPadding,
-        indent,
-        fontWeight,
-        useOriginalFont,
-        fontFamily,
-        fontOnlyInReader,
-        layoutMode,
-        pageTurnEffect,
-        autoScrollSpeed, autoScanSeconds, autoKeepAwake,
-      );
+    fontSize,
+    lineHeight,
+    paragraphGapEm,
+    horizontalPadding,
+    indent,
+    fontWeight,
+    useOriginalFont,
+    fontFamily,
+    fontOnlyInReader,
+    layoutMode,
+    pageTurnEffect,
+    bookEdges,
+    landscape,
+    landscapeSpread,
+    autoScrollSpeed,
+    autoScanSeconds,
+    autoKeepAwake,
+  );
 }
 
 /// 单书覆盖项：字段为 null 表示这一项沿用全局值。
@@ -314,6 +367,9 @@ class ReadingSettingsOverrides {
     this.pageTurnEffect,
     this.autoScrollSpeed,
     this.autoScanSeconds,
+    this.bookEdges,
+    this.landscape,
+    this.landscapeSpread,
     this.autoKeepAwake,
   });
 
@@ -331,6 +387,9 @@ class ReadingSettingsOverrides {
   final PageTurnEffect? pageTurnEffect;
   final double? autoScrollSpeed;
   final int? autoScanSeconds;
+  final bool? bookEdges;
+  final bool? landscape;
+  final bool? landscapeSpread;
   final bool? autoKeepAwake;
 
   /// 只改传入的那几项，其余保持原样（面板每次只调一个参数）
@@ -348,39 +407,47 @@ class ReadingSettingsOverrides {
     PageTurnEffect? pageTurnEffect,
     double? autoScrollSpeed,
     int? autoScanSeconds,
+    bool? bookEdges,
+    bool? landscape,
+    bool? landscapeSpread,
     bool? autoKeepAwake,
-  }) =>
-      ReadingSettingsOverrides(
-        fontSize: fontSize ?? this.fontSize,
-        lineHeight: lineHeight ?? this.lineHeight,
-        paragraphGapEm: paragraphGapEm ?? this.paragraphGapEm,
-        horizontalPadding: horizontalPadding ?? this.horizontalPadding,
-        indent: indent ?? this.indent,
-        fontWeight: fontWeight ?? this.fontWeight,
-        useOriginalFont: useOriginalFont ?? this.useOriginalFont,
-        fontFamily: clearFontFamily ? null : (fontFamily ?? this.fontFamily),
-        layoutMode: layoutMode ?? this.layoutMode,
-        pageTurnEffect: pageTurnEffect ?? this.pageTurnEffect,
-        autoScrollSpeed: autoScrollSpeed ?? this.autoScrollSpeed,
-        autoScanSeconds: autoScanSeconds ?? this.autoScanSeconds,
-        autoKeepAwake: autoKeepAwake ?? this.autoKeepAwake,
-      );
+  }) => ReadingSettingsOverrides(
+    fontSize: fontSize ?? this.fontSize,
+    lineHeight: lineHeight ?? this.lineHeight,
+    paragraphGapEm: paragraphGapEm ?? this.paragraphGapEm,
+    horizontalPadding: horizontalPadding ?? this.horizontalPadding,
+    indent: indent ?? this.indent,
+    fontWeight: fontWeight ?? this.fontWeight,
+    useOriginalFont: useOriginalFont ?? this.useOriginalFont,
+    fontFamily: clearFontFamily ? null : (fontFamily ?? this.fontFamily),
+    layoutMode: layoutMode ?? this.layoutMode,
+    pageTurnEffect: pageTurnEffect ?? this.pageTurnEffect,
+    autoScrollSpeed: autoScrollSpeed ?? this.autoScrollSpeed,
+    autoScanSeconds: autoScanSeconds ?? this.autoScanSeconds,
+    bookEdges: bookEdges ?? this.bookEdges,
+    landscape: landscape ?? this.landscape,
+    landscapeSpread: landscapeSpread ?? this.landscapeSpread,
+    autoKeepAwake: autoKeepAwake ?? this.autoKeepAwake,
+  );
 
   Map<String, Object?> toJson() => {
-        if (fontSize != null) 'fontSize': fontSize,
-        if (lineHeight != null) 'lineHeight': lineHeight,
-        if (paragraphGapEm != null) 'paragraphGapEm': paragraphGapEm,
-        if (horizontalPadding != null) 'horizontalPadding': horizontalPadding,
-        if (indent != null) 'indent': indent,
-        if (fontWeight != null) 'fontWeight': fontWeight,
-        if (useOriginalFont != null) 'useOriginalFont': useOriginalFont,
-        if (fontFamily != null) 'fontFamily': fontFamily,
-        if (layoutMode != null) 'layoutMode': layoutMode!.code,
-        if (pageTurnEffect != null) 'pageTurnEffect': pageTurnEffect!.name,
-        if (autoScrollSpeed != null) 'autoScrollSpeed': autoScrollSpeed,
-        if (autoScanSeconds != null) 'autoScanSeconds': autoScanSeconds,
-        if (autoKeepAwake != null) 'autoKeepAwake': autoKeepAwake,
-      };
+    if (fontSize != null) 'fontSize': fontSize,
+    if (lineHeight != null) 'lineHeight': lineHeight,
+    if (paragraphGapEm != null) 'paragraphGapEm': paragraphGapEm,
+    if (horizontalPadding != null) 'horizontalPadding': horizontalPadding,
+    if (indent != null) 'indent': indent,
+    if (fontWeight != null) 'fontWeight': fontWeight,
+    if (useOriginalFont != null) 'useOriginalFont': useOriginalFont,
+    if (fontFamily != null) 'fontFamily': fontFamily,
+    if (layoutMode != null) 'layoutMode': layoutMode!.code,
+    if (pageTurnEffect != null) 'pageTurnEffect': pageTurnEffect!.name,
+    if (autoScrollSpeed != null) 'autoScrollSpeed': autoScrollSpeed,
+    if (autoScanSeconds != null) 'autoScanSeconds': autoScanSeconds,
+    if (bookEdges != null) 'bookEdges': bookEdges,
+    if (landscape != null) 'landscape': landscape,
+    if (landscapeSpread != null) 'landscapeSpread': landscapeSpread,
+    if (autoKeepAwake != null) 'autoKeepAwake': autoKeepAwake,
+  };
 
   static ReadingSettingsOverrides fromJson(Map<String, Object?> json) =>
       ReadingSettingsOverrides(
@@ -391,14 +458,26 @@ class ReadingSettingsOverrides {
         indent: json['indent'] is bool ? json['indent'] as bool : null,
         fontWeight: _readFontWeight(json),
         useOriginalFont: json['useOriginalFont'] is bool
-            ? json['useOriginalFont'] as bool : null,
-        fontFamily:
-            json['fontFamily'] is String ? json['fontFamily'] as String : null,
+            ? json['useOriginalFont'] as bool
+            : null,
+        fontFamily: json['fontFamily'] is String
+            ? json['fontFamily'] as String
+            : null,
         // 键不存在时是 null（未覆盖），不能用 fromCode 的默认值兜底
         pageTurnEffect: json.containsKey('pageTurnEffect')
-            ? PageTurnEffect.fromCode(json['pageTurnEffect']) : null,
-        autoScrollSpeed: (json['autoScrollSpeed'] as num?)?.toDouble().clamp(12, 80),
-        autoScanSeconds: (json['autoScanSeconds'] as num?)?.toInt().clamp(2, 30),
+            ? PageTurnEffect.fromCode(json['pageTurnEffect'])
+            : null,
+        autoScrollSpeed: (json['autoScrollSpeed'] as num?)?.toDouble().clamp(
+          12,
+          80,
+        ),
+        autoScanSeconds: (json['autoScanSeconds'] as num?)?.toInt().clamp(
+          2,
+          30,
+        ),
+        bookEdges: json['bookEdges'] as bool?,
+        landscape: json['landscape'] as bool?,
+        landscapeSpread: json['landscapeSpread'] as bool?,
         autoKeepAwake: json['autoKeepAwake'] as bool?,
         layoutMode: json.containsKey('layoutMode')
             ? ReadingLayoutMode.fromCode(json['layoutMode'])
@@ -414,8 +493,14 @@ class ReadingSettingsOverrides {
       fontWeight == null &&
       useOriginalFont == null &&
       fontFamily == null &&
-      layoutMode == null && pageTurnEffect == null && autoScrollSpeed == null &&
-      autoScanSeconds == null && autoKeepAwake == null;
+      layoutMode == null &&
+      pageTurnEffect == null &&
+      autoScrollSpeed == null &&
+      autoScanSeconds == null &&
+      bookEdges == null &&
+      landscape == null &&
+      landscapeSpread == null &&
+      autoKeepAwake == null;
 
   /// 把当前设置整体变成一份覆盖（「恢复全局」是删除覆盖，不是写全局快照）。
   static ReadingSettingsOverrides of(ReadingSettings settings) =>
@@ -432,6 +517,9 @@ class ReadingSettingsOverrides {
         pageTurnEffect: settings.pageTurnEffect,
         autoScrollSpeed: settings.autoScrollSpeed,
         autoScanSeconds: settings.autoScanSeconds,
+        bookEdges: settings.bookEdges,
+        landscape: settings.landscape,
+        landscapeSpread: settings.landscapeSpread,
         autoKeepAwake: settings.autoKeepAwake,
       );
 }

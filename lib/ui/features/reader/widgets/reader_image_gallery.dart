@@ -1,7 +1,7 @@
+import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:taletin/platform/channels/system_toast.dart';
 
 import '../../../../app/di/app_providers.dart';
 import '../../../../domain/models/locator.dart';
@@ -71,9 +71,10 @@ Future<bool> tryReaderImageGallery(
   ReaderGalleryFrame first;
   try {
     first = await preparedFrame(initial.images.single.path, context);
-  } catch (_) {
+  } catch (appError, appStack) {
+    AppErrors.report(appError, appStack, operation: '打开图片失败', notify: false);
     if (context.mounted) {
-      SystemToast.show('图片无法打开，请重试').ignore();
+      AppErrors.report(appError, appStack, operation: '打开图片失败');
     }
     return true;
   }
@@ -171,7 +172,8 @@ class _ReaderImageGalleryState extends State<ReaderImageGallery> {
         _index = complete.initialIndex;
         _discovering = false;
       });
-    } catch (_) {
+    } catch (appError, appStack) {
+      AppErrors.report(appError, appStack, operation: '读取其他图片失败');
       if (mounted) {
         setState(() {
           _discovering = false;
@@ -187,7 +189,8 @@ class _ReaderImageGalleryState extends State<ReaderImageGallery> {
     try {
       await widget.onClose(_sequence.images[_index].locator);
       if (mounted) Navigator.of(context).pop();
-    } catch (_) {
+    } catch (appError, appStack) {
+      AppErrors.report(appError, appStack, operation: '返回图片位置失败');
       if (mounted) setState(() => _error = '正文定位失败，请重试关闭图片');
     } finally {
       if (mounted) setState(() => _closing = false);

@@ -1,7 +1,9 @@
+import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'package:taletin/ui/core/widgets/gt_button.dart';
 import 'package:taletin/ui/core/widgets/gt_dialog_action.dart';
 
 import 'dart:async';
+
 import '../../../../core/diagnostics/reader_work_trace.dart';
 
 import '../widgets/completion_prompt.dart';
@@ -11,6 +13,7 @@ import '../widgets/source_book_opening.dart';
 import '../view_models/reader_source_change.dart';
 
 import 'dart:io';
+import 'dart:ui' as ui;
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -39,6 +42,8 @@ import '../../../../domain/models/reading_settings.dart';
 import '../../../../domain/services/screen_controls.dart';
 import '../../../../domain/services/toc_entry_index.dart';
 import '../../../../engine/layout/chapter_layout.dart';
+import '../../../../engine/layout/layout_work_gate.dart';
+import '../../../../core/diagnostics/reader_delivery_experiments.dart';
 import '../../../../engine/selection/selection_range.dart';
 import '../../../../engine/selection/selection_rects.dart';
 import '../../../../engine/layout/layout_options.dart';
@@ -52,8 +57,12 @@ import '../view_models/note_editor_controller.dart';
 import '../view_models/reader_view_model.dart';
 import '../view_models/automatic_reading.dart';
 import '../widgets/original_reader_area.dart';
+import '../widgets/pdf_reader_area.dart';
+import '../view_models/pdf_book_provider.dart';
 import '../widgets/original_host_controller.dart';
 import '../widgets/page_canvas.dart';
+import '../widgets/book_paper.dart';
+import '../view_models/visible_spread.dart';
 import '../widgets/simplified_scroll_area.dart';
 import '../widgets/original_scroll_area.dart';
 import '../widgets/reader_display_transition.dart';
@@ -62,7 +71,10 @@ import '../widgets/reader_image_viewer.dart';
 import '../widgets/reader_image_gallery.dart';
 import '../widgets/reader_information.dart';
 import '../widgets/fold_frames.dart';
+import '../widgets/page_raster_cache.dart';
+import '../widgets/prepared_page.dart';
 import '../widgets/automatic_scan_area.dart';
+import '../widgets/timed_page_turn.dart';
 import '../widgets/scan_frames.dart';
 import '../widgets/page_turn_area.dart';
 import '../widgets/panel_auto.dart';
@@ -95,7 +107,11 @@ import '../../../../engine/selection/speech_rects.dart';
 import '../../../core/widgets/gt_icon.dart';
 
 part '../widgets/reader_content.dart';
+part '../widgets/reader_reading_content.dart';
 part '../widgets/reader_page_area.dart';
+part '../widgets/reader_spread_area.dart';
+part '../widgets/spread_page_content.dart';
+part '../widgets/reader_page_preparation.dart';
 part '../widgets/reader_top_bar.dart';
 part '../widgets/reader_bottom_controls.dart';
 part '../widgets/reader_notice.dart';
@@ -113,15 +129,16 @@ class ReaderView extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) => SourceBookOpening(
     bookId: bookId,
     child: _ReaderScope(
-    bookId: bookId,
-    child: ListeningFollow(
       bookId: bookId,
-      child: ReaderControlTheme(
+      child: ListeningFollow(
         bookId: bookId,
-        child: _ReaderBody(bookId: bookId),
+        child: ReaderControlTheme(
+          bookId: bookId,
+          child: _ReaderBody(bookId: bookId),
+        ),
       ),
     ),
-  ));
+  );
 }
 
 /// 阅读页的外围处理：窗口亮度与阅读位置。
@@ -142,7 +159,14 @@ class _ReaderScope extends ConsumerStatefulWidget {
 
 class _ReaderScopeState extends ConsumerState<_ReaderScope> {
   late final ReadingWindow _window;
+  final _orientationOwner = Object();
   MediaQueryData? _readingMetrics;
+  bool? _landscape;
+  void _orient(bool value) {
+    if (_landscape == value || _window.exiting.value) return;
+    _landscape = value;
+    unawaited(_window.setReaderLandscape(_orientationOwner, value));
+  }
   late final AppLifecycleListener _lifecycle;
   late final bool _previousResampling;
   late final Duration _previousSamplingOffset;
@@ -168,6 +192,7 @@ class _ReaderScopeState extends ConsumerState<_ReaderScope> {
       ..resamplingEnabled = _previousResampling
       ..samplingOffset = _previousSamplingOffset;
     _lifecycle.dispose();
+    unawaited(_window.leaveReading(_orientationOwner));
     unawaited(_automatic.pause(save: false));
     // 离开阅读页：窗口恢复系统亮度
     unawaited(_screen.setWindowBrightness(null));
@@ -177,7 +202,7 @@ class _ReaderScopeState extends ConsumerState<_ReaderScope> {
   @override
   void initState() {
     super.initState();
-    _window = ref.read(readingWindowProvider)..enterReading();
+    _window = ref.read(readingWindowProvider)..enterReading(_orientationOwner);
     final binding = WidgetsBinding.instance;
     _previousResampling = binding.resamplingEnabled;
     _previousSamplingOffset = binding.samplingOffset;
@@ -215,6 +240,8 @@ class _ReaderScopeState extends ConsumerState<_ReaderScope> {
   @override
   Widget build(BuildContext context) {
     ref.watch(automaticReadingProvider(widget.bookId));
+    final orientation = ref.watch(readerSettingsProvider(widget.bookId)).value?.fontSettings.landscape;
+    if (orientation != null) _orient(orientation);
     ref.listen(readerProvider, (_, next) {
       if (next.panel != ReaderPanel.brightness &&
           ref.read(brightnessPreviewProvider(widget.bookId)) != null) {
@@ -278,11 +305,16 @@ class _ReaderScopeState extends ConsumerState<_ReaderScope> {
         unawaited(
           ref
               .read(readerSessionProvider(widget.bookId).notifier)
-              .switchReadingDisplay(next.$1, next.$2).catchError((Object error, StackTrace stack) {
+              .switchReadingDisplay(next.$1, next.$2)
+              .catchError((Object error, StackTrace stack) {
                 if (!mounted) return;
                 if (isSourceChange(error)) {
-                  ref.read(readerSourceChangeProvider(widget.bookId).notifier).markChanged();
-                } else { Error.throwWithStackTrace(error, stack); }
+                  ref
+                      .read(readerSourceChangeProvider(widget.bookId).notifier)
+                      .markChanged();
+                } else {
+                  Error.throwWithStackTrace(error, stack);
+                }
               }),
         );
       },

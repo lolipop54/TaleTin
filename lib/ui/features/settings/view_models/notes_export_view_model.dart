@@ -1,3 +1,5 @@
+import 'package:taletin/core/diagnostics/app_errors.dart';
+
 import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -45,6 +47,7 @@ class NotesExportViewModel extends Notifier<NotesExportState> {
       ref.read(appDatabaseProvider),
       Directory('${ref.read(cacheRootPathProvider)}/notes-export'),
       ref.read(chapterContentRepositoryProvider),
+      fileGate: ref.read(libraryFileGateProvider),
     );
     final operation = _operation = BackupOperation(
       onProgress: (phase, done, total) {
@@ -75,7 +78,8 @@ class NotesExportViewModel extends Notifier<NotesExportState> {
       if (ref.mounted) {
         state = NotesExportState(message: '已完整导出 ${result.count} 条高亮和笔记。');
       }
-    } catch (error) {
+    } catch (error, appStack) {
+      AppErrors.report(error, appStack, operation: '导出笔记失败');
       if (ref.mounted) state = NotesExportState(message: '$error');
     } finally {
       if (result != null) await result.file.parent.delete(recursive: true);

@@ -1,4 +1,5 @@
 import '../../../../app/di/book_group_providers.dart';
+
 import 'dart:typed_data';
 
 import 'package:taletin/ui/core/widgets/gt_button.dart';
@@ -28,7 +29,13 @@ import 'invalid_book_dialog.dart';
 ///   所以系统字号或字体行高有差异时只会让封面略微变矮，不会出现像素溢出；
 /// - 书名固定占两行的高度：短书名第二行留空，这样同一行里封面仍然完全等大。
 class BookTile extends ConsumerWidget {
-  const BookTile({super.key, required this.book, this.coverOverlay, this.onTapOverride, this.coverBytes});
+  const BookTile({
+    super.key,
+    required this.book,
+    this.coverOverlay,
+    this.onTapOverride,
+    this.coverBytes,
+  });
   final Uint8List? coverBytes;
   final Widget? coverOverlay;
   final VoidCallback? onTapOverride;
@@ -123,11 +130,18 @@ class BookTile extends ConsumerWidget {
         final titleSlack = titleBlockHeight(scaler) - titleHeight;
         return GtButton.raw(
           borderRadius: BorderRadius.circular(GtRadius.control),
-          onPressed: onTapOverride ?? () => selecting
-              ? ref.read(bookshelfProvider.notifier).toggleSelection(book.id)
-              : openShelfBook(context, ref, book),
-          onLongPress: coverOverlay != null ? null : () =>
-              ref.read(bookshelfProvider.notifier).beginSelection(book.id),
+          onPressed:
+              onTapOverride ??
+              () => selecting
+                  ? ref
+                        .read(bookshelfProvider.notifier)
+                        .toggleSelection(book.id)
+                  : openShelfBook(context, ref, book),
+          onLongPress: coverOverlay != null
+              ? null
+              : () => ref
+                    .read(bookshelfProvider.notifier)
+                    .beginSelection(book.id),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -157,9 +171,12 @@ class BookTile extends ConsumerWidget {
                         children: [
                           BookCover(
                             bookId: book.id,
+                            format: book.format,
                             title: book.title,
                             author: book.author,
                             imagePath: coverFile,
+                            preset: book.coverChoice?.preset,
+                            showImageText: book.coverChoice?.imagePath != null,
                             imageBytes: coverBytes,
                           ),
                           ?coverOverlay,
@@ -286,8 +303,7 @@ class ShelfFilterBar extends ConsumerWidget {
                 selected: state.groupId == null && state.filter == tab.key,
                 onTap: () => vm.setFilter(tab.key),
               ),
-              if (tab != tabs.last || groups.isNotEmpty)
-                _tabDivider(colors),
+              if (tab != tabs.last || groups.isNotEmpty) _tabDivider(colors),
             ],
             for (final group in groups) ...[
               _FilterTab(

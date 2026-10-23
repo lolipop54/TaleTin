@@ -1,4 +1,6 @@
+import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
 import '../../../../core/diagnostics/reader_work_trace.dart';
 
 import '../../../../domain/models/annotation.dart';
@@ -29,6 +31,7 @@ class ReaderProgressReturn extends Notifier<ReaderProgressReturnState> {
   ReaderProgressReturn(this.bookId);
   final String bookId;
   int _seekVersion = 0;
+
   /// 阅读层先把完整旧页盖住；位置请求必须在遮盖真正上屏后再执行。
   Future<void> Function()? prepareJumpCover;
   Future<void> Function()? finishJumpCover;
@@ -37,8 +40,11 @@ class ReaderProgressReturn extends Notifier<ReaderProgressReturnState> {
   Future<void> transition(Future<void> Function() action) async {
     if (state.busy) return;
     final previous = state;
-    state = ReaderProgressReturnState(origin: previous.origin,
-      fromSlider: previous.fromSlider, busy: true);
+    state = ReaderProgressReturnState(
+      origin: previous.origin,
+      fromSlider: previous.fromSlider,
+      busy: true,
+    );
     try {
       await prepareJumpCover?.call();
       await action();
@@ -49,6 +55,7 @@ class ReaderProgressReturn extends Notifier<ReaderProgressReturnState> {
       }
     }
   }
+
   @override
   ReaderProgressReturnState build() => const ReaderProgressReturnState();
 
@@ -63,8 +70,12 @@ class ReaderProgressReturn extends Notifier<ReaderProgressReturnState> {
 
   Future<void> seek(Future<void> Function() action) async {
     final version = ++_seekVersion;
-    final trace = !readerWorkTraceEnabled ? null : ReaderWorkTrace.start(
-      'reader.progress.transition', {'bookId': bookId, 'request': version});
+    final trace = !readerWorkTraceEnabled
+        ? null
+        : ReaderWorkTrace.start('reader.progress.transition', {
+            'bookId': bookId,
+            'request': version,
+          });
     var status = 'incomplete';
     beginSlider();
     final previous = state;
@@ -76,6 +87,8 @@ class ReaderProgressReturn extends Notifier<ReaderProgressReturnState> {
     try {
       await prepareJumpCover?.call();
       trace?.mark('old_page_cover');
+      // 截旧页可能比下一次拖动慢；旧调用不得在最后一次选择之后才提交位置。
+      if (!ref.mounted || version != _seekVersion) return;
       await action();
       trace?.mark('target_position');
       status = 'ok';
@@ -150,7 +163,7 @@ class ReaderProgressReturn extends Notifier<ReaderProgressReturnState> {
         persistRelocation: false,
       );
       // 复用精确落点流程，原书保留旧画面直到目标就绪；临时范围不保存为笔记。
-      final hold = session.layoutMode.isOriginal
+      final hold = session.usesOriginalWebView
           ? ref.read(originalLayoutProvider(bookId)).value?.holdPageDuringJump
           : null;
       if (hold == null) {
@@ -162,7 +175,8 @@ class ReaderProgressReturn extends Notifier<ReaderProgressReturnState> {
         state = const ReaderProgressReturnState();
         await finishJumpCover?.call();
       }
-    } catch (_) {
+    } catch (appError, appStack) {
+      AppErrors.report(appError, appStack, operation: '返回阅读位置失败');
       if (!ref.mounted) return;
       state = previous;
       ref.read(readerProvider.notifier).showNotice('无法返回原进度，请重试');

@@ -2,8 +2,9 @@ import '../repositories/reading_position_repository.dart';
 
 /// 应用级串行保存；失败交给调用方，后续保存仍可继续。
 class ReadingPositionCoordinator {
-  ReadingPositionCoordinator(this.repository);
+  ReadingPositionCoordinator(this.repository, {this.onError});
   final ReadingPositionRepository repository;
+  final void Function(Object, StackTrace)? onError;
   final _tails = <String, Future<void>>{};
   final _errors = <String, Object>{};
   final _failedPositions = <String, ReadingPosition>{};
@@ -48,6 +49,7 @@ class ReadingPositionCoordinator {
     _tails[id] = write.then<void>(
       (_) {},
       onError: (Object error, StackTrace stack) {
+        onError?.call(error, stack);
         _errors[id] = error;
         _failedPositions[id] = position;
         lastError = error;

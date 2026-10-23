@@ -42,13 +42,14 @@ const double kTocProgressEpsilon = 5e-4;
 /// 相同目标只留第一条，同名但锚点不同的条目各自保留。
 Map<String, List<TocTitleRef>> collectTocTitles(List<TocNode> toc) {
   final names = <String, List<TocTitleRef>>{};
+  final targets = <String, Set<String?>>{};
 
   void visit(TocNode node) {
     final id = node.chapterId;
     final title = node.title.trim();
     if (id != null && title.isNotEmpty) {
       final titles = names.putIfAbsent(id, () => []);
-      if (!titles.any((entry) => entry.anchorId == node.fragment)) {
+      if ((targets[id] ??= {}).add(node.fragment)) {
         titles.add((title: title, anchorId: node.fragment));
       }
     }
@@ -82,8 +83,10 @@ int tocEntryIndexAt(
     if (firstInChapter < 0) firstInChapter = i;
     // 父标题和子标题可能只隔几个字，容差不能跨过相邻条目间距的一半。
     final gap = i > 0 && entries[i - 1].chapterId == entry.chapterId
-        ? entry.progress - entries[i - 1].progress : 0.0;
-    final epsilon = chapterId == null ? 0.0
+        ? entry.progress - entries[i - 1].progress
+        : 0.0;
+    final epsilon = chapterId == null
+        ? 0.0
         : (gap / 2).clamp(0.0, kTocProgressEpsilon);
     if (entry.progress <= position + epsilon) hit = i;
   }

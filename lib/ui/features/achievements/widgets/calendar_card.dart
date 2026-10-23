@@ -17,16 +17,20 @@ class CalendarCard extends StatefulWidget {
     super.key,
     required this.days,
     required this.today,
+    this.dayIndex,
     this.onDate,
   });
   final List<DailyReadingStats> days;
   final DateTime today;
+  final Map<String, DailyReadingStats>? dayIndex;
   final Future<void> Function(String)? onDate;
   @override
   State<CalendarCard> createState() => _CalendarCardState();
 }
 
 class _CalendarCardState extends State<CalendarCard> {
+  List<DailyReadingStats>? _indexedDays;
+  Map<String, DailyReadingStats> _daysByDate = {};
   late String selected = readingDate(widget.today);
   bool _opening = false;
 
@@ -41,6 +45,15 @@ class _CalendarCardState extends State<CalendarCard> {
 
   @override
   Widget build(BuildContext context) {
+    if (!identical(_indexedDays, widget.days)) {
+      _indexedDays = widget.days;
+      _daysByDate = widget.dayIndex ?? {};
+      if (widget.dayIndex == null) {
+        for (final day in widget.days) {
+          _daysByDate.putIfAbsent(day.date, () => day);
+        }
+      }
+    }
     final colors = context.gtColors;
     return Container(
       width: double.infinity,
@@ -182,13 +195,7 @@ class _CalendarCardState extends State<CalendarCard> {
         !isOutMonth;
     final isSelected = selected == date && !isOutMonth;
     final minutes = (!isOutMonth && day != null)
-        ? widget.days
-                  .firstWhere(
-                    (d) => d.date == date,
-                    orElse: () => DailyReadingStats(date: date),
-                  )
-                  .totalMs ~/
-              60000
+        ? (_daysByDate[date]?.totalMs ?? 0) ~/ 60000
         : 0;
     final heat = _heatLevel(minutes);
     final bg = isOutMonth && !isToday

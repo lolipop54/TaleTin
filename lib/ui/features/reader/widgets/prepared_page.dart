@@ -2,11 +2,15 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+
 import 'dart:ui' as ui;
+
 import 'package:flutter_svg/flutter_svg.dart';
 
 import '../../../../domain/models/book_document.dart';
+import '../../../../core/diagnostics/app_errors.dart';
 import 'page_canvas.dart';
+import 'book_paper.dart';
 import 'turn_trace.dart';
 
 /// 一页内容的绘制材料。只解码正文图片，不对整页抓图。
@@ -16,6 +20,18 @@ class PreparedPage {
 
   final PageCanvas page;
   final Map<String, ImageInfo?> _images;
+  bool get hasFailedImages => _images.values.any((image) => image == null);
+
+  /// ImageInfo.clone产生独立句柄；比较底层像素身份，避免误用重新加载的图片。
+  bool sameImagesAs(PreparedPage other) =>
+      _images.length == other._images.length &&
+      _images.entries.every((entry) {
+        if (!other._images.containsKey(entry.key)) return false;
+        final next = other._images[entry.key];
+        return entry.value == null
+            ? next == null
+            : next != null && entry.value!.image.isCloneOf(next.image);
+      });
 
   /// 动画交给静态页时共享已解码图片，各自持有可独立释放的引用。
   PreparedPage clone() => PreparedPage._(page, {
@@ -46,20 +62,30 @@ class PreparedPage {
           fragment.block.resourcePath!,
     };
     // 只记录页坐标、资源个数和耗时，不输出正文或图片路径。
-    final label = 'simplified images chapter=${page.layout.chapterId} '
+    final label =
+        'simplified images chapter=${page.layout.chapterId} '
         'page=${page.pageIndex} count=${paths.length}';
-    final images = await traceTurnStep(label, () => Future.wait(
-      paths.map(
-        (path) => traceTurnStep('$label image=${paths.toList().indexOf(path)} '
+    final images = await traceTurnStep(
+      label,
+      () => Future.wait(
+        paths.map(
+          (path) => traceTurnStep(
+            '$label image=${paths.toList().indexOf(path)} '
             'svg=${path.toLowerCase().endsWith('.svg')}',
-            () => _loadPageImage(File(page.resolveResource(path)), configuration)),
+            () =>
+                _loadPageImage(File(page.resolveResource(path)), configuration),
+          ),
+        ),
       ),
-    ));
+    );
     return PreparedPage._(page, Map.fromIterables(paths, images));
   }
 
   /// SVG 也先生成固定图像，避免扫描中出现占位后补图。
-  static Future<ImageInfo?> _loadPageImage(File file, ImageConfiguration configuration) async {
+  static Future<ImageInfo?> _loadPageImage(
+    File file,
+    ImageConfiguration configuration,
+  ) async {
     if (!file.path.toLowerCase().endsWith('.svg')) {
       return _loadImage(FileImage(file), configuration);
     }
@@ -70,10 +96,22 @@ class PreparedPage {
       (Canvas(recorder)..scale(ratio)).drawPicture(picture.picture);
       final scaled = recorder.endRecording();
       try {
-        return ImageInfo(image: scaled.toImageSync(
-          (picture.size.width * ratio).ceil(), (picture.size.height * ratio).ceil()), scale: ratio);
-      } finally { scaled.dispose(); picture.picture.dispose(); }
-    } on Object { return null; }
+        return ImageInfo(
+          image: scaled.toImageSync(
+            (picture.size.width * ratio).ceil(),
+            (picture.size.height * ratio).ceil(),
+          ),
+          scale: ratio,
+        );
+      } finally {
+        scaled.dispose();
+        picture.picture.dispose();
+      }
+    } on Object catch (error, stack) {
+      AppErrors.report(error, stack, operation: '正文图片加载失败', notify: false);
+      traceTurn('image-error $error');
+      return null;
+    }
   }
 
   /// 复用 Flutter 图片缓存；持有监听器给出的 ImageInfo，释放时不清全局缓存。
@@ -93,12 +131,23 @@ class PreparedPage {
         }
       },
       onError: (Object error, StackTrace? stack) {
+        AppErrors.report(
+          error,
+          stack ?? StackTrace.current,
+          operation: '正文图片加载失败',
+          notify: false,
+        );
+        traceTurn('image-error $error');
         if (!result.isCompleted) result.complete(null);
       },
     );
     stream.addListener(listener);
     try {
-      return await result.future;
+      final image = await result.future;
+      // 缺失文件的失败流也可能留在Flutter缓存里；文件补齐后必须能重新解码。
+      // 仅移除这一张失败图片，不清空其它已准备好的页面。
+      if (image == null) await provider.evict(configuration: configuration);
+      return image;
     } finally {
       stream.removeListener(listener);
     }
@@ -111,22 +160,34 @@ class PreparedPage {
     canvas.save();
     canvas.clipRect(Offset.zero & size);
     canvas.drawRect(Offset.zero & size, Paint()..color = page.theme.background);
+    if (page.information?.bookEdges == true && page.information?.spreadSide == null) {
+      paintBookPaper(canvas, size, page.theme.background);
+    }
     page.information?.paint(canvas, size, paintMenu: false);
     canvas.translate(
       (size.width - content.width) / 2,
-      (size.height - content.height + (page.information?.top ?? 0) -
-          (page.information?.bottom ?? 0)) / 2,
+      (size.height -
+              content.height +
+              (page.information?.top ?? 0) -
+              (page.information?.bottom ?? 0)) /
+          2,
     );
     page.paintText(canvas);
     for (final fragment in page.layout.page(page.pageIndex)?.fragments ?? []) {
       final imageSize = fragment.imageSize;
       final path = fragment.block.resourcePath;
-      if (fragment.frameOnly || fragment.block.kind != BlockKind.image ||
+      if (fragment.frameOnly ||
+          fragment.block.kind != BlockKind.image ||
           imageSize == null ||
           path == null) {
         continue;
       }
-      final rect = Offset(fragment.block.tableId == null ? 0 : fragment.block.inset, fragment.y) & imageSize;
+      final rect =
+          Offset(
+            fragment.block.tableId == null ? 0 : fragment.block.inset,
+            fragment.y,
+          ) &
+          imageSize;
       final image = _images[path];
       if (image != null) {
         paintImage(
@@ -146,8 +207,11 @@ class PreparedPage {
         final label = TextPainter(
           text: TextSpan(
             text: alt?.isNotEmpty == true ? alt : '图片无法显示',
-            style: TextStyle(fontSize: 12, color: page.theme.secondary,
-              fontFamily: page.information?.fontFamily),
+            style: TextStyle(
+              fontSize: 12,
+              color: page.theme.secondary,
+              fontFamily: page.information?.fontFamily,
+            ),
           ),
           textAlign: TextAlign.center,
           textDirection: TextDirection.ltr,

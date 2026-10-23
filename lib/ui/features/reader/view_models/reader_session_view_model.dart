@@ -8,12 +8,17 @@
 library;
 
 import 'dart:async';
-import 'dart:convert';
+
+import '../../../../platform/channels/reading_window.dart';
+
+import '../../../../core/diagnostics/app_errors.dart';
+import '../../../../data/services/toc_index_compute.dart';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'reader_session_state.dart';
 import '../../../../core/diagnostics/first_seek_experiments.dart';
+import '../../../../core/diagnostics/reader_delivery_experiments.dart';
 import 'original_layout_controller.dart';
 import 'annotation_opening.dart';
 import 'reader_view_model.dart';
@@ -48,20 +53,34 @@ import '../../../../engine/parsers/epub/toc_progress_entries.dart';
 
 part 'reader_layout_coordinator.dart';
 part 'reader_original_position.dart';
+part 'reader_pdf_position.dart';
 part 'reader_annotation_navigation.dart';
 part 'reader_scroll_position.dart';
 part 'reader_display_position.dart';
 part 'reader_toc_navigation.dart';
 part 'reader_progress_titles.dart';
 part 'reader_scan_commit.dart';
+part 'reader_spread_pages.dart';
 part 'reader_image_navigation.dart';
+part 'reader_progress_navigation.dart';
+part 'reader_visual_confirmation.dart';
 
 class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
-    with _ReaderLayoutCoordinator, _ReaderOriginalPosition, _ReaderAnnotationNavigation,
-        _ReaderScrollPosition, _ReaderDisplayPosition, _ReaderTocNavigation {
+    with
+        _ReaderLayoutCoordinator,
+        _ReaderOriginalPosition,
+        _ReaderAnnotationNavigation,
+        _ReaderScrollPosition,
+        _ReaderDisplayPosition,
+        _ReaderTocNavigation {
   ReaderSessionNotifier(this.bookId);
   ReaderSession get _scanSession => state.requireValue;
+  ReaderSession? get _progressSession => state.value;
+  Ref get _sessionRef => ref;
+  void _publishPdfSession(ReaderSession value) => state = AsyncData(value);
   void _publishScan(ReaderSession session) => state = AsyncData(session);
+  Future<void> goToProgress(double fraction, {bool waitForOriginal = false}) =>
+      _goToProgress(fraction, waitForOriginal: waitForOriginal);
   @override
   Annotation? _annotationTarget;
   @override
@@ -73,6 +92,40 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
   @override
   ({String chapterId, String? blockId, double progress, Completer<void> done})?
   _tocLanding;
+  int _progressRequest = 0;
+
+  /// 阅读显示器登记的预载取消入口；不读取原书Provider，避免释放时重新建会话。
+  void Function()? cancelOriginalProgressPreparation;
+  ({int request, Locator target, Completer<void> done})?
+  _contentProgressLanding;
+
+  /// 新的阅读动作接管导航；旧等待正常结束，但失去保存和撤图资格。
+  @override
+  void cancelProgressNavigation() {
+    ++_progressRequest;
+    ++_originalChapterRequest;
+    cancelOriginalProgressPreparation?.call();
+    _token?.cancel();
+    final legacy = _progressLanding;
+    _progressLanding = null;
+    if (legacy != null && !legacy.done.isCompleted) legacy.done.complete();
+    final pending = _contentProgressLanding;
+    _contentProgressLanding = null;
+    if (pending != null && !pending.done.isCompleted) pending.done.complete();
+  }
+
+  /// DOM 落点与平台实际画面都确认后才解除进度跳转的等待。
+  void reportOriginalContentArrival(Locator? exact) {
+    final pending = _contentProgressLanding;
+    if (pending != null &&
+        pending.request == _progressRequest &&
+        exact != null &&
+        exact.samePosition(pending.target) &&
+        state.value?.currentAnchor?.samePosition(exact) == true &&
+        !pending.done.isCompleted) {
+      pending.done.complete();
+    }
+  }
 
   @override
   final String bookId;
@@ -83,7 +136,21 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
   @override
   ReadingPosition? _listeningRestore;
   @override
+  ReadingPosition? _visualRestore;
+  @override
   final _restoreArrivals = <ReadingLayoutMode, Locator>{};
+  final _visualPresenters = <Object>{};
+  (Object, int)? _confirmedPage;
+  ReadingPosition? _confirmedVisualPosition;
+  void attachVisualPresenter(Object owner) => _visualPresenters.add(owner);
+  void detachVisualPresenter(Object owner) => _visualPresenters.remove(owner);
+  void confirmSimplifiedPage(ChapterLayout layout, int page) =>
+      _confirmSimplifiedPage(layout, page);
+  void confirmCurrentSimplifiedPage() {
+    final s = state.value;
+    if (s?.layout != null) _confirmSimplifiedPage(s!.layout!, s.pageIndex);
+  }
+
   @override
   Locator? _originalExact;
   @override
@@ -100,6 +167,8 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
   @override
   ReadingLayoutMode _mode = ReadingLayoutMode.simplified;
   ReadingLayoutMode get layoutMode => _mode;
+  bool get usesOriginalWebView =>
+      _mode.isOriginal && state.value?.book.format.usesOriginalWebView == true;
 
   @override
   final _modePositions =
@@ -142,7 +211,15 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
 
   @override
   Future<ReaderSession> build() => traceTurnStep('load session', () async {
-    ref.onDispose(() { ++_tokenVersion; _token?.cancel(); });
+    _confirmedPage = null;
+    _confirmedVisualPosition = null;
+    ref.onDispose(() {
+      cancelProgressNavigation();
+      ++_tokenVersion;
+      _token?.cancel();
+      _observedLayout?.task?.pauseBackground();
+      unawaited(_layoutUpdates?.cancel());
+    });
     _positionToken = ref
         .read(readingPositionCoordinatorProvider)
         .version(bookId);
@@ -155,18 +232,26 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
     if (book == null || book.status != BookStatus.active) {
       throw const ReaderFailure('这本书已不在书架中');
     }
-    final chapters = await traceTurnStep('load chapters', () => books.chaptersOf(bookId));
+    final chapters = await traceTurnStep(
+      'load chapters',
+      () => books.chaptersOf(bookId),
+    );
     if (chapters.isEmpty) {
       throw const ReaderFailure('这本书没有可阅读的正文，请重新导入');
     }
     // 初次打开时设置可能早于会话就绪，界面的变更监听不会再触发一次。
     // 在返回首帧数据前同步显示模式，原书的位置回报才能被正常接收。
-    final settings = await traceTurnStep('load settings-font', () => ref.read(readerSettingsProvider(bookId).future));
-    _mode = book.format == BookFormat.epub
+    final settings = await traceTurnStep(
+      'load settings-font',
+      () => ref.read(readerSettingsProvider(bookId).future),
+    );
+    _mode = book.format.supportsOriginalLayout
         ? settings.settings.layoutMode
         : ReadingLayoutMode.simplified;
     // TXT 固定使用简化排版，即使全局选了“原书字体”，也准备实际文本字体。
-    if (!_mode.isOriginal) await ref.read(selectedFontLoaderProvider)(settings.settings.fontFamily);
+    if (!_mode.isOriginal) {
+      await ref.read(selectedFontLoaderProvider)(settings.settings.fontFamily);
+    }
     final scrolling = settings.settings.pageTurnEffect == PageTurnEffect.scroll;
     // 打开即读：封面页、版权页这类没有正文的章节不占用首屏。
     // 这里只看章节索引里的字数（设计文档 6.3：书架与定位不读章节文件）。
@@ -178,27 +263,42 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
         .load(bookId);
     final saved =
         await ref.read(prepareListeningReaderProvider)(bookId) ?? stored;
-    final locator = saved?.locator == null ? null : await ref
-      .read(sourcePositionResolverProvider).resolve(saved!.locator, chapters);
+    final locator = saved?.locator == null
+        ? null
+        : await ref
+              .read(sourcePositionResolverProvider)
+              .resolve(saved!.locator, chapters);
     if (locator != null && locator.contentVersion == book.contentVersion) {
       final index = chapters.indexWhere((c) => c.id == locator.chapterId);
       if (index >= 0) {
         chapterIndex = index;
         _pendingAnchor = locator;
-        if (saved!.locator.needsRelocation) {
+        final relocated =
+            saved!.locator.needsRelocation ||
+            saved.locator.contentVersion != locator.contentVersion;
+        // 只有原文未变的旧视觉记录保留其旧比例。来源更新后已经找到新坐标，
+        // 首次确认显示应保存这个新版本，不能再次写回更新前的 Locator 和比例。
+        if (saved.source == ReadingPositionSource.visual && !relocated) {
+          _visualRestore = saved;
+        }
+        if (relocated || saved.progressBasis == ReadingProgressBasis.content) {
           _originalExact = locator;
           _pendingOriginalFraction = 0;
         }
-        if (saved.source == ReadingPositionSource.listening && !saved.locator.needsRelocation) {
+        if (saved.source == ReadingPositionSource.listening && !relocated) {
           _listeningRestore = saved;
           _originalExact = locator;
           _pendingOriginalFraction = 0;
         }
-        // 原书模式的落点直接用存下来的**进度**：它就是上次上报的页比例
+        // 未改变原文的旧视觉记录仍用存下来的**进度**恢复：它是上次的页比例。
+        // 新内容口径或重新定位成功的记录走上面的精确坐标，不混用两种比例。
         // （页 / 页数），乘页数正好回到原来那一页。若由 Locator 现算，算出来的
         // 是字数比例——图片占版面不计字，比例偏小，落点会退到前一页；而落点
         // 页首又会被存成新位置，于是反复打开一次比一次往回退（用户反馈）。
-        final landed = saved.source == ReadingPositionSource.listening || saved.locator.needsRelocation
+        final landed =
+            saved.source == ReadingPositionSource.listening ||
+                relocated ||
+                saved.progressBasis == ReadingProgressBasis.content
             ? null
             : ReaderSession.chapterFractionOf(
                 saved.progress,
@@ -211,7 +311,9 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
     }
     final opening = ref.read(annotationOpeningProvider.notifier).take(bookId);
     if (opening != null) {
-      chapterIndex = chapters.indexWhere((c) => c.id == opening.start.chapterId);
+      chapterIndex = chapters.indexWhere(
+        (c) => c.id == opening.start.chapterId,
+      );
       _annotationTarget = opening;
       _pendingAnchor = opening.start;
       _listeningRestore = null;
@@ -220,7 +322,14 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
       _pendingOriginalText = null;
     }
     // 只读当前章正文；整书按需读取，不整本进内存
-    final first = await traceTurnStep('load current-content', () => contents.chapter(bookId, chapters[chapterIndex]));
+    final first = await traceTurnStep(
+      'load current-content',
+      () => contents.chapter(
+        bookId,
+        chapters[chapterIndex],
+        textOnly: book.format == BookFormat.pdf && _mode.isOriginal,
+      ),
+    );
     // 目录跳转保存的是标题锚点；该标题可能在页中部。续读只按页比例上报
     // 会把标题前的上一章页首存回去，导致“下一章”的章名又倒退。
     final anchor = _pendingAnchor;
@@ -237,10 +346,14 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
     BookOpeningTrace.mark(bookId, 'session_ready');
     if (readerWorkTraceEnabled) {
       ReaderWorkTrace.start('reader.initial_content', {
-        'bookId': bookId, 'chapterIndex': chapterIndex,
-        'chapters': chapters.length, 'characters': first.textLength,
-        'layoutMode': _mode.name, 'effect': settings.settings.pageTurnEffect.name,
-        'font': settings.settings.fontFamily, 'fontSize': settings.settings.fontSize,
+        'bookId': bookId,
+        'chapterIndex': chapterIndex,
+        'chapters': chapters.length,
+        'characters': first.textLength,
+        'layoutMode': _mode.name,
+        'effect': settings.settings.pageTurnEffect.name,
+        'font': settings.settings.fontFamily,
+        'fontSize': settings.settings.fontSize,
       })?.finish();
     }
     return ReaderSession(
@@ -266,14 +379,18 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
   }
 
   /// 自动阅读也需要取得位置保存权，但不能暂停它正在准备的开始命令。
-  Future<void> beginAutomaticReading() => _manualHandoff ??= _beginManualReading()
-      .whenComplete(() => _manualHandoff = null);
+  Future<void> beginAutomaticReading() => _manualHandoff ??=
+      _beginManualReading().whenComplete(() => _manualHandoff = null);
 
   Future<void> _beginManualReading() async {
     final coordinator = ref.read(readingPositionCoordinatorProvider);
+    final service = ref.read(listeningServiceProvider);
+    // 定时停止已经释放保存权，但页面仍需最后一次追赶。用户主动翻页时
+    // 也要撤销这次跟随，不能因为保存权已释放而跳过交接。
     if (coordinator.owner(bookId) == ReadingPositionSource.listening ||
-        coordinator.version(bookId) != _positionToken) {
-      final service = ref.read(listeningServiceProvider);
+        coordinator.version(bookId) != _positionToken ||
+        (service.snapshot.bookId == bookId &&
+            service.snapshot.pageFollowLocator != null)) {
       cancelSpeechFollow();
       await service.takeOverReading(bookId);
       if (!ref.mounted) return;
@@ -290,6 +407,8 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
   /// 进度是内容比例，逐页变化，书架直接显示它。
   @override
   Future<void> persist() async {
+    // 退出前已经 flush；恢复竖屏／系统栏产生的临时排版不能再覆盖阅读位置。
+    if (ref.read(readingWindowProvider).exiting.value) return;
     final session = state.value;
     if (session == null) return;
     // 原书模式可能还没有简化模式的排版结果，这里不能按 isReady 卡住：
@@ -297,9 +416,16 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
     final anchor = session.currentAnchor;
     if (anchor == null) return;
     final coordinator = ref.read(readingPositionCoordinatorProvider);
-    final position =
-        _restoredPosition(anchor) ??
-        ReadingPosition(locator: anchor, progress: session.bookProgress);
+    // UI 已接管显示确认时，准备中的目标不能覆盖最后真实显示的位置。
+    final waitingForPaint =
+        _visualPresenters.isNotEmpty &&
+        !_mode.isOriginal &&
+        !session.scrolling &&
+        _confirmedPage != (session.layout?.identity, session.pageIndex);
+    final position = waitingForPaint
+        ? _confirmedVisualPosition
+        : _visualPosition(session);
+    if (position == null) return;
     // 多个位置上报可能紧挨着到达。串行写入并让调用方真正等到自己的写入完成，
     // 避免退出时旧写入最后完成、覆盖刚拖动或刚换章的位置。
     final token = _positionToken;
@@ -311,7 +437,9 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
     if (ref.mounted &&
         _manualListening &&
         coordinator.accepts(bookId, token, ReadingPositionSource.visual)) {
-      ref.read(listeningServiceProvider).updateReadingPosition(anchor);
+      ref
+          .read(listeningServiceProvider)
+          .updateReadingPosition(position.locator);
     }
   }
 
@@ -324,8 +452,10 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
       final pending = _tocPresentation;
       if (pending != null) {
         try {
-          await traceTurnStep('toc presented chapter=${pending.chapter}',
-              () => pending.done.future.timeout(const Duration(seconds: 10)));
+          await traceTurnStep(
+            'toc presented chapter=${pending.chapter}',
+            () => pending.done.future.timeout(const Duration(seconds: 10)),
+          );
         } finally {
           if (identical(_tocPresentation, pending)) _tocPresentation = null;
         }
@@ -349,26 +479,39 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
 
   /// 返回阅读页或切后台前，等正在落位的操作结束，并确保最后位置已写入。
   Future<void> flushPendingPosition() async {
-    await ref.read(flushListeningPositionProvider)();
+    await traceReaderWork(
+      'reader.exit.position.listening',
+      () => ref.read(flushListeningPositionProvider)(),
+    );
     final pending = <Future<void>>[
       ?pendingScrollPosition,
       if (_progressLanding case final landing?) landing.done.future,
+      if (_contentProgressLanding case final landing?) landing.done.future,
       if (_tocLanding case final landing?) landing.done.future,
     ];
     if (pending.isNotEmpty) {
       try {
-        await Future.wait(pending).timeout(const Duration(seconds: 5));
+        await traceReaderWork(
+          'reader.exit.position.landings',
+          () => Future.wait(pending).timeout(const Duration(seconds: 5)),
+          {'count': pending.length},
+        );
       } on TimeoutException {
         // WebView 异常时不能把用户锁在阅读页，超时后保存当前已确认的位置。
       }
     }
-    await ref.read(automaticReadingProvider(bookId).notifier).flushPosition();
-    await persist();
+    await traceReaderWork(
+      'reader.exit.position.auto_flush',
+      () => ref.read(automaticReadingProvider(bookId).notifier).flushPosition(),
+    );
+    await traceReaderWork('reader.exit.position.persist', persist);
   }
 
   /// 翻到下一页；已在全书末尾时返回 [PageTurnResult.atBookEnd]。
   Future<PageTurnResult> nextPage() async {
+    cancelProgressNavigation();
     await beginManualReading();
+    await _ensureForwardPage();
     _clearRestoredPosition();
     final session = state.value;
     if (session == null || !session.isReady) return PageTurnResult.moved;
@@ -384,12 +527,14 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
       chapterIndex: session.chapterIndex + 1,
       options: _options,
       anchor: null,
+      preparedLayout: _nextChapterLayout,
     );
     return PageTurnResult.moved;
   }
 
   /// 翻到上一页；已在全书开头时返回 [PageTurnResult.atBookStart]。
   Future<PageTurnResult> previousPage() async {
+    cancelProgressNavigation();
     await beginManualReading();
     _clearRestoredPosition();
     final session = state.value;
@@ -406,6 +551,7 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
       anchor: null,
       // 进入上一章时落在它的最后一页，向前翻页才连续
       atChapterEnd: true,
+      preparedLayout: _previousChapterLayout,
     );
     return PageTurnResult.moved;
   }
@@ -413,6 +559,7 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
   /// 跳到指定章节（目录跳转、上一章/下一章按钮）。
   @override
   Future<void> goToChapter(int index) async {
+    cancelProgressNavigation();
     await beginManualReading();
     _clearRestoredPosition();
     final session = state.value;
@@ -486,7 +633,7 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
       if (request != _speechRequest || !ref.mounted) return;
       layout = await ref
           .read(readerEngineProvider)
-          .layoutChapter(
+          .layoutWindow(
             LayoutRequest(
               bookId: bookId,
               contentVersion: session.book.contentVersion,
@@ -494,6 +641,7 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
               content: content,
               options: options,
             ),
+            target: locator,
           );
     }
     if (!ref.mounted ||
@@ -502,6 +650,8 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
         options != _options) {
       return;
     }
+    layout = await layout.ensureTarget(locator);
+    if (!ref.mounted || request != _speechRequest) return;
     final page = layout.pageIndexOf(locator);
     if (page == null ||
         (layout == session.layout && page == session.pageIndex)) {
@@ -518,6 +668,7 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
         viewportSignature: options.layoutSignature,
       ),
     );
+    _watchLayout(layout);
   }
 
   @override
@@ -526,6 +677,7 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
     bool restoringListening = false,
     bool manual = true,
   }) async {
+    cancelProgressNavigation();
     traceBookmark('locator-request', {
       'target': bookmarkTraceLocator(locator),
       'from': bookmarkTraceLocator(state.value?.currentAnchor),
@@ -536,10 +688,14 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
     if (locator.needsRelocation) {
       final chapters = state.value?.chapters;
       if (chapters == null) return;
-      final resolved = await ref.read(sourcePositionResolverProvider).resolve(locator, chapters);
+      final resolved = await ref
+          .read(sourcePositionResolverProvider)
+          .resolve(locator, chapters);
       if (resolved == null) throw const ReaderFailure('原文已变化，无法准确定位，记录已保留');
       locator = resolved;
-      traceBookmark('locator-resolved', {'target': bookmarkTraceLocator(locator)});
+      traceBookmark('locator-resolved', {
+        'target': bookmarkTraceLocator(locator),
+      });
     }
     if (manual && !restoringListening) await beginManualReading();
     if (!restoringListening) _clearRestoredPosition();
@@ -555,13 +711,31 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
     if (_mode.isOriginal) {
       final fraction = await _fractionOfLocatorIn(index, locator);
       if (fraction == null) return;
-      await jumpToOriginalChapter(index, fraction: fraction);
+      await jumpToOriginalChapter(
+        index,
+        fraction: session.book.format == BookFormat.pdf
+            ? (await _contentFor(session.chapters[index]))!.pdfPage!
+                  .yOf(locator)
+            : fraction,
+        exact:
+            session.book.format == BookFormat.pdf ||
+                ReaderDeliveryExperiments.contentTarget
+            ? locator
+            : null,
+      );
       return;
     }
     if (index == session.chapterIndex && session.layout != null) {
-      final page = session.layout!.pageIndexOf(locator);
+      final prepared = await session.layout!.ensureTarget(locator);
+      if (!ref.mounted ||
+          state.value?.layout?.identity != session.layout!.identity) {
+        return;
+      }
+      final page = prepared.pageIndexOf(locator);
       if (page != null) {
-        state = AsyncData(session.copyWith(pageIndex: page));
+        state = AsyncData(
+          state.requireValue.copyWith(layout: prepared, pageIndex: page),
+        );
         if (manual && !restoringListening) await persist();
         return;
       }
@@ -571,88 +745,6 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
       options: _options,
       anchor: locator,
     );
-  }
-
-  /// 按百分比跳转（控制层进度滑块）。
-  Future<void> goToProgress(
-    double fraction, {
-    bool waitForOriginal = false,
-  }) async {
-    await traceReaderWork('reader.progress.stop_automatic', beginManualReading);
-    _clearRestoredPosition();
-    final session = state.value;
-    if (session == null || session.chapters.isEmpty) return;
-    final target = (bookTotalChars(session) * fraction.clamp(0.0, 1.0)).round();
-    var consumed = 0;
-    for (var i = 0; i < session.chapters.length; i++) {
-      final length = session.chapters[i].textLength;
-      if (consumed + length >= target || i == session.chapters.length - 1) {
-        final within = (target - consumed).clamp(0, length).toInt();
-        if (session.scrolling) {
-          await traceReaderWork('reader.progress.scroll_request',
-            () => requestScrollChapter(i, fraction: length == 0 ? 0 : within / length));
-          if (waitForOriginal) {
-            await traceReaderWork('reader.progress.scroll_landing', waitForScrollPosition);
-            await traceReaderWork('reader.progress.persist', persist);
-          }
-          return;
-        }
-        // 原书模式：按章内比例跳（进度滑块拖动会连续触发，这里只下发一次定位）
-        if (_mode.isOriginal) {
-          final fraction = length <= 0 ? 0.0 : within / length;
-          if (readerWorkTraceEnabled) {
-            ReaderWorkTrace.start('reader.progress.target', {
-              'bookId': bookId, 'fromChapter': session.chapterIndex,
-              'targetChapter': i, 'chapterTextLength': length,
-              'chapterFraction': fraction, 'waitForOriginal': waitForOriginal,
-              'parallelEligible': FirstSeekExperiments.parallelChapter &&
-                  length >= 64 * 1024 && i != session.chapterIndex,
-            })?.finish();
-          }
-          final previous = _progressLanding;
-          if (previous != null && !previous.done.isCompleted) {
-            previous.done.complete();
-          }
-          final landing = waitForOriginal
-              ? (chapter: i, fraction: fraction, done: Completer<void>())
-              : null;
-          _progressLanding = landing;
-          // 短章读取很快，提前挂载反而增加一轮帧调度；只并行读取较慢的大章。
-          if (FirstSeekExperiments.parallelChapter &&
-              length >= 64 * 1024 && i != session.chapterIndex) {
-            ref.read(originalLayoutProvider(bookId)).value
-                ?.prepareProgressChapter?.call(i, fraction);
-          }
-          await traceReaderWork('reader.progress.switch_chapter',
-            () => jumpToOriginalChapter(i, fraction: fraction));
-          if (landing != null) {
-            try {
-              // 等真实落页确认；超时只报失败，不用固定延时掩盖闪回。
-              await traceReaderWork('reader.progress.wait_landing',
-                () => landing.done.future.timeout(const Duration(seconds: 10)));
-            } finally {
-              if (identical(_progressLanding, landing)) _progressLanding = null;
-            }
-            await traceReaderWork('reader.progress.persist', persist);
-          }
-          return;
-        }
-        if (i == session.chapterIndex && session.layout != null) {
-          // 章内按同口径换算到页
-          final page = _pageForChapterOffset(session.layout!, within);
-          state = AsyncData(session.copyWith(pageIndex: page));
-          return;
-        }
-        await _layoutChapter(
-          chapterIndex: i,
-          options: _options,
-          anchor: null,
-          chapterOffset: within,
-        );
-        return;
-      }
-      consumed += length;
-    }
   }
 }
 

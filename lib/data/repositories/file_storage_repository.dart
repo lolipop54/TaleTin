@@ -13,11 +13,13 @@ class FileStorageRepository implements StorageRepository {
     required this.originals,
     required this.protectedBooks,
     this.clearChapterCache,
+    this.clearLayoutCache,
   });
   final String supportRoot, cacheRoot;
   final EpubSourceRepository originals;
   final Set<String> Function() protectedBooks;
   final Future<void> Function()? clearChapterCache;
+  final Future<void> Function()? clearLayoutCache;
   @override
   Future<StorageUsage> load() {
     final support = supportRoot, cache = cacheRoot;
@@ -28,13 +30,34 @@ class FileStorageRepository implements StorageRepository {
   @override
   Future<void> clearCache() async {
     await clearChapterCache?.call();
+    await clearLayoutCache?.call();
+    await originals.preparations.clear();
     // 使用中的原书/听书、导入暂存、真实字体、WebView 内部缓存均不碰。
-    final root = Directory(p.join(cacheRoot, 'original'));
-    if (await root.exists()) {
-      await for (final entity in root.list(followLinks: false)) {
-        if (entity is! Directory) continue;
-        final detached = originals.detachUnusedCache(entity, protectedBooks());
-        if (detached != null) await detached.delete(recursive: true);
+    for (final name in ['original', 'mobi', 'reading']) {
+      final root = Directory(p.join(cacheRoot, name));
+      if (await root.exists()) {
+        await for (final entity in root.list(followLinks: false)) {
+          if (entity is! Directory) continue;
+          if (name != 'original') {
+            if (entity.path == p.join(root.path, '.pins') ||
+                {
+                  ...protectedBooks(),
+                  ...originals.activeBookIds,
+                }.contains(p.basename(entity.path))) {
+              continue;
+            }
+            if (!p.isWithin(root.path, entity.path)) {
+              throw const FormatException('缓存书籍路径越界');
+            }
+            await entity.delete(recursive: true);
+            continue;
+          }
+          final detached = originals.detachUnusedCache(
+            entity,
+            protectedBooks(),
+          );
+          if (detached != null) await detached.delete(recursive: true);
+        }
       }
     }
     for (final name in ['search', 'cleanup']) {
@@ -84,7 +107,9 @@ Future<StorageUsage> _scan(
         if (parts.first == 'search' ||
             parts.first == 'cleanup' ||
             parts.first == 'chapters' ||
-            (parts.first == 'original' &&
+            parts.first == 'layout_checkpoints' ||
+            parts.first == 'original_prepared' ||
+            ({'original', 'mobi', 'reading'}.contains(parts.first) &&
                 parts.length > 2 &&
                 !protected.contains(parts[1]))) {
           clearable += length;

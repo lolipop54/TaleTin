@@ -1,10 +1,12 @@
+import 'package:taletin/core/diagnostics/app_errors.dart';
+
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 
 import '../../../../domain/models/reading_statistics.dart';
 import '../../../../domain/services/reading_segment_slicer.dart';
-import '../../../../platform/channels/system_toast.dart';
+import '../../../../data/services/statistics_compute.dart';
 import '../../../core/theme/gt_tokens.dart';
 import '../../../core/widgets/gt_button.dart';
 import '../view_models/statistics_providers.dart';
@@ -22,13 +24,17 @@ Future<void> showReadingDay(
   StatisticsPageData detail;
   try {
     detail = await data.loadDay?.call(date) ?? data;
-  } catch (_) {
-    if (context.mounted) await SystemToast.show('阅读记录暂时无法读取，请稍后重试');
+  } catch (appError, appStack) {
+    AppErrors.report(appError, appStack, operation: '读取阅读记录失败', notify: false);
+    if (context.mounted) {
+      AppErrors.report(appError, appStack, operation: '读取阅读记录失败');
+    }
     return;
   }
   if (!context.mounted) return;
   // 按书汇总当天的有效片段，同书多次阅读及听书共用一条记录。
-  final books = detail.summary(now).booksOn(date);
+  final books = await readingBooksOn(detail.statistics, date);
+  if (!context.mounted) return;
   final width = (32 * MediaQuery.devicePixelRatioOf(context)).round();
   // 封面与真实记录一并准备，面板打开后不再从空图跳成封面。
   await Future.wait(

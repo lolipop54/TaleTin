@@ -10,6 +10,7 @@
 /// 草稿与已保存笔记是两回事：草稿不进笔记列表，也不算成就数量。
 library;
 
+import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
@@ -170,7 +171,8 @@ class NoteEditorController extends ChangeNotifier {
       _initialBody = _body;
       await drafts.clear(bookId);
       return true;
-    } catch (error) {
+    } catch (error, appStack) {
+      AppErrors.report(error, appStack, operation: '保存笔记失败');
       // 保存失败：输入和草稿都留着，用户可以直接重试
       _error = '保存失败，请重试';
       await flushDraft();
@@ -201,7 +203,8 @@ class NoteEditorController extends ChangeNotifier {
       _initialBody = '';
       await drafts.clear(bookId);
       return true;
-    } catch (error) {
+    } catch (error, appStack) {
+      AppErrors.report(error, appStack, operation: '保存高亮失败');
       _error = '保存失败，请重试';
       return false;
     } finally {
@@ -221,7 +224,8 @@ class NoteEditorController extends ChangeNotifier {
       await annotations.deleteAnnotation(id);
       await drafts.clear(bookId);
       return true;
-    } catch (error) {
+    } catch (error, appStack) {
+      AppErrors.report(error, appStack, operation: '删除笔记失败');
       _error = '删除失败，请重试';
       return false;
     } finally {

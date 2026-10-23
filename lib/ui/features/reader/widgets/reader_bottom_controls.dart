@@ -70,7 +70,8 @@ class _BottomControlsState extends ConsumerState<_BottomControls> {
         panel,
       );
       if (mounted) ref.read(readerProvider.notifier).openPanel(panel);
-    } catch (_) {
+    } catch (appError, appStack) {
+      AppErrors.report(appError, appStack, operation: '打开阅读面板失败');
       if (mounted) ref.read(readerProvider.notifier).showNotice('面板准备失败，请重试');
     } finally {
       _openingPanel = false;
@@ -113,9 +114,16 @@ class _BottomControlsState extends ConsumerState<_BottomControls> {
         speech.followReading) {
       _chapterNavPending = true;
       try {
-        await ref.read(readerProgressReturnProvider(widget.bookId).notifier)
-            .transition(() => ref.read(listeningPanelProvider(widget.bookId)).chapter(delta));
-      } finally { _chapterNavPending = false; }
+        await ref
+            .read(readerProgressReturnProvider(widget.bookId).notifier)
+            .transition(
+              () => ref
+                  .read(listeningPanelProvider(widget.bookId))
+                  .chapter(delta),
+            );
+      } finally {
+        _chapterNavPending = false;
+      }
       return;
     }
     final session = ref.read(readerSessionProvider(widget.bookId)).value;
@@ -165,20 +173,21 @@ class _BottomControlsState extends ConsumerState<_BottomControls> {
           await notifier.waitForTocPosition();
         }
 
-        final hold = notifier.layoutMode.isOriginal && !session.scrolling
+        final hold = notifier.usesOriginalWebView && !session.scrolling
             ? ref
                   .read(originalLayoutProvider(widget.bookId))
                   .value
                   ?.holdPageDuringJump
             : null;
-        await ref.read(readerProgressReturnProvider(widget.bookId).notifier)
+        await ref
+            .read(readerProgressReturnProvider(widget.bookId).notifier)
             .transition(() async {
-          if (hold == null) {
-            await jump();
-          } else {
-            await hold(jump);
-          }
-        });
+              if (hold == null) {
+                await jump();
+              } else {
+                await hold(jump);
+              }
+            });
         _lastNavPosition = ref
             .read(readerSessionProvider(widget.bookId))
             .value
@@ -187,7 +196,8 @@ class _BottomControlsState extends ConsumerState<_BottomControls> {
         _lastNavEntry = previousEntry;
         rethrow;
       }
-    } catch (_) {
+    } catch (appError, appStack) {
+      AppErrors.report(appError, appStack, operation: '切换章节失败');
       if (mounted) {
         ref.read(readerProvider.notifier).showNotice('换章未完成，请重试');
       }
@@ -216,23 +226,32 @@ class _BottomControlsState extends ConsumerState<_BottomControls> {
     final version = ++_seekVersion;
     // 直接记录真实滑块提交，不用自动化入口的耗时替代用户操作。
     final current = readerWorkTraceEnabled
-        ? ref.read(readerSessionProvider(widget.bookId)).value : null;
+        ? ref.read(readerSessionProvider(widget.bookId)).value
+        : null;
     final settings = readerWorkTraceEnabled
-        ? ref.read(readerSettingsProvider(widget.bookId)).value?.settings : null;
-    final trace = !readerWorkTraceEnabled ? null : ReaderWorkTrace.start(
-      'reader.progress.user', {
-        'bookId': widget.bookId, 'request': version, 'target': value,
-        'fromChapter': current?.chapterIndex, 'fromProgress': current?.bookProgress,
-        'scrolling': current?.scrolling, 'fontFamily': settings?.fontFamily,
-        'originalFont': settings?.useOriginalFont, 'fontSize': settings?.fontSize,
-        'fontWeight': settings?.fontWeight, 'lineHeight': settings?.lineHeight,
-        'paragraphGap': settings?.paragraphGapEm,
-      });
+        ? ref.read(readerSettingsProvider(widget.bookId)).value?.settings
+        : null;
+    final trace = !readerWorkTraceEnabled
+        ? null
+        : ReaderWorkTrace.start('reader.progress.user', {
+            'bookId': widget.bookId,
+            'request': version,
+            'target': value,
+            'fromChapter': current?.chapterIndex,
+            'fromProgress': current?.bookProgress,
+            'scrolling': current?.scrolling,
+            'fontFamily': settings?.fontFamily,
+            'originalFont': settings?.useOriginalFont,
+            'fontSize': settings?.fontSize,
+            'fontWeight': settings?.fontWeight,
+            'lineHeight': settings?.lineHeight,
+            'paragraphGap': settings?.paragraphGapEm,
+          });
     var status = 'ok';
     try {
       final notifier = ref.read(readerSessionProvider(widget.bookId).notifier);
       final hold =
-          notifier.layoutMode.isOriginal &&
+          notifier.usesOriginalWebView &&
               ref.read(readerSessionProvider(widget.bookId)).value?.scrolling !=
                   true
           ? ref
@@ -255,7 +274,8 @@ class _BottomControlsState extends ConsumerState<_BottomControls> {
           }
         },
       );
-    } catch (_) {
+    } catch (appError, appStack) {
+      AppErrors.report(appError, appStack, operation: '跳转进度失败');
       status = 'error';
       if (mounted && version == _seekVersion) {
         ref.read(readerProvider.notifier).showNotice('进度跳转未完成，请重试');
@@ -291,7 +311,7 @@ class _BottomControlsState extends ConsumerState<_BottomControls> {
     if (positioned) _lastPositionedSession = current;
     final session = positioned ? current : _lastPositionedSession ?? current;
     // 拖动值只用于面板反馈，不等待分页/位置回报，也不连续重载正文。
-    final progress = _dragProgress ?? session?.bookProgress ?? 0;
+    final progress = _dragProgress ?? session?.readingProgress ?? 0;
     // 章名查询与换章同一口径：拖动时用滑块值（它就是要落到的位置），
     // 其余用内容文本位置
     final position = _dragProgress ?? session?.contentProgress ?? 0;
@@ -381,7 +401,8 @@ class _BottomControlsState extends ConsumerState<_BottomControls> {
                                     horizontal: 16,
                                   ),
                                   child: SettingsSlider(
-                                    trackThickness: GtSliderSize.trackThicknessSmall,
+                                    trackThickness:
+                                        GtSliderSize.trackThicknessSmall,
                                     thumbRadius: GtSliderSize.thumbRadiusSmall,
                                     label: '',
                                     compact: true,
@@ -443,6 +464,7 @@ class _BottomControlsState extends ConsumerState<_BottomControls> {
                             ),
                     ),
                     ReaderToolbar(
+                      showListening: !ref.watch(pdfModeProvider(bookId)),
                       theme: theme,
                       onSelect: (panel) => unawaited(_openPanel(panel)),
                     ),

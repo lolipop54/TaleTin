@@ -34,8 +34,7 @@ class GlobalTypographyView extends ConsumerWidget {
         ReadingTheme.values.where((theme) => theme.name == id).firstOrNull ??
         kDefaultReadingTheme;
     final s = current?.typography;
-    // 缩进、加粗、字号三行的标签中心等距。滑块数字会随系统字号增大，
-    // 按它的真实字形尺寸给这三行相同高度，不能靠固定补白或裁掉圆块。
+    // 缩进、显示开关、加粗与字号使用一致的行高；按真实数字尺寸容纳大字号。
     var typographyRowHeight = 48.0;
     for (final value in [
       ReadingLimits.minFontSize,
@@ -77,9 +76,9 @@ class GlobalTypographyView extends ConsumerWidget {
             : ListView.separated(
                 padding: const EdgeInsets.all(20),
                 separatorBuilder: (context, index) => SizedBox(height: 8),
-                itemCount: 9,
+                itemCount: 12,
                 itemBuilder: (context, index) => SizedBox(
-                  height: index >= 2 && index <= 4 ? typographyRowHeight : null,
+                  height: index >= 2 && index <= 6 ? typographyRowHeight : null,
                   child: [
                     SettingsRow(
                       divider: false,
@@ -126,6 +125,36 @@ class GlobalTypographyView extends ConsumerWidget {
                     ),
                     SettingsRow(
                       divider: false,
+                      label: '书边效果',
+                      trailing: GtSwitch(
+                        key: const Key('global-book-edges-switch'),
+                        value: s.bookEdges,
+                        onChanged: (v) =>
+                            change((s) => s.copyWith(bookEdges: v)),
+                      ),
+                    ),
+                    SettingsRow(
+                      divider: false,
+                      label: '横屏',
+                      trailing: GtSwitch(
+                        key: const Key('global-landscape-switch'),
+                        value: s.landscape,
+                        onChanged: (v) =>
+                            change((s) => s.copyWith(landscape: v)),
+                      ),
+                    ),
+                    SettingsRow(
+                      divider: false,
+                      label: '横屏双翻页',
+                      trailing: GtSwitch(
+                        key: const Key('global-landscape-spread-switch'),
+                        value: s.landscapeSpread,
+                        onChanged: (v) =>
+                            change((s) => s.copyWith(landscapeSpread: v)),
+                      ),
+                    ),
+                    SettingsRow(
+                      divider: false,
                       label: '字体加粗',
                       trailing: SizedBox(
                         // 给四字标签保留完整宽度；窄屏大字号下仅收紧右侧选项。
@@ -157,8 +186,7 @@ class GlobalTypographyView extends ConsumerWidget {
                       divisions:
                           ReadingLimits.maxFontSize - ReadingLimits.minFontSize,
                       format: (v) => v.round().toString(),
-                      save: (v) =>
-                          vm.change((s) => s.withFontSize(v.round())),
+                      save: (v) => vm.change((s) => s.withFontSize(v.round())),
                     ),
                     SettingsSlider(
                       labelStyle: GtText.body(context.gtColors.textPrimary)
@@ -203,9 +231,11 @@ class GlobalTypographyView extends ConsumerWidget {
                       save: (v) =>
                           vm.change((s) => s.copyWith(horizontalPadding: v)),
                     ),
+
                     Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
+                        SizedBox(height: 12),
                         Text(
                           '阅读主题',
                           style: GtText.body(context.gtColors.textPrimary)

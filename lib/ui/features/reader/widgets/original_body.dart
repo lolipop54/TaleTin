@@ -1,6 +1,8 @@
 /// 原书分页：一个 WebView 承载三个固定的章节 iframe。
 library;
 
+import 'package:taletin/core/diagnostics/app_errors.dart';
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:ui' as ui;
@@ -14,16 +16,20 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import '../../../../platform/channels/reading_fonts.dart';
 import '../../../../platform/channels/original_webview_warmup.dart';
 import '../../../../core/diagnostics/opening_experiments.dart';
+import '../../../../core/diagnostics/reader_delivery_experiments.dart';
 import '../../../../core/diagnostics/bookmark_trace.dart';
+import '../../../../core/diagnostics/reader_turn_diagnostics.dart';
 import '../../../../data/services/epub_source_repository.dart';
 import 'original_host_controller.dart';
 import 'original_font_assets.dart';
+import 'original_console_errors.dart';
 import 'original_page_capture.dart';
 import 'original_preload_gate.dart';
 import 'turn_trace.dart';
 
 part 'original_chapter.dart';
 part 'original_body_resources.dart';
+part 'original_initial_layout.dart';
 
 const String kFrameworkPathPrefix = '/__gt__/';
 
@@ -35,6 +41,7 @@ class OriginalBody extends StatefulWidget {
     required this.current,
     required this.slide,
     required this.preload,
+    this.prepareOnDemand = true,
   });
   final EpubSourceSession session;
 
@@ -43,6 +50,10 @@ class OriginalBody extends StatefulWidget {
   final int current;
   final ValueListenable<double> slide;
   final OriginalPreloadGate preload;
+
+  /// 长章实际布局足够重，按需离屏准备没有整体收益；直接沿用正常创建。
+  /// 已经存在的启动实例仍正常接手，不因本次开书的章长丢弃它。
+  final bool prepareOnDemand;
   @override
   State<OriginalBody> createState() => _OriginalBodyState();
 }
@@ -64,6 +75,7 @@ class _ChapterFrame {
   String? styleKey;
   String? informationKey;
   Size? viewport;
+  bool? backgroundAllowed;
 }
 
 class _OriginalBodyState extends State<OriginalBody> {
@@ -83,18 +95,39 @@ class _OriginalBodyState extends State<OriginalBody> {
   bool _syncing = false;
   _ChapterFrame? _heldFrame;
   bool _startupPrepared = OriginalWebViewWarmup.isPrepared;
-  final _preparedView = OriginalWebViewWarmup.takeFirstView();
+  HeadlessInAppWebView? _preparedView = OriginalWebViewWarmup.takeFirstView();
 
   @override
   void initState() {
     super.initState();
-    widget.preload.addListener(_resumePreparations);
+    widget.preload.addListener(_preloadChanged);
     widget.slide.addListener(_moveSlide);
-    if (!_startupPrepared) {
+    if (_preparedView == null &&
+        widget.prepareOnDemand &&
+        OriginalWebViewWarmup.canPrepareFirstView &&
+        ReaderDeliveryExperiments.originalRepeatView) {
+      // 退出后重开及首次导入入口也准备首帧；在本次加载层下面完成，
+      // 取得同一个实例后才建平台视图，避免准备一个却又创建另一个。
+      _startupPrepared = false;
+      unawaited(_prepareFirstView());
+    } else if (!_startupPrepared) {
       OriginalWebViewWarmup.ensureReady().then((_) {
         if (mounted) setState(() => _startupPrepared = true);
       });
     }
+  }
+
+  Future<void> _prepareFirstView() async {
+    await OriginalWebViewWarmup.prepareFirstView(originalWebViewSettings());
+    final view = OriginalWebViewWarmup.takeFirstView();
+    if (!mounted) {
+      await view?.dispose();
+      return;
+    }
+    setState(() {
+      _preparedView = view;
+      _startupPrepared = true;
+    });
   }
 
   @override
@@ -102,7 +135,7 @@ class _OriginalBodyState extends State<OriginalBody> {
     if (_preparedView?.isRunning() ?? false) {
       unawaited(_preparedView!.dispose());
     }
-    widget.preload.removeListener(_resumePreparations);
+    widget.preload.removeListener(_preloadChanged);
     widget.slide.removeListener(_moveSlide);
     super.dispose();
   }
@@ -118,6 +151,12 @@ class _OriginalBodyState extends State<OriginalBody> {
       frame.started = true;
       unawaited(_start(frame, frame.readyWidth!));
     }
+  }
+
+  void _preloadChanged() {
+    if (!mounted || !_shellReady) return;
+    widget.session.allowPreparationBackground(!widget.preload.blocked);
+    _syncChapters();
   }
 
   bool _alive(_ChapterFrame frame) => mounted && _frames.contains(frame);
@@ -140,83 +179,129 @@ class _OriginalBodyState extends State<OriginalBody> {
         });
       }
       // 只截正文：翻页图、跳转遮盖与手柄都是父层 Stack 中的兄弟节点。
-      return RepaintBoundary(key: _captureBoundary, child: InAppWebView(
-        headlessWebView: _preparedView,
-        initialUrlRequest: URLRequest(
+      return RepaintBoundary(
+        key: _captureBoundary,
+        child: InAppWebView(
+          headlessWebView: _preparedView,
+          initialUrlRequest: URLRequest(
+            url: WebUri(
+              'https://$kEpubSourceHost${kFrameworkPathPrefix}paged_host.html',
+            ),
+          ),
+          initialSettings: originalWebViewSettings(),
+          gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
+          onWebViewCreated: (controller) {
+            _controller = controller;
+            _physicalHost = OriginalHostController.fromWebView(
+              controller,
+              paginated: true,
+            );
+            controller.addJavaScriptHandler(
+              handlerName: 'gtHost',
+              callback: _onHostMessage,
+            );
+            traceTurn('pager created web=${controller.getViewId()}');
+            if (_preparedView != null) {
+              unawaited(_attachPreparedShell(controller));
+            }
+            if (const bool.fromEnvironment('GT_PROFILE_CAPTURE')) {
+              unawaited(
+                InAppWebViewController.setWebContentsDebuggingEnabled(true),
+              );
+            }
+          },
+          shouldInterceptRequest: _intercept,
+          onConsoleMessage: (_, message) {
+            if (message.messageLevel == ConsoleMessageLevel.ERROR) {
+              reportOriginalConsoleError(
+                message.message,
+                operation: '原书脚本执行失败',
+              );
+            }
+            if (readerPerformanceEnabled &&
+                message.message.startsWith('GT_READER_PERF ')) {
+              debugPrint(message.message);
+            }
+          },
+          shouldOverrideUrlLoading: (controller, action) async {
+            // 初次 iframe 导航只允许当前登记的章节；书内链接仍由 host.tap 上报。
+            final url = action.request.url;
+            if (url?.host == kEpubSourceHost &&
+                (url?.path == '${kFrameworkPathPrefix}paged_host.html' ||
+                    url.toString() == OriginalWebViewWarmup.pagedShellUrl ||
+                    _frames.any(
+                      (frame) => _url(frame).toString() == url.toString(),
+                    ))) {
+              return NavigationActionPolicy.ALLOW;
+            }
+            if (url.toString() == 'about:blank') {
+              return NavigationActionPolicy.ALLOW;
+            }
+            return NavigationActionPolicy.CANCEL;
+          },
+          onLoadStop: (controller, url) async {
+            if (_shellReady || !mounted) return;
+            final ready = await controller.evaluateJavascript(
+              source: '!!window.__gtPager',
+            );
+            traceTurn('pager shellLoaded ready=$ready');
+            if (ready != true || !mounted) {
+              return;
+            }
+            _shellReady = true;
+            _syncChapters();
+          },
+          onReceivedError: (controller, request, error) {
+            traceTurn('pager loadError code=${error.type}');
+            if (request.isForMainFrame == true) {
+              AppErrors.report(
+                StateError('${error.type}: ${error.description}'),
+                StackTrace.current,
+                operation: '原书页面加载失败',
+              );
+            }
+            for (final frame in _frames.where(
+              (f) => _url(f).toString() == request.url.toString(),
+            )) {
+              frame.chapter.onHostEvent?.call({
+                'type': 'loadError',
+                'url': '${request.url}',
+                'message': error.description,
+              });
+            }
+          },
+          onRenderProcessGone: (_, detail) async {
+            AppErrors.report(
+              StateError('didCrash=${detail.didCrash}'),
+              StackTrace.current,
+              operation: '原书渲染进程退出',
+            );
+          },
+        ),
+      );
+    },
+  );
+
+  Future<void> _attachPreparedShell(InAppWebViewController controller) async {
+    final ready = ReaderDeliveryExperiments.originalPagedShell
+        ? await controller.evaluateJavascript(source: '!!window.__gtPager')
+        : false;
+    if (!mounted || !identical(controller, _controller)) return;
+    if (ready == true) {
+      traceTurn('pager prepared-shell reused web=${controller.getViewId()}');
+      _shellReady = true;
+      await _syncChapters();
+    } else {
+      // 兼容没有准备成分页外壳的实例，滚动入口也仍保留自己的导航流程。
+      await controller.loadUrl(
+        urlRequest: URLRequest(
           url: WebUri(
             'https://$kEpubSourceHost${kFrameworkPathPrefix}paged_host.html',
           ),
         ),
-        initialSettings: originalWebViewSettings(),
-        gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
-        onWebViewCreated: (controller) {
-          _controller = controller;
-          _physicalHost = OriginalHostController.fromWebView(controller);
-          controller.addJavaScriptHandler(
-            handlerName: 'gtHost',
-            callback: _onHostMessage,
-          );
-          traceTurn('pager created web=${controller.getViewId()}');
-          if (_preparedView != null) {
-            // 插件接手已有实例时不执行 initialUrlRequest，明确加载真正的宿主页。
-            unawaited(controller.loadUrl(urlRequest: URLRequest(
-              url: WebUri('https://$kEpubSourceHost${kFrameworkPathPrefix}paged_host.html'),
-            )));
-          }
-          if (const bool.fromEnvironment('GT_PROFILE_CAPTURE')) {
-            unawaited(
-              InAppWebViewController.setWebContentsDebuggingEnabled(true),
-            );
-          }
-        },
-        shouldInterceptRequest: _intercept,
-        onConsoleMessage: (_, message) {
-          if (readerPerformanceEnabled && message.message.startsWith('GT_READER_PERF ')) {
-            debugPrint(message.message);
-          }
-        },
-        shouldOverrideUrlLoading: (controller, action) async {
-          // 初次 iframe 导航只允许当前登记的章节；书内链接仍由 host.tap 上报。
-          final url = action.request.url;
-          if (url?.host == kEpubSourceHost &&
-              (url?.path == '${kFrameworkPathPrefix}paged_host.html' ||
-                  _frames.any(
-                    (frame) => _url(frame).toString() == url.toString(),
-                  ))) {
-            return NavigationActionPolicy.ALLOW;
-          }
-          if (url.toString() == 'about:blank') {
-            return NavigationActionPolicy.ALLOW;
-          }
-          return NavigationActionPolicy.CANCEL;
-        },
-        onLoadStop: (controller, url) async {
-          if (_shellReady || !mounted) return;
-          final ready = await controller.evaluateJavascript(
-            source: '!!window.__gtPager',
-          );
-          traceTurn('pager shellLoaded ready=$ready');
-          if (ready != true || !mounted) {
-            return;
-          }
-          _shellReady = true;
-          _syncChapters();
-        },
-        onReceivedError: (controller, request, error) {
-          traceTurn('pager loadError code=${error.type}');
-          for (final frame in _frames.where(
-            (f) => _url(f).toString() == request.url.toString(),
-          )) {
-            frame.chapter.onHostEvent?.call({
-              'type': 'loadError',
-              'url': '${request.url}',
-              'message': error.description,
-            });
-          }
-        },
-      ));
-    },
-  );
+      );
+    }
+  }
 
   @override
   void didUpdateWidget(OriginalBody oldWidget) {
@@ -245,7 +330,17 @@ class _OriginalBodyState extends State<OriginalBody> {
     );
   }
 
-  void _syncChapters() {
+  Future<void> _syncChapters() async {
+    widget.session.allowPreparationBackground(!widget.preload.blocked);
+    final controller = _controller;
+    if (ReaderDeliveryExperiments.originalNativeResources &&
+        controller != null) {
+      await widget.session.bindResources(
+        controller.getViewId()!,
+        injection: _frameworkHead(null),
+      );
+      if (!mounted || !identical(controller, _controller)) return;
+    }
     final ordinals = widget.chapters.map((chapter) => chapter.ordinal).toSet();
     _frames.removeWhere((frame) => !ordinals.contains(frame.chapter.ordinal));
     final updates = <_ChapterFrame>[];
@@ -258,6 +353,11 @@ class _OriginalBodyState extends State<OriginalBody> {
         frame.chapter = chapter; // 更新当前/邻章回调，不能保留上一角色的闭包。
         if (frame.started) updates.add(frame);
       } else {
+        // 必须挡在 iframe.src 发布之前，仅挡 start 仍会让无关文档先解析。
+        if (ReaderDeliveryExperiments.originalPriority &&
+            !widget.preload.allows(chapter.ordinal, widget.current)) {
+          continue;
+        }
         final slot = [
           0,
           1,
@@ -267,13 +367,19 @@ class _OriginalBodyState extends State<OriginalBody> {
         frame.host = OriginalHostController.forFrame(
           _controller,
           evaluate: (script) => _evaluate(frame, script),
+          evaluateAsync: (script) => _evaluate(frame, script, async: true),
           rendered: () => _rendered(frame),
           presented: () => _presented(frame),
+          turnPresented: () => _presented(frame, afterPageTurn: true),
           capture: () => _capture(frame),
           holdPage: (page) => _holdPage(frame, page),
           releasePage: (committed) => _releasePage(frame, committed),
           preparePage: (page) async {
-            await _evaluate(frame, '__gt.prepareImagePage(${page ?? 'null'})', async: true);
+            await _evaluate(
+              frame,
+              '__gt.prepareImagePage(${page ?? 'null'})',
+              async: true,
+            );
           },
         );
         _frames.add(frame);
@@ -282,9 +388,15 @@ class _OriginalBodyState extends State<OriginalBody> {
         );
       }
       // 父层可能刚裁剪了 hosts 表，重新登记保留章节的同一控制器。
-      chapter.onControllerReady?.call(
-        _frames.firstWhere((f) => f.chapter.ordinal == chapter.ordinal).host,
+      final frame = _frames.firstWhere(
+        (f) => f.chapter.ordinal == chapter.ordinal,
       );
+      chapter.onControllerReady?.call(frame.host);
+      final allowed = !widget.preload.blocked;
+      if (frame.readyWidth != null && frame.backgroundAllowed != allowed) {
+        frame.backgroundAllowed = allowed;
+        unawaited(_evaluate(frame, '__gt.setBackgroundAllowed($allowed)'));
+      }
     }
     final specs = [
       for (final frame in _frames)
@@ -293,6 +405,8 @@ class _OriginalBodyState extends State<OriginalBody> {
           'load': frame.load,
           'chapter': frame.chapter.ordinal,
           'url': _url(frame).toString(),
+          if (ReaderDeliveryExperiments.originalFinalLayout)
+            'initialLayout': _initialLayout(frame.chapter),
         },
     ];
     final script =
@@ -361,7 +475,8 @@ class _OriginalBodyState extends State<OriginalBody> {
   Future<void> _rendered(_ChapterFrame frame) async {
     await _syncFlight;
     if (!_alive(frame)) return;
-    if (OpeningExperiments.visibleImageDecode && frame.host.deferredImagePixels) {
+    if (OpeningExperiments.visibleImageDecode &&
+        frame.host.deferredImagePixels) {
       await frame.host.prepareImagePage();
     }
     await _controller?.callAsyncJavaScript(
@@ -369,11 +484,28 @@ class _OriginalBodyState extends State<OriginalBody> {
     );
   }
 
-  Future<void> _presented(_ChapterFrame frame) async {
+  Future<void> _presented(
+    _ChapterFrame frame, {
+    bool afterPageTurn = false,
+  }) async {
     // 角色更新及临时截图还原完成后，才允许上层撤掉旧页遮盖。
     await _captureFlight;
     if (identical(_heldFrame, frame)) return; // 目标已确认且一直保留在屏幕上。
-    await _rendered(frame);
+    await _syncFlight;
+    await frame.updateFlight;
+    if (!_alive(frame)) return;
+    if (afterPageTurn && frame.paginated && !frame.preparationFailed) {
+      // 切页命令及200ms运动已结束；图片就绪后交给Android visual-state / OnDraw
+      // 确认同一目标画面，不再先串行等待网页的两个rAF。Flutter交接帧仍保留。
+      await frame.host.prepareImagePage();
+      await _controller?.callAsyncJavaScript(
+        functionBody:
+            'await __gtPager.turnRendered(${frame.slot}, ${frame.load});',
+      );
+      traceTurn('presented stable-turn chapter=${frame.chapter.ordinal}');
+    } else {
+      await _rendered(frame);
+    }
     if (_alive(frame)) await _physicalHost?.presented();
   }
 
@@ -383,9 +515,12 @@ class _OriginalBodyState extends State<OriginalBody> {
     await traceTurnStep('hold wait-layout', () => _syncFlight);
     if (!_alive(frame)) throw StateError('目标章节已失效');
     await frame.host.prepareImagePage(page);
-    final shown = await traceTurnStep('hold preview-command', () =>
-      _controller!.evaluateJavascript(
-        source: '__gtPager.previewCapture(${frame.slot}, ${frame.load}, $page)'));
+    final shown = await traceTurnStep(
+      'hold preview-command',
+      () => _controller!.evaluateJavascript(
+        source: '__gtPager.previewCapture(${frame.slot}, ${frame.load}, $page)',
+      ),
+    );
     if (shown != true) throw StateError('目标章节已失效');
     _heldFrame = frame;
     // previewCapture 已同步更新 DOM。原生回调仍等 visual-state、OnDraw
@@ -393,7 +528,9 @@ class _OriginalBodyState extends State<OriginalBody> {
     await traceTurnStep('hold native-presented', _physicalHost!.presented);
     if (!_alive(frame)) throw StateError('目标章节已失效');
     _heldFrame = frame;
-    traceTurn('turn page held chapter=${frame.chapter.ordinal} page=$page load=${frame.load}');
+    traceTurn(
+      'turn page held chapter=${frame.chapter.ordinal} page=$page load=${frame.load}',
+    );
   }
 
   Future<void> _releasePage(_ChapterFrame frame, bool committed) async {
@@ -407,7 +544,9 @@ class _OriginalBodyState extends State<OriginalBody> {
       await _physicalHost?.rendered();
       await _physicalHost?.presented();
     }
-    traceTurn('turn page released chapter=${frame.chapter.ordinal} current=${widget.current}');
+    traceTurn(
+      'turn page released chapter=${frame.chapter.ordinal} current=${widget.current}',
+    );
   }
 
   Future<ui.Image> _capture(_ChapterFrame frame) {
@@ -455,33 +594,6 @@ class _OriginalBodyState extends State<OriginalBody> {
     return result;
   }
 
-  Future<void> _applyStyle(_ChapterFrame frame) async {
-    final c = frame.chapter;
-    final key =
-        '${c.fontSizePx}|${c.columnMarginPx}|${c.indent}|${c.fontFamily}|'
-        '${c.fontWeight}|${c.themeColors}|${c.lineHeight}|${c.paragraphGapEm}';
-    if (frame.styleKey == key) return;
-    frame.styleKey = key;
-    if (c.fontFamily.isNotEmpty) {
-      await _evaluate(
-        frame,
-        'window.__gt && __gt.prepareFont(${jsonEncode(c.fontFamily)}, ${jsonEncode(originalFontCss(c.fontFamily))})',
-        async: true,
-      );
-      if (!_alive(frame) || frame.styleKey != key) return;
-    }
-    await frame.host.applyStyle(
-      fontSizePx: c.fontSizePx,
-      lineHeight: c.lineHeight,
-      paragraphGapEm: c.paragraphGapEm,
-      marginPx: c.columnMarginPx,
-      indent: c.indent,
-      fontFamily: c.fontFamily,
-      fontWeight: c.fontWeight,
-      colors: c.themeColors,
-    );
-  }
-
   Future<void> _updateFrame(_ChapterFrame frame) {
     final c = frame.chapter;
     final key = (
@@ -494,8 +606,12 @@ class _OriginalBodyState extends State<OriginalBody> {
       c.lineHeight,
       c.paragraphGapEm,
       c.preparationRevision,
-      _width, _height, c.information?['top'], c.information?['bottom'],
-      c.information?['pageTurnEffect'], c.information?['paintInHost'],
+      _width,
+      _height,
+      c.information?['top'],
+      c.information?['bottom'],
+      c.information?['pageTurnEffect'],
+      c.information?['paintInHost'],
     );
     final changed = key != frame.updateKey;
     if (!changed && jsonEncode(c.information) == frame.informationKey) {
@@ -504,7 +620,9 @@ class _OriginalBodyState extends State<OriginalBody> {
     frame.updateKey = key;
     final repaginate = changed && frame.paginated;
     if (repaginate) {
-      traceTurn('pager reflow start chapter=${c.ordinal} size=${_width}x$_height');
+      traceTurn(
+        'pager reflow start chapter=${c.ordinal} size=${_width}x$_height',
+      );
       frame.chapter.onHostEvent?.call({'type': 'preparing'});
     }
     // 初次准备和设置更新共用顺序，不能绕过正在加载的字体／高亮。
@@ -513,14 +631,22 @@ class _OriginalBodyState extends State<OriginalBody> {
       frame.preparationFailed = false;
       final viewport = Size(_width, _height);
       if (frame.paginated && frame.viewport != viewport) {
-        await _evaluate(frame,
-          '__gt.resize(${_width.round()}, ${frame.chapter.columnMarginPx.round()})');
+        await _evaluate(
+          frame,
+          '__gt.resize(${_width.round()}, ${frame.chapter.columnMarginPx.round()})',
+        );
       }
       frame.viewport = viewport;
-      await traceTurnStep('load host-style chapter=${frame.chapter.ordinal}', () => _applyStyle(frame));
+      await traceTurnStep(
+        'load host-style chapter=${frame.chapter.ordinal}',
+        () => _applyStyle(frame),
+      );
       final c = frame.chapter;
       if (!frame.prepared || frame.preparedRevision != c.preparationRevision) {
-        await traceTurnStep('load host-position chapter=${c.ordinal}', () async => c.prepare?.call(frame.host));
+        await traceTurnStep(
+          'load host-position chapter=${c.ordinal}',
+          () async => c.prepare?.call(frame.host),
+        );
         if (!_alive(frame)) return;
         frame.prepared = true;
         frame.preparedRevision = c.preparationRevision;
@@ -532,7 +658,9 @@ class _OriginalBodyState extends State<OriginalBody> {
       }
       if (repaginate && _alive(frame) && frame.updateKey == key) {
         if (frame.chapter.ordinal != widget.current) {
-          await frame.host.goToFraction(frame.chapter.ordinal < widget.current ? 1 : 0);
+          await frame.host.goToFraction(
+            frame.chapter.ordinal < widget.current ? 1 : 0,
+          );
         }
         await _rendered(frame);
         if (frame.chapter.ordinal == widget.current) {
@@ -540,11 +668,15 @@ class _OriginalBodyState extends State<OriginalBody> {
         }
         final state = jsonDecode(await frame.host.state() as String) as Map;
         if (!_alive(frame) || frame.updateKey != key) return;
-        traceTurn('pager reflow ready chapter=${frame.chapter.ordinal} pages=${state['pages']} width=${state['width']}');
+        traceTurn(
+          'pager reflow ready chapter=${frame.chapter.ordinal} pages=${state['pages']} width=${state['width']}',
+        );
         // 设置重排不重新 start；用已完成的分页结果更新两侧就绪和截图版本。
         frame.chapter.onHostEvent?.call({
           'type': 'paginated',
           'pages': state['pages'],
+          'knownPages': state['knownPages'],
+          'indexComplete': state['indexComplete'],
           'width': state['width'],
           'page': state['page'],
           'bookmarkPages': state['bookmarkPages'],
@@ -580,26 +712,42 @@ class _OriginalBodyState extends State<OriginalBody> {
     if (!mounted || matches.isEmpty) return null;
     final frame = matches.first;
     final event = (envelope['event'] as Map).cast<String, Object?>();
-    if (bookmarkTraceEnabled && const {
-      'bookmarkTrace', 'ready', 'paginated', 'relocate', 'page',
-    }.contains(event['type'])) {
+    if (bookmarkTraceEnabled &&
+        const {
+          'bookmarkTrace',
+          'ready',
+          'paginated',
+          'relocate',
+          'page',
+        }.contains(event['type'])) {
       traceBookmark('web-event', {
         'chapter': frame.chapter.ordinal,
         'slot': frame.slot,
         'load': frame.load,
         'host': identityHashCode(frame.host),
         'currentChapter': widget.current,
-        if (event['type'] == 'bookmarkTrace') ...event
+        if (event['type'] == 'bookmarkTrace')
+          ...event
         else ...{
-          for (final key in ['type', 'page', 'pages', 'fraction', 'width',
-            'step', 'columnWidth', 'contentWidth', 'scrollWidth'])
+          for (final key in [
+            'type',
+            'page',
+            'pages',
+            'fraction',
+            'width',
+            'step',
+            'columnWidth',
+            'contentWidth',
+            'scrollWidth',
+          ])
             if (event.containsKey(key)) key: event[key],
           'bookmarkPages': frame.host.bookmarkPages,
         },
       });
     }
     traceTurn(
-      'body event chapter=${frame.chapter.ordinal} slot=${frame.slot} load=${frame.load} web=${_controller?.getViewId()} type=${event['type']} page=${event['page']} pages=${event['pages']} stage=${event['stage']} jsMs=${event['ms']} elapsedMs=${event['elapsedMs']}',
+      'body event chapter=${frame.chapter.ordinal} slot=${frame.slot} load=${frame.load} web=${_controller?.getViewId()} type=${event['type']} page=${event['page']} pages=${event['pages']} stage=${event['stage']} jsMs=${event['ms']} elapsedMs=${event['elapsedMs']}'
+      '${event['stage'] == 'startup-command' || event['stage'] == 'startup-frame' ? ' detail=${jsonEncode(event)}' : ''}',
     );
     if (event['type'] == 'paginated') {
       frame.paginated = true;
@@ -609,19 +757,41 @@ class _OriginalBodyState extends State<OriginalBody> {
     }
     if (event['type'] == 'ready' && !frame.started) {
       frame.readyWidth = (event['width'] as num?)?.toDouble() ?? _width;
-      _resumePreparations();
+      _syncChapters();
     }
     frame.chapter.onHostEvent?.call(event);
     return null;
   }
 
   Future<void> _start(_ChapterFrame frame, double width) async {
+    if (frame.chapter.deferStartUntilCurrent &&
+        frame.chapter.ordinal != widget.current) {
+      frame.started = false;
+      return;
+    }
+    if (ReaderDeliveryExperiments.originalStartup) frame.host.beginStartup();
     await _updateFrame(frame);
-    if (!_alive(frame) || frame.preparationFailed) return;
+    if (!_alive(frame) || frame.preparationFailed) {
+      frame.host.cancelStartup();
+      frame.styleKey = frame.informationKey = null;
+      frame.prepared = false;
+      return;
+    }
     final c = frame.chapter;
+    if (ReaderDeliveryExperiments.originalPriority &&
+        !widget.preload.allows(c.ordinal, widget.current)) {
+      frame.started = false;
+      return;
+    }
+    traceTurn(
+      'pager start chapter=${c.ordinal} load=${frame.load} '
+      'exact=${frame.host.initialDomPoint != null}',
+    );
     await _evaluate(
       frame,
-      '__gt.start(${width.round()}, ${c.columnMarginPx.round()}, ${c.initialFraction ?? 0})',
+      frame.host.finishStartupScript(
+        '__gt.start(${width.round()}, ${c.columnMarginPx.round()}, ${c.initialFraction ?? 0}, ${jsonEncode(frame.host.initialDomPoint)})',
+      ),
     );
     final geometry = await _evaluate(
       frame,

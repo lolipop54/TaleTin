@@ -1,0 +1,61 @@
+import com.android.build.api.artifact.ScopedArtifact
+import com.android.build.api.variant.ScopedArtifacts
+import java.util.zip.ZipFile
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
+
+// 编译项目内的单类替换，合并时只去掉依赖包中的上游版本。
+// 不修改 SDK 或 Gradle 缓存；新调度由原书滚动逐个视图开启。
+abstract class ReplaceTextureWrapper extends DefaultTask {
+    @InputFiles abstract ListProperty<RegularFile> getAllJars()
+    @InputFiles abstract ListProperty<Directory> getAllDirectories()
+    @OutputFile abstract RegularFileProperty getOutput()
+    @TaskAction void merge() {
+        def prefix = 'io/flutter/plugin/platform/PlatformViewWrapper'
+        def seen = new HashSet<String>()
+        def destination = output.get().asFile
+        destination.parentFile.mkdirs()
+        new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(destination))).withCloseable { out ->
+            allDirectories.get().each { dir ->
+                dir.asFile.eachFileRecurse { f ->
+                    if (f.isFile()) {
+                        def name = dir.asFile.toPath().relativize(f.toPath()).toString().replace('\\', '/')
+                        if (seen.add(name)) { out.putNextEntry(new ZipEntry(name)); f.withInputStream { it.transferTo(out) }; out.closeEntry() }
+                    }
+                }
+            }
+            allJars.get().each { jar ->
+                new ZipFile(jar.asFile).withCloseable { zip ->
+                    zip.entries().each { entry ->
+                        def name = entry.name
+                        if (name == prefix + '.class') {
+                            def hash = zip.getInputStream(entry).withCloseable {
+                                java.security.MessageDigest.getInstance('SHA-256').digest(it.readAllBytes()).encodeHex().toString()
+                            }
+                            assert hash == '921733f59b42223da7a6f7399fd5c238c86a71aedb2f1803a00671a1a69a4e22':
+                                'Flutter PlatformViewWrapper changed; review local patch before building'
+                        }
+                        if (!entry.directory && !name.startsWith('META-INF/') &&
+                            !(name == prefix + '.class' || name.startsWith(prefix + '$')) && seen.add(name)) {
+                            out.putNextEntry(new ZipEntry(name)); zip.getInputStream(entry).withCloseable { it.transferTo(out) }; out.closeEntry()
+                        }
+                    }
+                }
+            }
+            assert seen.contains(prefix + '.class'): 'Missing project texture wrapper'
+        }
+    }
+}
+
+// Flutter 扩展由宿主 Gradle 提供；版本不匹配就停止，不能静默套用旧源码。
+def sdk = new Properties()
+rootProject.file('local.properties').withInputStream { sdk.load(it) }
+assert new File(sdk.getProperty('flutter.sdk'), 'bin/cache/engine.stamp').text.trim() ==
+    'a804b261645ef8c13eb3d5c44a5c2fb0340c5539': 'Texture wrapper needs Flutter engine review'
+android.sourceSets.main.java.srcDir(rootProject.file('texture_draw_patch/src'))
+androidComponents.onVariants(androidComponents.selector().all()) { variant ->
+    def task = tasks.register("replace${variant.name.capitalize()}TextureWrapper", ReplaceTextureWrapper)
+    variant.artifacts.forScope(ScopedArtifacts.Scope.ALL).use(task).toTransform(
+        ScopedArtifact.CLASSES.INSTANCE,
+        { it.allJars }, { it.allDirectories }, { it.output })
+}

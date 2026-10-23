@@ -38,8 +38,10 @@ class ReadingDayRow extends StatelessWidget {
             child: BookCover(
               bookId: bookId,
               title: data.title(bookId),
-              author: '',
+              author: data.bookAuthors[bookId] ?? '',
+              showImageText: data.customImageBookIds.contains(bookId),
               imagePath: data.bookCovers[bookId],
+              preset: data.bookCoverPresets[bookId],
               radius: 3,
             ),
           ),

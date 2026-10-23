@@ -17,6 +17,8 @@ import '../repositories/file_chapter_content_repository.dart';
 import '../../engine/parsers/parse_worker.dart';
 import 'book_source_path.dart';
 import 'indexed_chapter_reader.dart';
+import 'migrate_mobi_storage.dart';
+import 'prepare_epub_toc_metadata.dart';
 
 /// 首次升级时核对旧章；清单原子切换成功后，JSON 才成为可删除的重复数据。
 /// 只改来源索引，数据库、目录、阅读位置和笔记全部保留。
@@ -25,9 +27,12 @@ class SourceContentMigration {
     required this.libraryRoot,
     required this.workRoot,
     required this.preparation,
+    this.activeBooks,
   });
   final String libraryRoot, workRoot;
   final TextPreparationService preparation;
+  final Set<String> Function()? activeBooks;
+  CancelToken? _migrationCancel;
   bool _stopped = false;
   Future<Object?>? _active;
 
@@ -43,18 +48,28 @@ class SourceContentMigration {
     final library = await listing;
     for (final book in library) {
       if (_stopped) break;
+      if (contents.usedBookIds.contains(book.id) ||
+          activeBooks?.call().contains(book.id) == true) {
+        continue;
+      }
       final release = await gate.enter();
+      final releaseBook = await gate.enterBook(book.id);
       if (_stopped) {
         release();
+        releaseBook();
         break;
       }
       try {
         final work = () async {
+          final token = _migrationCancel = CancelToken();
+          final current = await books.findById(book.id);
+          if (current == null || current.status != BookStatus.active) return 0;
           final chapters = await books.chaptersOf(book.id);
           return contents.migrateContent(
             book.id,
             book.contentVersion,
-            () => migrate(book, chapters),
+            () => migrate(current, chapters),
+            onReadRequested: token.cancelAll,
           );
         }();
         _active = work;
@@ -62,6 +77,8 @@ class SourceContentMigration {
       } on Object {
         // 某一本旧书清单损坏或文件不可读，保留它的原数据并继续核对其他书。
       } finally {
+        _migrationCancel = null;
+        releaseBook();
         release();
       }
     }
@@ -71,6 +88,7 @@ class SourceContentMigration {
   /// 恢复可能已经冻结文件操作；只等已进入的迁移，不等尚未拿到文件权限的下一本。
   Future<void> stop() async {
     _stopped = true;
+    _migrationCancel?.cancelAll();
     try {
       await _active;
     } on Object {
@@ -79,6 +97,8 @@ class SourceContentMigration {
   }
 
   Future<int> migrate(Book book, List<Chapter> chapters) async {
+    // PDF的JSON保存文字与原页坐标，是持久阅读资料，不能当成旧版重复正文清理。
+    if (book.format == BookFormat.pdf) return 0;
     if (book.contentVersion != kContentVersion || chapters.isEmpty) return 0;
     final directory = p.join(libraryRoot, book.id);
     final content = p.join(directory, 'content', '${book.contentVersion}');
@@ -87,7 +107,24 @@ class SourceContentMigration {
     if (!await file.exists() || !await source.exists()) return 0;
     final manifest =
         jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+    if (book.format == BookFormat.mobi || book.format == BookFormat.azw3) {
+      return MobiStorageMigration(
+        libraryRoot,
+        workRoot,
+      ).migrate(book, chapters, _migrationCancel ?? CancelToken());
+    }
     if (manifest['sourceIndex'] != null) {
+      if (book.format == BookFormat.epub) {
+        await prepareEpubTocMetadata(
+          bookDirectory: directory,
+          contentDirectory: content,
+          workRoot: workRoot,
+          displayName: book.title,
+          chapters: chapters,
+          manifest: manifest,
+          cancel: _migrationCancel ?? CancelToken(),
+        );
+      }
       // 上次在提交索引之后被系统终止：继续清理即可，无须再次生成整本。
       return await Isolate.run(() => _removeChapters(directory, chapters));
     }
@@ -257,7 +294,10 @@ Future<void> _verifyWorker(
       }
     }
     for (final path in reader.index.images.keys) {
-      final a = File(p.join(candidate, 'res', path));
+      var a = File(p.join(candidate, 'res', path));
+      if (!a.existsSync() && reader.cache != null) {
+        a = reader.cache!.file(p.join('assets', path));
+      }
       final b = File(p.join(content, 'res', path));
       if (!b.existsSync() ||
           sha256.convert(a.readAsBytesSync()) !=
@@ -272,7 +312,7 @@ Future<void> _verifyWorker(
   } catch (_) {
     reply.send(false);
   } finally {
-    reader?.close();
+    await reader?.close();
   }
 }
 

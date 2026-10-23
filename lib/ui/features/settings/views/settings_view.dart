@@ -1,7 +1,10 @@
+import '../../bookshelf/widgets/book_cover_sheet.dart';
+
 import 'package:taletin/ui/core/widgets/gt_switch.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../app/router/main_pages_ready.dart';
+import '../../../../app/export_error_log.dart';
 import '../../../../app/di/theme_providers.dart';
 import '../../../../app/di/reading_controls_providers.dart';
 import '../../../../app/di/app_font_providers.dart';
@@ -116,6 +119,11 @@ class SettingsView extends ConsumerWidget {
                   ),
                 );
               },
+            ),
+            SettingsRow(
+              label: '自定义封面',
+              onTap: () =>
+                  showBookCoverSheet(context, ref, const [], global: true),
             ),
             const SizedBox(height: GtSpacing.s4),
             _sectionHeader(context, '阅读'),
@@ -238,6 +246,7 @@ class SettingsView extends ConsumerWidget {
             ),
             const SizedBox(height: GtSpacing.s4),
             _sectionHeader(context, '数据'),
+            SettingsRow(label: '导出错误日志', onTap: exportErrorLog),
             SettingsRow(
               label: '阅读统计设置',
               onTap: () => openSettingsPage(
@@ -272,7 +281,10 @@ class SettingsView extends ConsumerWidget {
             ),
             const SizedBox(height: GtSpacing.s4),
             _sectionHeader(context, '关于'),
-            const SettingsRow(label: '支持格式', value: 'EPUB · TXT'),
+            const SettingsRow(
+              label: '支持格式',
+              value: 'EPUB · TXT · MOBI · AZW3 · PDF',
+            ),
             SettingsRow(
               label: '版本、许可与隐私',
               onTap: () => openSettingsPage(

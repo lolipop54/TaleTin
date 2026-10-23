@@ -39,9 +39,9 @@
       rects.push(...all.filter(r => r.bottom >= 0 && r.top <= innerHeight));
       const first = all[0], last = all.at(-1);
       if (segment.start && first && first.bottom >= 0 && first.bottom <= innerHeight)
-        start = {x: first.left, y: first.bottom};
+        start = {x: first.left, y: first.bottom, height: first.bottom - first.top};
       if (segment.end && last && last.bottom >= 0 && last.bottom <= innerHeight)
-        end = {x: last.right, y: last.bottom};
+        end = {x: last.right, y: last.bottom, height: last.bottom - last.top};
     }
     return {rects, start, end};
   });

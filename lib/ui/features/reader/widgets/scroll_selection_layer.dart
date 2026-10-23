@@ -167,8 +167,8 @@ class ScrollSelectionLayerState extends ConsumerState<ScrollSelectionLayer>
         }, child: widget.child)),
       if (_range != null && _geometry.isNotEmpty) ...[
         if (!state.selectionFromMark) ...[
-          if ((_dragPoint != null && !_dragAtEnd ? _dragPoint : _geometry.first.start) case final start?) _handle(start, false, box.biggest),
-          if ((_dragPoint != null && _dragAtEnd ? _dragPoint : _geometry.first.end) case final end?) _handle(end, true, box.biggest),
+          if ((_dragPoint != null && !_dragAtEnd ? _dragPoint : _geometry.first.start) case final start?) _handle(start, false, _geometry.first.startHeight),
+          if ((_dragPoint != null && _dragAtEnd ? _dragPoint : _geometry.first.end) case final end?) _handle(end, true, _geometry.first.endHeight),
         ],
         if (_dragPoint == null) Positioned.fill(child: SelectionActions(bookId: widget.bookId,
           state: state, rects: _geometry.first.rects, origin: Offset.zero, pageSize: box.biggest)),

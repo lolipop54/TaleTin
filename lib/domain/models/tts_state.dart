@@ -268,6 +268,13 @@ class ListeningState {
 
   bool get isPlaying => status == TtsStatus.playing;
 
+  /// 显示跟随与播放会话分开：锁屏期间定时停止或读完，解锁仍应追到
+  /// 最后实际读到的位置。手动阅读接管后 followReading=false，不再拉回。
+  Locator? get pageFollowLocator {
+    if (!followReading || status == TtsStatus.idle) return null;
+    return status == TtsStatus.paused ? resumeLocator : confirmedLocator;
+  }
+
   /// 空会话（默认状态），等价于 `const ListeningState()`。
   static const ListeningState initial = ListeningState();
 

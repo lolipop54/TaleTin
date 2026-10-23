@@ -11,6 +11,7 @@
     width: 0,          // 一页宽（px），由 Dart 下发
     page: 0,           // 当前页（从 0 开始）
     pages: 1,          // 总页数
+    indexComplete: true, // false 时 pages 仅是已证实存在的页范围，不是总页数
     contentWidth: 0,   // 内容总宽（每次量页数时更新，供自检）
     scrollWidth: 0,    // body.scrollWidth（诊断用）
     started: false,    // 是否已完成首次分栏

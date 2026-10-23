@@ -20,6 +20,7 @@ import 'reader_settings_mapper.dart';
 import 'reader_view_model.dart';
 import '../../../../domain/models/book.dart';
 import 'reader_source_change.dart';
+import 'reader_session_view_model.dart';
 
 /// 一本书当前生效的阅读设置
 class ReaderSettingsState {
@@ -28,14 +29,23 @@ class ReaderSettingsState {
     required this.theme,
     this.brightness,
     this.customBrightness,
+    this.pdf = false,
   }) : fontSettings = settings;
 
   /// 合并后的排版参数（内置默认 → 全局 → 本书覆盖）
   final ReadingSettings fontSettings;
+  final bool pdf;
+  bool get pdfMode => pdf && fontSettings.layoutMode.isOriginal;
 
   /// 仅正文排版解析真实字体，保留“系统字体”选项用于显示与保存。
   ReadingSettings get settings => fontSettings.copyWith(
-    fontFamily: ReadingFonts.resolve(fontSettings.fontFamily));
+    fontFamily: ReadingFonts.resolve(fontSettings.fontFamily),
+    bookEdges: !pdfMode && fontSettings.bookEdges,
+    landscapeSpread: !pdfMode && fontSettings.landscapeSpread,
+    pageTurnEffect: !pdfMode && fontSettings.spreadEnabled
+        ? PageTurnEffect.curl
+        : fontSettings.pageTurnEffect,
+  );
 
   /// 合并后的阅读主题
   final ReadingTheme theme;
@@ -81,6 +91,7 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
 
   /// 全局阅读默认值（构建时读入，之后只作合并用）
   ReadingSettings _global = kBuiltinReadingSettings;
+  bool _pdf = false;
 
   /// 本书的覆盖项：只放用户在这一本书里真正改过的项
   ReadingSettingsOverrides _overrides = const ReadingSettingsOverrides();
@@ -90,12 +101,22 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
     final repository = ref.watch(readingSettingsRepositoryProvider);
     _global = await repository.loadGlobal() ?? kBuiltinReadingSettings;
     _overrides =
-        await repository.loadOverrides(bookId) ?? const ReadingSettingsOverrides();
+        await repository.loadOverrides(bookId) ??
+        const ReadingSettingsOverrides();
+    _pdf =
+        (await ref.read(bookRepositoryProvider).findById(bookId))?.format ==
+        BookFormat.pdf;
+    // PDF首次进入原页模式；之后尊重本书保存的模式，不受其它格式的全局选择干扰。
+    if (_overrides.layoutMode == null && _pdf) {
+      _overrides = _overrides.copyWith(layoutMode: ReadingLayoutMode.original);
+    }
     await _prepareFont(_global.mergeOver(_overrides));
     // 单书主题没设过时用全局主题
-    final themeId = await repository.loadThemeId(bookId: bookId) ??
+    final themeId =
+        await repository.loadThemeId(bookId: bookId) ??
         await repository.loadThemeId();
     return ReaderSettingsState(
+      pdf: _pdf,
       settings: _global.mergeOver(_overrides),
       theme: readingThemeOf(themeId),
       brightness: await repository.loadBrightness(bookId),
@@ -116,40 +137,56 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
 
   void setFontSize(int size) => _applyOverrides((o) {
     final next = _global.mergeOver(o).withFontSize(size);
-    return o.copyWith(fontSize: next.fontSize, paragraphGapEm: next.paragraphGapEm);
+    return o.copyWith(
+      fontSize: next.fontSize,
+      paragraphGapEm: next.paragraphGapEm,
+    );
   });
 
   void setLineHeight(double value) => _applyOverrides(
-        (o) => o.copyWith(
-          // 面板按 0.1 步进，存进去也保持这个精度
-          lineHeight: ((value * 10).round() / 10)
-              .clamp(ReadingLimits.minLineHeight, ReadingLimits.maxLineHeight),
-        ),
-      );
+    (o) => o.copyWith(
+      // 面板按 0.1 步进，存进去也保持这个精度
+      lineHeight: ((value * 10).round() / 10).clamp(
+        ReadingLimits.minLineHeight,
+        ReadingLimits.maxLineHeight,
+      ),
+    ),
+  );
 
   /// 段落间距按像素调整，保存时换算为当前字号对应的 em。
   void setParagraphGap(double pixels) {
     final current = state.value;
     if (current == null) return;
     final fontSize = current.settings.fontSize;
-    final em = (fontSize <= 0 ? pixels / ReadingLimits.defaultFontSize : pixels / fontSize)
-        .clamp(
-      ReadingLimits.minParagraphGapEm,
-      ReadingLimits.maxParagraphGapEm,
-    );
+    final em =
+        (fontSize <= 0
+                ? pixels / ReadingLimits.defaultFontSize
+                : pixels / fontSize)
+            .clamp(
+              ReadingLimits.minParagraphGapEm,
+              ReadingLimits.maxParagraphGapEm,
+            );
     _applyOverrides((o) => o.copyWith(paragraphGapEm: em));
   }
 
   void setPagePadding(double value) => _applyOverrides(
-        (o) => o.copyWith(
-          horizontalPadding: value.clamp(
-            ReadingLimits.minHorizontalPadding,
-            ReadingLimits.maxHorizontalPadding,
-          ),
-        ),
-      );
+    (o) => o.copyWith(
+      horizontalPadding: value.clamp(
+        ReadingLimits.minHorizontalPadding,
+        ReadingLimits.maxHorizontalPadding,
+      ),
+    ),
+  );
 
-  void setIndent(bool value) => _applyOverrides((o) => o.copyWith(indent: value));
+  void setBookEdges(bool value) =>
+      _applyOverrides((o) => o.copyWith(bookEdges: value));
+  void setLandscape(bool value) =>
+      _applyOverrides((o) => o.copyWith(landscape: value));
+  void setLandscapeSpread(bool value) =>
+      _applyOverrides((o) => o.copyWith(landscapeSpread: value));
+
+  void setIndent(bool value) =>
+      _applyOverrides((o) => o.copyWith(indent: value));
 
   void setFontWeight(int value) =>
       _applyOverrides((o) => o.copyWith(fontWeight: value));
@@ -158,26 +195,30 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
       _applyOverrides((o) => o.copyWith(useOriginalFont: true));
 
   void setFontFamily(String family) => _applyOverrides(
-      (o) => o.copyWith(fontFamily: family, useOriginalFont: false));
+    (o) => o.copyWith(fontFamily: family, useOriginalFont: false),
+  );
 
   /// 弹层等待保存成功才关闭；失败由串行入口提示，仍保留候选和旧正文。
   Future<bool> confirmFontChoice(String id) async {
-    await _applyOverrides((o) => id == '__original'
-        ? o.copyWith(useOriginalFont: true)
-        : o.copyWith(fontFamily: id, useOriginalFont: false));
+    await _applyOverrides(
+      (o) => id == '__original'
+          ? o.copyWith(useOriginalFont: true)
+          : o.copyWith(fontFamily: id, useOriginalFont: false),
+    );
     final current = state.value?.fontSettings;
-    return current != null && (id == '__original'
-        ? current.useOriginalFont
-        : !current.useOriginalFont && current.fontFamily == id);
+    return current != null &&
+        (id == '__original'
+            ? current.useOriginalFont
+            : !current.useOriginalFont && current.fontFamily == id);
   }
 
   void setFont(ReadingFont font) => _applyOverrides(
-        (o) => o.copyWith(
-          // 显式存系统字体，不能用 null（null 会继承全局宋体）。
-          fontFamily: readingFontFamily(font) ?? 'sans-serif',
-          useOriginalFont: false,
-        ),
-      );
+    (o) => o.copyWith(
+      // 显式存系统字体，不能用 null（null 会继承全局宋体）。
+      fontFamily: readingFontFamily(font) ?? 'sans-serif',
+      useOriginalFont: false,
+    ),
+  );
 
   /// 排版模式（简化 / 原书）：本书覆盖，退出重进与换设备都跟着这本书走
   void setLayoutMode(ReadingLayoutMode mode) => _save(() async {
@@ -185,7 +226,9 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
     if (current == null) return;
     final next = _overrides.copyWith(layoutMode: mode);
     // 先保存用户这次选择；即使源书已改，重新导入后也按新排版打开。
-    await ref.read(readingSettingsRepositoryProvider).saveOverrides(bookId, next);
+    await ref
+        .read(readingSettingsRepositoryProvider)
+        .saveOverrides(bookId, next);
     if (!ref.mounted) return;
     _overrides = next;
     final book = await ref.read(bookRepositoryProvider).findById(bookId);
@@ -193,15 +236,41 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
     if (book?.status == BookStatus.sourceChanged) {
       // 先阻止旧会话开始切换，后发布新选项；否则同步监听会先读取已改变的文件。
       ref.read(readerSourceChangeProvider(bookId).notifier).markChanged();
-      state = AsyncData(ReaderSettingsState(settings: _global.mergeOver(next),
-        theme: current.theme, brightness: current.brightness,
-        customBrightness: current.customBrightness));
+      state = AsyncData(
+        ReaderSettingsState(
+          pdf: _pdf,
+          settings: _global.mergeOver(next),
+          theme: current.theme,
+          brightness: current.brightness,
+          customBrightness: current.customBrightness,
+        ),
+      );
       return;
     }
+    if (book?.format == BookFormat.pdf && mode.isOriginal) {
+      // 原页模式没有听书入口；切入前暂停本书语音，并把位置保存权交给手动阅读。
+      final service = ref.read(listeningServiceProvider);
+      if (service.snapshot.bookId == bookId &&
+          service.snapshot.desiredPlaying) {
+        await service.pause();
+      }
+      await ref
+          .read(readerSessionProvider(bookId).notifier)
+          .beginManualReading();
+      if (!ref.mounted) return;
+    }
     await _prepareFont(_global.mergeOver(next));
-    if (ref.mounted) { state = AsyncData(ReaderSettingsState(
-      settings: _global.mergeOver(next), theme: current.theme,
-      brightness: current.brightness, customBrightness: current.customBrightness)); }
+    if (ref.mounted) {
+      state = AsyncData(
+        ReaderSettingsState(
+          pdf: _pdf,
+          settings: _global.mergeOver(next),
+          theme: current.theme,
+          brightness: current.brightness,
+          customBrightness: current.customBrightness,
+        ),
+      );
+    }
   });
 
   void setPageTurnEffect(PageTurnEffect effect) =>
@@ -218,14 +287,19 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
   Future<void> setTheme(ReadingTheme theme) => _save(() async {
     final current = state.value;
     if (current == null) return;
-    await ref.read(readingSettingsRepositoryProvider).saveThemeId(theme.name, bookId: bookId);
+    await ref
+        .read(readingSettingsRepositoryProvider)
+        .saveThemeId(theme.name, bookId: bookId);
     if (!ref.mounted) return;
-    state = AsyncData(ReaderSettingsState(
-      settings: current.fontSettings,
-      theme: theme,
-      brightness: current.brightness,
+    state = AsyncData(
+      ReaderSettingsState(
+        pdf: _pdf,
+        settings: current.fontSettings,
+        theme: theme,
+        brightness: current.brightness,
         customBrightness: current.customBrightness,
-      ));
+      ),
+    );
   });
 
   /// 窗口亮度：传 null 表示跟随系统（设计文档 2.3 的单书覆盖）
@@ -233,15 +307,20 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
     final current = state.value;
     if (current == null) return;
     final clamped = value?.clamp(0.0, 1.0);
-    await ref.read(readingSettingsRepositoryProvider).saveBrightness(bookId, clamped);
+    await ref
+        .read(readingSettingsRepositoryProvider)
+        .saveBrightness(bookId, clamped);
     if (!ref.mounted) return;
-    state = AsyncData(ReaderSettingsState(
-      settings: current.fontSettings,
-      theme: current.theme,
-      brightness: clamped,
+    state = AsyncData(
+      ReaderSettingsState(
+        pdf: _pdf,
+        settings: current.fontSettings,
+        theme: current.theme,
+        brightness: clamped,
         customBrightness:
             clamped ?? current.customBrightness ?? current.brightness,
-      ));
+      ),
+    );
   });
 
   /// 恢复全局：删掉本书的全部覆盖（含主题），回到全局默认值
@@ -257,10 +336,9 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
     if (!ref.mounted) return;
     _global = global;
     _overrides = const ReadingSettingsOverrides();
-    state = AsyncData(ReaderSettingsState(
-      settings: _global,
-      theme: theme,
-    ));
+    state = AsyncData(
+      ReaderSettingsState(pdf: _pdf, settings: _global, theme: theme),
+    );
   });
 
   /// 只保存本次改动的字段，其余继续继承；连续拖动按顺序提交。
@@ -272,24 +350,31 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
       if (current == null) return;
       final next = change(_overrides);
       await _prepareFont(_global.mergeOver(next));
-      await ref.read(readingSettingsRepositoryProvider).saveOverrides(bookId, next);
+      await ref
+          .read(readingSettingsRepositoryProvider)
+          .saveOverrides(bookId, next);
       if (!ref.mounted) return;
       _overrides = next;
-      state = AsyncData(ReaderSettingsState(
-        settings: _global.mergeOver(_overrides), theme: current.theme,
-        brightness: current.brightness,
-            customBrightness: current.customBrightness,
-          ));
+      state = AsyncData(
+        ReaderSettingsState(
+          pdf: _pdf,
+          settings: _global.mergeOver(_overrides),
+          theme: current.theme,
+          brightness: current.brightness,
+          customBrightness: current.customBrightness,
+        ),
+      );
     });
   }
 }
 
 /// 按书隔离：每本书有自己的覆盖项，退出阅读页即释放（设计文档 4.2）。
-final readerSettingsProvider = AsyncNotifierProvider.family<
-    ReaderSettingsNotifier, ReaderSettingsState, String>(
-  ReaderSettingsNotifier.new,
-  isAutoDispose: true,
-);
+final readerSettingsProvider =
+    AsyncNotifierProvider.family<
+      ReaderSettingsNotifier,
+      ReaderSettingsState,
+      String
+    >(ReaderSettingsNotifier.new, isAutoDispose: true);
 
 /// 窗口亮度的拖动预览与磁盘设置分开，拖动过程中不反复写库。
 class BrightnessPreview extends Notifier<double?> {

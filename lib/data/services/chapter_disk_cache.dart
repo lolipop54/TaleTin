@@ -29,6 +29,8 @@ class ChapterDiskCache {
       _remove(file.path);
     } on TypeError {
       _remove(file.path);
+    } on FileSystemException {
+      // 可重建缓存被系统清掉或暂时不可读，改从原书准备，不影响正确正文。
     }
     return null;
   }

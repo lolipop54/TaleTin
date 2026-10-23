@@ -51,6 +51,7 @@ Future<List<ListeningTarget>> _loadTargetsInWorker({
       libraryRoot: libraryRoot,
       cacheRoot: cacheRoot,
       hyphenateText: false,
+      cacheDocuments: false,
     );
     final session = await source.open(
       bookId: bookId,

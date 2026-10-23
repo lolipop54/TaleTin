@@ -9,20 +9,25 @@ import '../models/locator.dart';
 
 enum ReadingPositionSource { visual, listening }
 
+/// 旧视觉记录的 progress 是版面比例；没有标记时必须继续按旧规则恢复。
+enum ReadingProgressBasis { legacyVisual, content }
+
 /// 一次阅读位置的落库内容：位置 + 全书进度。
 class ReadingPosition {
   const ReadingPosition({
     required this.locator,
     required this.progress,
     this.source = ReadingPositionSource.visual,
+    this.progressBasis = ReadingProgressBasis.legacyVisual,
   });
 
   final ReadingPositionSource source;
+  final ReadingProgressBasis progressBasis;
 
   /// 位置（章节 + 块 + 块内偏移 + 摘录）
   final Locator locator;
 
-  /// 全书进度 0–1，按内容位置算，与排版无关（设计文档 6.3）。
+  /// 全书进度0–1：content按内容坐标计算；legacyVisual保留旧版面比例。
   /// 书架直接显示这个值，因此它逐页变化，而不是只按章边界跳。
   final double progress;
 }

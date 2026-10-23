@@ -22,7 +22,7 @@ class ReadingStatisticsService {
   }
   final ReadingClock clock;
   final ReadingStatisticsWriter writer;
-  final void Function(Object)? onError;
+  final void Function(Object, StackTrace)? onError;
   final runId = const Uuid().v4();
   final _active = <ReadingMode, _TrackedReading>{};
   // 一次进入书籍共用一个会话；面板、后台和超时只暂停有效片段。
@@ -247,8 +247,8 @@ class ReadingStatisticsService {
 
   void _saveSoon() {
     unawaited(
-      flush().catchError((Object e) {
-        onError?.call(e);
+      flush().catchError((Object e, StackTrace stack) {
+        onError?.call(e, stack);
       }),
     );
   }

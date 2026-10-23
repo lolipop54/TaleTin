@@ -46,6 +46,11 @@
     });
   }
   window.__gtPager = {
+    // 与消息通道使用同一槽位/加载号；被替换文档不能读取新章配置。
+    initialLayout: function(slot, load) {
+      return valid(slot, load) && slots[slot].initialLayout
+        ? slots[slot].initialLayout : null;
+    },
     // 拖动只更新三个已加载槽的变换；章身份仍由 sync 一次提交。
     shift: function (chapter, dx) {
       if (chapter !== current) return false;
@@ -60,6 +65,7 @@
           slot.load = null; slot.chapter = null;
         } else {
           slot.chapter = spec.chapter;
+          slot.initialLayout = spec.initialLayout || null;
           if (slot.load !== spec.load) {
             slot.load = spec.load;
             slot.frame.src = spec.url;
@@ -74,6 +80,20 @@
       var result = slots[slot].frame.contentWindow.eval(script);
       return result && typeof result.then === 'function'
         ? whileLoaded(slot, load, result) : result;
+    },
+    turnRendered: async function (slot, load) {
+      if (!valid(slot, load)) return false;
+      // Dart已等200ms，但繁忙时浏览器可能晚一帧才启动变换。只等阅读器的
+      // 正文transform过渡结束，不等待书中可能永久循环的其他动画。
+      var body = slots[slot].frame.contentDocument.body;
+      var transitions = body ? body.getAnimations().filter(function (animation) {
+        return animation.transitionProperty === 'transform';
+      }) : [];
+      await whileLoaded(slot, load, Promise.all(transitions.map(function (animation) {
+        // 重排或换章会取消旧变换；whileLoaded仍校验章节加载号。
+        return animation.finished.catch(function () {});
+      })));
+      return valid(slot, load);
     },
     rendered: async function (slot, load) {
       if (!valid(slot, load)) return false;

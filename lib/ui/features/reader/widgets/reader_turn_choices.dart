@@ -12,8 +12,10 @@ class ReaderTurnChoices extends StatelessWidget {
     super.key,
     required this.selected,
     required this.onSelect,
+    this.curlOnly = false,
   });
   final PageTurnEffect selected;
+  final bool curlOnly;
   final ValueChanged<PageTurnEffect> onSelect;
 
   static ImageProvider image(PageTurnEffect effect, double pixelRatio) =>
@@ -44,55 +46,60 @@ class ReaderTurnChoices extends StatelessWidget {
               child: GtButton.raw(
                 key: ValueKey('reader-turn-${effect.name}'),
                 selected: effect == selected,
-                onPressed: () => onSelect(effect),
-                child: SizedBox(
-                  width: 80,
-                  child: Column(
-                    children: [
-                      Container(
-                        // padding: const EdgeInsets.all(4),
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(GtRadius.cover),
-                          border: Border.all(
-                            width: 1.5,
-                            color: effect == selected
-                                ? context.gtColors.actionPrimary
-                                : Colors.transparent,
+                onPressed: curlOnly && effect != PageTurnEffect.curl
+                    ? null
+                    : () => onSelect(effect),
+                child: Opacity(
+                  opacity: curlOnly && effect != PageTurnEffect.curl ? 0.35 : 1,
+                  child: SizedBox(
+                    width: 80,
+                    child: Column(
+                      children: [
+                        Container(
+                          // padding: const EdgeInsets.all(4),
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(GtRadius.cover),
+                            border: Border.all(
+                              width: 1.5,
+                              color: effect == selected
+                                  ? context.gtColors.actionPrimary
+                                  : Colors.transparent,
+                            ),
+                          ),
+                          child: Stack(
+                            children: [
+                              Image(
+                                image: image(
+                                  effect,
+                                  MediaQuery.devicePixelRatioOf(context),
+                                ),
+                                width: 60,
+                                height: 79,
+                                fit: BoxFit.contain,
+                                excludeFromSemantics: true,
+                              ),
+                              if (effect == selected)
+                                Positioned(
+                                  right: 0,
+                                  bottom: 0,
+                                  child: GtIcon(
+                                    GtIcons.checkCircle,
+                                    size: 18,
+                                    color: context.gtColors.actionPrimary,
+                                  ),
+                                ),
+                            ],
                           ),
                         ),
-                        child: Stack(
-                          children: [
-                            Image(
-                              image: image(
-                                effect,
-                                MediaQuery.devicePixelRatioOf(context),
-                              ),
-                              width: 60,
-                              height: 79,
-                              fit: BoxFit.contain,
-                              excludeFromSemantics: true,
-                            ),
-                            if (effect == selected)
-                              Positioned(
-                                right: 0,
-                                bottom: 0,
-                                child: GtIcon(
-                                  GtIcons.checkCircle,
-                                  size: 18,
-                                  color: context.gtColors.actionPrimary,
-                                ),
-                              ),
-                          ],
+                        const SizedBox(height: 4),
+                        Text(
+                          effect.label,
+                          textAlign: TextAlign.center,
+                          style: GtText.caption(colors.textPrimary)
+                              .copyWith(fontSize: 12),
                         ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        effect.label,
-                        textAlign: TextAlign.center,
-                        style: GtText.caption(colors.textPrimary)
-                            .copyWith(fontSize: 12),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
               ),

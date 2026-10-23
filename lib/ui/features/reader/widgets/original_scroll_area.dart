@@ -1,14 +1,17 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
+import '../../../../core/diagnostics/reader_turn_diagnostics.dart';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
 import '../../../../app/di/app_providers.dart';
+import '../../../../app/router/reader_route_page.dart';
 import '../../../../platform/channels/original_webview_warmup.dart';
 import '../../../../domain/models/book_document.dart';
 import '../../../../domain/models/locator.dart';
@@ -26,11 +29,13 @@ import '../view_models/reader_settings_view_model.dart';
 import '../view_models/reader_view_model.dart';
 import '../view_models/automatic_reading.dart';
 import 'original_scroll_webview.dart';
+import 'original_scroll_frames.dart';
 import 'original_font_assets.dart';
 import 'original_host_controller.dart';
 import 'scroll_selection_layer.dart';
 import 'reader_display_transition.dart';
 import 'reader_information.dart';
+import 'book_paper.dart';
 import 'reader_performance.dart';
 import 'reader_image_viewer.dart';
 import 'reader_image_gallery.dart';
@@ -39,6 +44,7 @@ import 'simplified_scroll_area.dart' show ScrollInformationPainter;
 part 'original_scroll_commands.dart';
 part 'original_automatic_motion.dart';
 part 'original_scroll_selection.dart';
+part 'original_scroll_logging.dart';
 
 class OriginalScrollArea extends ConsumerStatefulWidget {
   static Future<NativeReadingFrame?> capture(GlobalKey key) async {
@@ -69,9 +75,13 @@ class OriginalScrollAreaState extends ConsumerState<OriginalScrollArea>
     with
         _OriginalScrollCommands,
         _OriginalAutomaticMotion,
-        _OriginalScrollSelection {
+        _OriginalScrollSelection,
+        SingleTickerProviderStateMixin {
+  late final OriginalScrollFrames _scrollFrames;
+  late final AppLifecycleListener _scrollLifecycle;
   @override
   InAppWebViewController? host;
+  ReaderTurnTrace? _scrollLog;
   @override
   bool _loaded = false;
   @override
@@ -124,6 +134,14 @@ class OriginalScrollAreaState extends ConsumerState<OriginalScrollArea>
   @override
   void initState() {
     super.initState();
+    _scrollFrames = OriginalScrollFrames(this);
+    _scrollFrames.setForeground(
+      WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed,
+    );
+    _scrollLifecycle = AppLifecycleListener(
+      onStateChange: (state) =>
+          _scrollFrames.setForeground(state == AppLifecycleState.resumed),
+    );
     _initAutomatic();
     _initSelection();
     final startup = OriginalWebViewWarmup.ensureReady();
@@ -157,9 +175,23 @@ class OriginalScrollAreaState extends ConsumerState<OriginalScrollArea>
         if (controller == null) return null;
         await OriginalHostController.fromWebView(controller).presented();
         if (!mounted || raw['request'] != _request) return null;
+        if (defaultTargetPlatform == TargetPlatform.android) {
+          await const OptionalMethodChannel('gtreader/original_scroll_draw')
+              .invokeMethod<bool>('enable', {'viewId': controller.getViewId()});
+          if (!mounted || raw['request'] != _request) return null;
+        }
         _presentedRequest = _request;
         _preparedLayout = _requestedLayout;
         setState(() => _ready = true);
+        final preparedRequest = _request;
+        final shown = ReaderPageReady.shownOf(context);
+        unawaited(() async {
+          if (shown != null) await shown;
+          await Future<void>.delayed(const Duration(milliseconds: 120));
+          if (mounted && _request == preparedRequest) {
+            widget.original.source.allowPreparationBackground(true);
+          }
+        }());
         // 补远端章节期间当前画面仍然有效，目标确认无需等离屏加载。
         final point = await host?.evaluateJavascript(
           source: 'JSON.stringify(gtScroll.anchor())',
@@ -201,6 +233,7 @@ class OriginalScrollAreaState extends ConsumerState<OriginalScrollArea>
         }
         _selectionMotion.value++;
       case 'settled':
+        _scrollFrames.stop();
         await _session.persist();
       case 'manual':
         await _session.beginManualReading();
@@ -291,7 +324,7 @@ class OriginalScrollAreaState extends ConsumerState<OriginalScrollArea>
         _stableHeight = box.maxHeight;
       }
       final height = _stableHeight ?? box.maxHeight;
-      final left = math.max(0.0, (box.maxWidth - GtSize.readingMaxWidth) / 2);
+      final left = math.max(0.0, (box.maxWidth - (settings.landscape ? box.maxWidth : GtSize.readingMaxWidth)) / 2);
       _bodyBounds = Rect.fromLTWH(
         left,
         info.top,
@@ -301,7 +334,7 @@ class OriginalScrollAreaState extends ConsumerState<OriginalScrollArea>
       final options = <String, Object?>{
         'fontSizePx': MediaQuery.textScalerOf(context)
             .scale(settings.fontSize.toDouble()),
-        'marginPx': settings.horizontalPadding,
+        'marginPx': settings.horizontalPadding + (settings.bookEdges ? bookEdgeWidth : 0),
         'indent': settings.indent,
         'fontFamily': settings.useOriginalFont
             ? ''
@@ -321,6 +354,7 @@ class OriginalScrollAreaState extends ConsumerState<OriginalScrollArea>
         _submitted = key;
         // 主题／显示切换的遮盖必须等待本次网页绘制，不能沿用上一页的 ready。
         _ready = false;
+        widget.original.source.allowPreparationBackground(false);
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted && _submitted == key) {
             unawaited(_open(options, layoutSignature));
@@ -333,14 +367,19 @@ class OriginalScrollAreaState extends ConsumerState<OriginalScrollArea>
             Positioned(
               top: info.top,
               bottom: info.bottom,
-              left: math.max(0, (box.maxWidth - GtSize.readingMaxWidth) / 2),
-              right: math.max(0, (box.maxWidth - GtSize.readingMaxWidth) / 2),
+              left: math.max(0, (box.maxWidth - (settings.landscape ? box.maxWidth : GtSize.readingMaxWidth)) / 2),
+              right: math.max(0, (box.maxWidth - (settings.landscape ? box.maxWidth : GtSize.readingMaxWidth)) / 2),
               child: ScrollSelectionLayer(
                 key: _selectionKey,
                 bookId: widget.bookId,
                 backend: _selectionBackend,
                 theme: widget.settings.theme,
-                child: OriginalScrollWebView(
+                child: Listener(
+                  onPointerDown: (event) {
+                    if (_ready) _scrollFrames.motion();
+                    if (readerTurnDiagnosticsEnabled) _traceScrollDown(event);
+                  },
+                  child: OriginalScrollWebView(
                   preparedView: _preparedView,
                   source: widget.original.source,
                   assets: _assets!,
@@ -348,7 +387,11 @@ class OriginalScrollAreaState extends ConsumerState<OriginalScrollArea>
                   onLoaded: () {
                     if (mounted) setState(() => _loaded = true);
                   },
-                  onMessage: _message,
+                  onMessage: _tracedScrollMessage,
+                  onScroll: () {
+                    if (_ready) _scrollFrames.motion();
+                  },
+                  ),
                 ),
               ),
             ),
@@ -360,6 +403,12 @@ class OriginalScrollAreaState extends ConsumerState<OriginalScrollArea>
                 child: const Center(child: BookLoading()),
               ),
             ),
+          if (settings.bookEdges)
+            // 页叠和书脊不随正文滚动，单独保留绘制层，避免一起重画渐变。
+            // 仍用原画法和原尺寸；主题或视口变化会正常重画。
+            Positioned.fill(child: IgnorePointer(child: RepaintBoundary(
+              child: CustomPaint(isComplex: true, painter:
+                BookPaperPainter(widget.settings.theme.background, decorationOnly: true))))),
           Positioned.fill(
             child: IgnorePointer(
               child: CustomPaint(painter: ScrollInformationPainter(info)),
@@ -372,6 +421,9 @@ class OriginalScrollAreaState extends ConsumerState<OriginalScrollArea>
 
   @override
   void dispose() {
+    _scrollLifecycle.dispose();
+    _scrollFrames.dispose();
+    _scrollLog?.finish('readerDisposed');
     if (_preparedView?.isRunning() ?? false) {
       unawaited(_preparedView!.dispose());
     }

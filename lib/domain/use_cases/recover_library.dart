@@ -3,7 +3,7 @@
 /// 文件移动与数据库提交不是同一事务（设计文档 6.1），因此启动时必须：
 /// 1. 清掉 `cache/import/<jobId>` 残留（提交前的产物都在这里）；
 /// 2. 清空 `import_jobs` 中未结束的任务记录；
-/// 3. 删掉墓碑书籍残留的书籍目录（删除时文件没删干净的情况）；
+/// 3. 继续删除任务，并兼容旧版已删除记录留下的书籍目录；
 /// 4. 对比文件系统，把正文目录已经不在的书籍标记为 `contentMissing`，
 ///    避免书架上出现点开才发现没有正文的书籍。
 library;
@@ -30,7 +30,7 @@ class RecoveryReport {
   final int pendingJobs;
   final int contentMissingBooks;
 
-  /// 清掉的墓碑书籍残留目录数量
+  /// 清掉的删除任务／旧版已删除书籍残留目录数量
   final int removedBookDirs;
   final int releasedTxtBytes;
 
@@ -53,12 +53,18 @@ class RecoverLibrary {
     final removedStaging = await storage.cleanupStaging(
       keepJobIds: const <String>[],
     );
-    for (final job in jobs) {
-      await books.deleteJob(job.id);
-    }
-
     // 墓碑书籍的残留目录与章节索引回收（删除时没清干净的兜底）
     var removedBookDirs = 0;
+    for (final job in jobs) {
+      if (job.stage == 'deleting' && job.targetBookId != null) {
+        final directory = await storage.bookDirectoryPath(job.targetBookId!);
+        if (Directory(directory).existsSync()) {
+          await storage.deleteRecursively(directory);
+          removedBookDirs++;
+        }
+      }
+      await books.deleteJob(job.id);
+    }
     for (final book in await books.deletedBooks()) {
       final dir = await storage.bookDirectoryPath(book.id);
       if (!Directory(dir).existsSync()) continue;

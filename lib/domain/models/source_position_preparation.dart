@@ -15,6 +15,8 @@ String sourcePositionRules(
   sourcePositionRulesRevision,
   kContentVersion,
   format,
+  if (format == 'mobi' || format == 'azw3') 'libmobi90627420-publication1',
+  if (format == 'pdf') 'pdf-text-and-page-map1',
   if (format == 'txt') ...[charset, chapterPattern, forceSections],
 ]);
 

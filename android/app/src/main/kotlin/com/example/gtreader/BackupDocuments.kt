@@ -3,7 +3,9 @@ package com.example.gtreader
 import android.app.Activity
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.provider.DocumentsContract
+import android.provider.MediaStore
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.OutputStream
@@ -19,12 +21,22 @@ class BackupDocuments(private val activity: Activity, engine: FlutterEngine) {
     init {
         MethodChannel(engine.dartExecutor.binaryMessenger, "gtreader/backup_documents")
             .setMethodCallHandler { call, result ->
-                if (call.method == "pick" || call.method == "create") {
+                if (call.method == "pick" || call.method == "create" || call.method == "pickImage") {
                     if (pending != null) {
                         result.error("busy", "文件选择器已经打开", null)
                     } else {
                         val create = call.method == "create"
-                        val intent = Intent(if (create) Intent.ACTION_CREATE_DOCUMENT else Intent.ACTION_OPEN_DOCUMENT).apply {
+                        // 封面走相册选择；备份读写仍使用文档选择器。
+                        // 旧系统没有 Photo Picker 时用相册的单图选择，不退回文件管理器。
+                        val intent = if (call.method == "pickImage") {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                Intent(MediaStore.ACTION_PICK_IMAGES).apply { type = "image/*" }
+                            } else {
+                                Intent(Intent.ACTION_PICK).apply {
+                                    setDataAndType(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "image/*")
+                                }
+                            }
+                        } else Intent(if (create) Intent.ACTION_CREATE_DOCUMENT else Intent.ACTION_OPEN_DOCUMENT).apply {
                             addCategory(Intent.CATEGORY_OPENABLE)
                             type = call.argument<String>("mime") ?: "*/*"
                             if (create) putExtra(Intent.EXTRA_TITLE, call.argument<String>("name"))

@@ -1,7 +1,10 @@
+import 'package:taletin/core/diagnostics/app_errors.dart';
+
 import 'dart:typed_data';
 import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path/path.dart' as p;
 
 import '../../../../app/di/app_providers.dart';
 import '../../../../core/errors/import_error.dart';
@@ -165,7 +168,7 @@ class ImportViewModel extends Notifier<ImportState> {
   }
 
   /// 先发布待导入条目，再后台读取；TXT 编码和章节规则使用流水线自动识别。
-  void enqueue(List<PickedDocument> documents) {
+  Future<void> enqueue(List<PickedDocument> documents) {
     if (_running.isEmpty && _batches.isEmpty) _cancel.reset();
     final existingIds =
         ref.read(libraryBooksProvider).value?.map((b) => b.id).toSet() ??
@@ -182,7 +185,34 @@ class ImportViewModel extends Notifier<ImportState> {
           ImportItem(document: document),
     ];
     state = state.copyWith(items: _merge(state.items, added));
-    unawaited(_registerAndRun(added));
+    return _registerAndRun(added);
+  }
+
+  /// 外部打开先按来源查重，复用原书及阅读数据，不重新导入。
+  Future<String?> findExternalBook(PickedDocument document) async {
+    final uri = Uri.parse(document.uri);
+    // Android 与 Dart 对文件名标点的 URI 编码可能不同，按导入时的规范统一。
+    final identity = uri.scheme == 'file'
+        ? Uri.file(p.normalize(uri.toFilePath())).toString()
+        : document.uri;
+    final book = await ref.read(bookRepositoryProvider).findByHash(identity);
+    return book == null || book.status == BookStatus.removed ? null : book.id;
+  }
+
+  /// 调用方已展示书架。成功才返回可打开的书籍，失败和取消沿用队列提示。
+  Future<String?> importExternal(PickedDocument document) async {
+    final alreadyRunning = _find(document.uri);
+    if (alreadyRunning != null && !alreadyRunning.stage.isFinished) {
+      await waitForIdle();
+    } else {
+      await enqueue([document]);
+    }
+    if (!ref.mounted) return null;
+    final item = _find(document.uri);
+    return item?.stage == ImportStage.done ||
+            item?.stage == ImportStage.duplicate
+        ? item?.bookId
+        : null;
   }
 
   Future<void> _registerAndRun(List<ImportItem> added) async {
@@ -212,7 +242,8 @@ class ImportViewModel extends Notifier<ImportState> {
         }
       }
       await _run(added.map((item) => item.key).toSet());
-    } catch (error) {
+    } catch (error, appStack) {
+      AppErrors.report(error, appStack, operation: '注册导入书籍失败');
       for (final item in added) {
         final current = _find(item.key);
         if (current != null && !current.stage.isFinished) {

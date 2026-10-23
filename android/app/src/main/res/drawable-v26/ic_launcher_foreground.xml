@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 108dp 图层中间放 64dp 原图（每边留 22/108），给书本、罐盖和阴影留出
+     裁切空间。使用百分比，随桌面／启动屏给出的实际大小等比变化。 -->
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:inset="20.37037%">
+    <bitmap
+        android:src="@drawable/ic_launcher_art"
+        android:gravity="fill"
+        android:filter="true" />
+</inset>

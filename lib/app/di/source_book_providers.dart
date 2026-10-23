@@ -27,16 +27,28 @@ final prepareSourceBookProvider = Provider<PrepareSourceBook>((ref) {
     (book) async =>
         book.localSourcePath ??
         bookSourcePath(p.join(root, book.id), book.format.code),
-    needsPreparation: (book) => _legacyNeedsPreparation(
-      p.join(
+    needsPreparation: (book) async {
+      final content = p.join(
         root,
         book.id,
         'content',
         '${book.contentVersion}',
-        'manifest.json',
-      ),
-      manifests,
-    ),
+      );
+      if (book.format == BookFormat.pdf &&
+          !await File(p.join(content, 'pdf-1.json')).exists()) {
+        return true;
+      }
+      return _legacyNeedsPreparation(
+        p.join(
+          root,
+          book.id,
+          'content',
+          '${book.contentVersion}',
+          'manifest.json',
+        ),
+        manifests,
+      );
+    },
     txtChoice: (book) async {
       if (book.format != BookFormat.txt) return null;
       final options = File(
@@ -67,8 +79,13 @@ final prepareSavedAnnotationProvider =
       final contents = ref.watch(chapterContentRepositoryProvider);
       return (note) async {
         await prepare(note.bookId);
-        return refreshSavedAnnotation(db, books, contents, note,
-          resolver: ref.read(sourcePositionResolverProvider));
+        return refreshSavedAnnotation(
+          db,
+          books,
+          contents,
+          note,
+          resolver: ref.read(sourcePositionResolverProvider),
+        );
       };
     });
 
@@ -97,13 +114,22 @@ final sourcePositionResolverProvider = Provider<SourcePositionResolver>((ref) {
   final root = ref.watch(libraryRootPathProvider);
   return SourcePositionResolver(
     contents,
-    loadMatches: !PositionExperiments.optimizedFlow ? null : (id, chapters) async =>
-      chapters.isEmpty ? {} : SourcePositionCache.read(
-        p.dirname(contents.chapterAbsolutePath(id, chapters.first))),
-    saveMatches: !PositionExperiments.optimizedFlow ? null : (id, chapters, matches) async {
-      if (chapters.isEmpty) return;
-      SourcePositionCache.write(p.dirname(contents.chapterAbsolutePath(id, chapters.first)), matches);
-    },
+    loadMatches: !PositionExperiments.optimizedFlow
+        ? null
+        : (id, chapters) async => chapters.isEmpty
+              ? {}
+              : SourcePositionCache.read(
+                  p.dirname(contents.chapterAbsolutePath(id, chapters.first)),
+                ),
+    saveMatches: !PositionExperiments.optimizedFlow
+        ? null
+        : (id, chapters, matches) async {
+            if (chapters.isEmpty) return;
+            SourcePositionCache.write(
+              p.dirname(contents.chapterAbsolutePath(id, chapters.first)),
+              matches,
+            );
+          },
     sourceSignature: (id, chapters) async {
       final book = await books.findById(id);
       if (book == null || chapters.isEmpty) return '';

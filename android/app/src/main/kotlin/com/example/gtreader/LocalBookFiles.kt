@@ -121,7 +121,7 @@ class LocalBookFiles(private val activity: Activity, engine: FlutterEngine) {
 
     private fun supported(file: File): Boolean =
         (file.isDirectory && !privateDirectory(file) ||
-            file.isFile && file.extension.lowercase() in setOf("txt", "epub")) &&
+            file.isFile && file.extension.lowercase() in setOf("txt", "epub", "mobi", "azw3", "pdf")) &&
             file.canonicalPath == file.absolutePath
 
     private fun privateDirectory(file: File): Boolean = roots().any { root ->

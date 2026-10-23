@@ -18,11 +18,15 @@ class OriginalChapter {
     this.onControllerReady,
     this.prepare,
     this.preparationRevision,
+    this.deferStartUntilCurrent = false,
   });
 
   final EpubSourceSession session;
   final Future<void> Function(OriginalHostController)? prepare;
   final Object? preparationRevision;
+
+  /// 进度目标的 iframe 可先装载，精确目标/标准正文提交前不能开始猜比例落页。
+  final bool deferStartUntilCurrent;
 
   /// 当前章（spine 序）；变化时重新加载文档
   final int ordinal;

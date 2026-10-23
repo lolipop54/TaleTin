@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'turn_trace.dart';
+import '../../../../engine/layout/layout_work_gate.dart';
 
 import 'dart:ui' as ui;
 
@@ -14,6 +15,16 @@ typedef NativeReadingFrame = ({ui.Image image, Rect bounds});
 
 /// 先留下旧正文图像，再准备新显示；新位置和画面都就绪才撤掉遮盖。
 class ReaderDisplayTransition extends StatefulWidget {
+  static bool isCovering(BuildContext context) {
+    final state = context
+        .findAncestorStateOfType<_ReaderDisplayTransitionState>();
+    return state != null &&
+        (state._loading ||
+            state._capturing ||
+            state._revealing ||
+            state._cover != null);
+  }
+
   static Future<void> captureForJump(GlobalKey key) async {
     final state = key.currentState;
     if (state is _ReaderDisplayTransitionState) {
@@ -38,6 +49,8 @@ class ReaderDisplayTransition extends StatefulWidget {
     this.viewport,
     this.appearance,
     this.onReadable,
+    this.onPresented,
+    this.onWorkChanged,
   });
   final Object display;
 
@@ -48,6 +61,10 @@ class ReaderDisplayTransition extends StatefulWidget {
   /// 简化／原书排版切换显示加载动画；其它重排仍按原规则保留旧画面。
   final Object? loadingRevision;
   final VoidCallback? onReadable;
+  final VoidCallback? onPresented;
+
+  /// 从旧页截图开始直到揭页结束，原书后台任务共用这段前台工作状态。
+  final ValueChanged<bool>? onWorkChanged;
   final Size? viewport;
   final Widget child;
   final bool Function() ready;
@@ -68,6 +85,7 @@ class _ReaderDisplayTransitionState extends State<ReaderDisplayTransition>
   Completer<void>? _finished;
   bool _smooth = false, _revealing = false;
   final _boundary = GlobalKey();
+  final _layoutWorkOwner = Object();
   late Widget _shown = widget.child;
   late Size? _shownSize = widget.viewport;
 
@@ -82,8 +100,12 @@ class _ReaderDisplayTransitionState extends State<ReaderDisplayTransition>
   bool _opening = false;
   int _version = 0;
   Timer? _check;
+  Future<void>? _jumpCapture;
 
-  Future<void> _captureForJump() async {
+  Future<void> _captureForJump() =>
+      _jumpCapture ??= _captureJump().whenComplete(() => _jumpCapture = null);
+
+  Future<void> _captureJump() async {
     _finished ??= Completer<void>();
     _smooth = true;
     _revealing = false;
@@ -92,6 +114,7 @@ class _ReaderDisplayTransitionState extends State<ReaderDisplayTransition>
     try {
       await _capture(widget.captureNative);
     } catch (_) {
+      widget.onWorkChanged?.call(false);
       _finished?.complete();
       _finished = null;
       rethrow;
@@ -107,6 +130,8 @@ class _ReaderDisplayTransitionState extends State<ReaderDisplayTransition>
     _loading = widget.loadingBackground != null && !widget.ready();
     _opening = _loading;
     _smooth = _loading;
+    if (_loading) LayoutWorkGate.hold(_layoutWorkOwner);
+    if (_loading) widget.onWorkChanged?.call(true);
     _scheduleReady();
   }
 
@@ -121,6 +146,8 @@ class _ReaderDisplayTransitionState extends State<ReaderDisplayTransition>
       _opacity.value = 1;
       _capturing = _revealing = false;
       _loading = _smooth = true;
+      LayoutWorkGate.hold(_layoutWorkOwner);
+      widget.onWorkChanged?.call(true);
       final cover = _cover;
       _cover = null;
       WidgetsBinding.instance.addPostFrameCallback((_) => cover?.dispose());
@@ -139,6 +166,8 @@ class _ReaderDisplayTransitionState extends State<ReaderDisplayTransition>
   }
 
   Future<void> _capture(Future<NativeReadingFrame?> Function() native) async {
+    LayoutWorkGate.hold(_layoutWorkOwner);
+    widget.onWorkChanged?.call(true);
     // 连续调整时继续保留最初的确认画面，不再截取尚未准备好的中间正文。
     // 系统栏/字体设置在首屏准备中到达时，不能把正在跳动的方块截成静图。
     if (_loading) {
@@ -173,6 +202,7 @@ class _ReaderDisplayTransitionState extends State<ReaderDisplayTransition>
     } catch (_) {
       base.dispose();
       _capturing = false;
+      widget.onWorkChanged?.call(false);
       if (mounted) setState(_showLatest);
       rethrow;
     }
@@ -270,7 +300,12 @@ class _ReaderDisplayTransitionState extends State<ReaderDisplayTransition>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       cover?.dispose();
       finished?.complete();
-      if (mounted) widget.onReadable?.call();
+      if (mounted && version == _version) {
+        widget.onPresented?.call();
+        widget.onReadable?.call();
+        LayoutWorkGate.release(_layoutWorkOwner);
+        widget.onWorkChanged?.call(false);
+      }
     });
   }
 
@@ -316,6 +351,7 @@ class _ReaderDisplayTransitionState extends State<ReaderDisplayTransition>
 
   @override
   void dispose() {
+    LayoutWorkGate.release(_layoutWorkOwner);
     ++_version;
     _check?.cancel();
     _opacity.dispose();

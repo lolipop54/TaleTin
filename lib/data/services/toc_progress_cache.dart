@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 
 import '../../domain/services/toc_entry_index.dart';
+import '../../core/concurrency/background_compute.dart';
 
 /// 只缓存目录的文字位置，不缓存正文或 DOM；正文版本、章序和目录共同校验。
 class TocProgressCache {
@@ -13,7 +14,15 @@ class TocProgressCache {
   File _file(String bookId) =>
       File(p.join(directory, 'toc-progress', '$bookId.json'));
 
-  Future<List<TocProgressEntry>?> read(String bookId, String signature) async {
+  Future<void> clear(String bookId) async {
+    final file = _file(bookId);
+    if (await file.exists()) await file.delete();
+  }
+
+  Future<List<TocProgressEntry>?> read(String bookId, String signature) =>
+      backgroundCompute(_readCache, (directory, bookId, signature));
+
+  Future<List<TocProgressEntry>?> _read(String bookId, String signature) async {
     try {
       final file = _file(bookId);
       if (!await file.exists()) return null;
@@ -41,6 +50,12 @@ class TocProgressCache {
     String bookId,
     String signature,
     List<TocProgressEntry> entries,
+  ) => backgroundCompute(_writeCache, (directory, bookId, signature, entries));
+
+  Future<void> _write(
+    String bookId,
+    String signature,
+    List<TocProgressEntry> entries,
   ) async {
     try {
       final file = _file(bookId);
@@ -60,3 +75,9 @@ class TocProgressCache {
     }
   }
 }
+
+Future<List<TocProgressEntry>?> _readCache((String, String, String) input) =>
+    TocProgressCache(input.$1)._read(input.$2, input.$3);
+Future<void> _writeCache(
+  (String, String, String, List<TocProgressEntry>) input,
+) => TocProgressCache(input.$1)._write(input.$2, input.$3, input.$4);

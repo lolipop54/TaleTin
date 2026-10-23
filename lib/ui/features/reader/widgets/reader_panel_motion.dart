@@ -2,6 +2,9 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../../../engine/layout/layout_work_gate.dart';
 import '../../../core/widgets/frame_fade.dart';
 
 /// 工具栏尺寸供控制层、主面板与子面板共用，弹层的底边始终贴在工具栏上沿。
@@ -9,6 +12,35 @@ const readerToolbarHeight = 87.0;
 const readerPanelEnterDuration = Duration(milliseconds: 220);
 const readerPanelExitDuration = Duration(milliseconds: 180);
 const readerProgressCollapseDuration = Duration(milliseconds: 120);
+
+/// 工具层动画结束前暂停后台分页和原书补图，避免关闭面板的第一帧就争抢主线程。
+final readerControlsMotionProvider =
+    NotifierProvider.autoDispose<ReaderControlsMotion, bool>(
+      ReaderControlsMotion.new,
+    );
+
+class ReaderControlsMotion extends Notifier<bool> {
+  final _owner = Object();
+  Timer? _timer;
+  @override
+  bool build() {
+    ref.onDispose(() {
+      _timer?.cancel();
+      LayoutWorkGate.release(_owner);
+    });
+    return false;
+  }
+
+  void begin(Duration duration) {
+    _timer?.cancel();
+    LayoutWorkGate.hold(_owner);
+    state = true;
+    _timer = Timer(duration, () {
+      LayoutWorkGate.release(_owner);
+      state = false;
+    });
+  }
+}
 
 double readerPanelBottom(BuildContext context) => math.max(
   readerToolbarHeight + MediaQuery.viewPaddingOf(context).bottom,
@@ -45,8 +77,10 @@ class ReaderPanelViewport extends StatelessWidget {
             padding: EdgeInsets.zero,
             viewInsets: EdgeInsets.zero,
           ),
-          child: FrameFade(revision: Theme.of(context).scaffoldBackgroundColor,
-            child: Align(alignment: Alignment.bottomCenter, child: child)),
+          child: FrameFade(
+            revision: Theme.of(context).scaffoldBackgroundColor,
+            child: Align(alignment: Alignment.bottomCenter, child: child),
+          ),
         ),
       ),
     );
@@ -140,7 +174,8 @@ class _ReaderPanelMotionState extends State<ReaderPanelMotion> {
           begin: const Offset(0, 1),
           end: Offset.zero,
         ).animate(animation),
-        child: child,
+        // 位移与透明度逐帧变化，面板文字和列表无需跟着重新绘制。
+        child: RepaintBoundary(child: child),
       ),
     ),
     child: _shown == null
@@ -205,8 +240,10 @@ class _ControlsEntranceState extends State<ReaderControlsEntrance>
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
     animation: _animation,
-    child: FrameFade(revision: Theme.of(context).scaffoldBackgroundColor,
-      child: widget.child),
+    child: FrameFade(
+      revision: Theme.of(context).scaffoldBackgroundColor,
+      child: widget.child,
+    ),
     builder: (context, child) {
       final value = (widget.visible ? Curves.easeOutCubic : Curves.easeInCubic)
           .transform(_animation.value);

@@ -49,6 +49,8 @@ extension _ListeningEventHandler on ListeningController {
       final epoch = _epoch;
       unawaited(_guard(epoch, () => _advance(epoch)));
     } else if (action is FailListeningUnit) {
+      AppErrors.report(StateError('语音引擎错误：${action.code.name}'),
+        StackTrace.current, operation: '系统语音播放失败');
       unawaited(_finish(TtsStatus.error, error: '语音播放失败（${action.code.name}）'));
     } else if (action is StopListeningUnit) {
       // 外部打断保留续播点，绝不把 stopped 当作读完。

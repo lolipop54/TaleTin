@@ -125,7 +125,7 @@ class _LocalFilesViewState extends ConsumerState<LocalFilesView> {
                               children: [
                                 Text(
                                   state.message == null
-                                      ? '没有找到 TXT、EPUB 文件'
+                                      ? '没有找到 TXT、EPUB、MOBI、AZW3、PDF 文件'
                                       : state.message!,
                                 ),
                                 GtButton(
@@ -178,7 +178,7 @@ class _LocalFilesViewState extends ConsumerState<LocalFilesView> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('删除手机源文件？'),
-        content: Text('将永久删除选中的 $count 个 TXT/EPUB 文件，无法撤销。已加入书架的副本不受影响。'),
+        content: Text('将永久删除选中的 $count 个图书文件，无法撤销。使用这些原文件的书架图书将会失效。'),
         actions: [
           GtDialogAction(
             onPressed: () => Navigator.pop(context, false),

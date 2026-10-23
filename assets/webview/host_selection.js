@@ -19,6 +19,17 @@
     return root ? root.clientWidth : 0;
   }
 
+  // 双页同屏仍有两栏：先读完左栏再读右栏，不能先按整屏页号再按行高排。
+  // 页号继续按整屏推进，仅矩形的阅读顺序使用半屏栏宽。
+  function compareBoxes(a, b) {
+    var spread = window.__gtInformation && window.__gtInformation.spread();
+    var step = state.width / (spread ? 2 : 1);
+    var shift = state.page * state.width;
+    var columnA = Math.floor((a.left + shift + 1) / step);
+    var columnB = Math.floor((b.left + shift + 1) / step);
+    return columnA - columnB || a.top - b.top || a.left - b.left;
+  }
+
   // 节点在 body 内的子节点序号路径；不在正文里（如框架覆盖层）返回 null
   function pathOf(node) {
     var path = [];
@@ -218,6 +229,74 @@
     range.setEnd(node, offset + 1);
     var rects = range.getClientRects();
     return rects.length ? rects[0] : null;
+  }
+
+  // 交叉后，原来的段尾可成为选区开头，原来的段首可成为选区结尾。
+  // 这两个插入点没有对应的字；沿选区内侧找实际首末字，不能把两端一起丢掉。
+  function rangeEdgeRect(range, atEnd) {
+    var node = atEnd ? range.endContainer : range.startContainer;
+    var stop = atEnd ? range.startContainer : range.endContainer;
+    var offset = atEnd ? range.endOffset - 1 : range.startOffset;
+    var limit = atEnd ? range.startOffset : range.endOffset;
+    var step = atEnd ? -1 : 1;
+    while (node) {
+      if (node.nodeType === 3) {
+        while (offset >= 0 && offset < node.length &&
+            (node !== stop || (atEnd ? offset >= limit : offset < limit))) {
+          if (!/\s/.test(node.nodeValue[offset])) {
+            var rect = charRectOf(node, offset);
+            if (rect && rect.height > 0) return rect;
+          }
+          offset += step;
+        }
+      }
+      // 到另一端就停止；不拿选区外的下一段文字补位置。
+      if (node === stop) return null;
+      while (node !== document.body && !(atEnd ? node.previousSibling : node.nextSibling)) {
+        node = node.parentNode;
+      }
+      if (node === document.body) return null;
+      node = atEnd ? node.previousSibling : node.nextSibling;
+      while (node.nodeType !== 3 && (atEnd ? node.lastChild : node.firstChild)) {
+        node = atEnd ? node.lastChild : node.firstChild;
+      }
+      offset = atEnd && node.nodeType === 3 ? node.length - 1 : 0;
+    }
+    return null;
+  }
+
+  // 段尾到下一段段首可能没有字，但浏览器会给出两侧的零宽光标。
+  // 优先保留显示页上的那个，两端经过重合位置时仍可继续拖动。
+  function rangeCaretRect(range) {
+    var boxes = range.getClientRects(), first = null;
+    for (var i = 0; i < boxes.length; i++) {
+      var rect = boxes[i];
+      if (rect.width !== 0 || rect.height <= 0) continue;
+      if (!first) first = rect;
+      if (rect.left >= 0 && rect.left < viewportWidth()) return rect;
+    }
+    return first;
+  }
+
+  // 底色会按高度切成横带；混合字体时，最后一条细带可能只属于行中的英文。
+  // 手柄必须直接取范围首字/末字，不能拿合并底色的 first/last 当端点。
+  function rangeEndpoints(from, to) {
+    var range = rangeOf(from, to);
+    if (!range) return null;
+    if (range.startContainer === range.endContainer &&
+        range.startOffset === range.endOffset) {
+      var caret = rangeCaretRect(range);
+      return caret ? {leading: caret, trailing: caret} : null;
+    }
+    var endpoints = {
+      leading: rangeEdgeRect(range, false),
+      trailing: rangeEdgeRect(range, true)
+    };
+    if (!endpoints.leading && !endpoints.trailing) {
+      var boundary = rangeCaretRect(range);
+      if (boundary) return {leading: boundary, trailing: boundary};
+    }
+    return endpoints;
   }
 
   // 本页文字的纵向范围（首行上沿、末行下沿）。
@@ -433,7 +512,8 @@
             var neighborX = neighbor && (before ? neighbor.right - 1 : neighbor.left + 1);
             if (neighbor && Math.floor((neighborX + shift) / state.width) ===
                 Math.floor((ownX + shift) / state.width) + step) {
-              return {left: before ? neighbor.right : neighbor.left, bottom: neighbor.bottom};
+              return {left: before ? neighbor.right : neighbor.left,
+                top: neighbor.top, bottom: neighbor.bottom};
             }
             return null;
           }
@@ -481,8 +561,8 @@
     // 两端重合时 Range 会给出零宽光标，不能把正在拖动的手柄一起撤掉。
     if (!list.length) {
       var collapsed = rangeOf(from, to);
-      var caret = collapsed && collapsed.getClientRects()[0];
-      if (caret && caret.height > 0 && caret.width === 0) {
+      var caret = collapsed && rangeCaretRect(collapsed);
+      if (caret) {
         list.push({left: caret.left, right: caret.left, top: caret.top,
           bottom: caret.bottom, page: Math.floor((caret.left + 1) / state.width),
           onPage: caret.left >= 0 && caret.left < width});
@@ -490,14 +570,10 @@
     }
     var box = contentBox();
     var text = pageTextBounds();
-    // 按阅读顺序（先页、再从上到下、再从左到右）排好再回传：Dart 侧用
-    // rects.first / rects.last 判断「哪一端落在本页」，靠它画起止手柄。
-    // 合并成横带以后顺序不再等于文档顺序，这里显式排一次
-    list.sort(function (a, b) {
-      if (a.page !== b.page) return a.page - b.page;
-      if (a.top !== b.top) return a.top - b.top;
-      return a.left - b.left;
-    });
+    var endpoints = rangeEndpoints(from, to);
+    // 底色和菜单仍按阅读顺序回传；手柄另取首末字，不能从横带顺序猜端点。
+    list.sort(compareBoxes);
+    raw.sort(compareBoxes);
     // 本页那一段的首末文字点：取**真的压在本页矩形里**的那个字，给 Dart 把范围
     // 夹在本页内。不能直接用 caretRangeFromPoint 的返回值：它会吸到后一个字
     // （可能在下一页），夹取就落空了，页末那一段的终点手柄也就不画了。
@@ -516,8 +592,18 @@
       textBottom: text.bottom,
       pageFrom: pageFrom,
       pageTo: pageTo,
-      previousContinuation: list.length ? continuationAnchor(from, list[0], true) : null,
-      continuation: list.length ? continuationAnchor(to, list[list.length - 1]) : null,
+      leading: endpoints && endpoints.leading ? {
+        left: endpoints.leading.left, bottom: endpoints.leading.bottom,
+        height: endpoints.leading.bottom - endpoints.leading.top
+      } : null,
+      trailing: endpoints && endpoints.trailing ? {
+        left: endpoints.trailing.right, bottom: endpoints.trailing.bottom,
+        height: endpoints.trailing.bottom - endpoints.trailing.top
+      } : null,
+      previousContinuation: endpoints && endpoints.leading
+        ? continuationAnchor(from, endpoints.leading, true) : null,
+      continuation: endpoints && endpoints.trailing
+        ? continuationAnchor(to, endpoints.trailing) : null,
       rects: list
     };
   }
@@ -540,10 +626,12 @@
   }
 
   internal.selection = {
+    compareBoxes: compareBoxes,
     scanPageAnchor: scanPageAnchor,
     continuationAnchor: continuationAnchor,
     contentBox: contentBox,
     rangeBoxes: rangeBoxes,
+    rangeEndpoints: rangeEndpoints,
     pageEdgePoint: pageEdgePoint,
     pageTextBounds: pageTextBounds,
     pointAt: pointAt,

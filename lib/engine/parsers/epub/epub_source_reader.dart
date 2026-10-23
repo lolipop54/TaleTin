@@ -75,13 +75,23 @@ class EpubSourceReader {
   ///
   /// [sourcePath] 是 `files/library/<bookId>/source.epub` 的绝对路径。
   /// 打开或结构解析失败时抛 [ContentFailure]（这是「读内容」阶段，不是导入）。
-  static EpubSourceReader open(String sourcePath) {
-    if (!File(sourcePath).existsSync()) {
+  static EpubSourceReader open(
+    String sourcePath, {
+    bool directory = false,
+    Map<String, String> digests = const {},
+    EpubArchive? entryArchive,
+  }) {
+    if (entryArchive == null &&
+        !(directory
+            ? Directory(sourcePath).existsSync()
+            : File(sourcePath).existsSync())) {
       throw ContentFailure(ContentErrorCode.missing, '缺少原书文件：$sourcePath');
     }
-    EpubArchive? archive;
+    EpubArchive? archive = entryArchive;
     try {
-      archive = EpubArchive.open(sourcePath);
+      archive ??= directory
+          ? EpubArchive.directory(sourcePath, digests: digests)
+          : EpubArchive.open(sourcePath);
       final opfPath = EpubPackage.readOpfPath(archive);
       final package = EpubPackage.parse(archive, opfPath);
       final mediaTypes = {
@@ -128,6 +138,12 @@ class EpubSourceReader {
 
   /// 章节数（= spine 条目数）
   int get chapterCount => _entryPaths.length;
+
+  /// 原生直读只接管归档中确实存在的已知资源，其他条目沿用原来的解析路径。
+  Map<String, String> get nativeResourceTypes => {
+    for (final entry in _mediaTypes.keys)
+      if (_archive.contains(entry)) entry: mediaTypeOf(entry),
+  };
 
   /// spine 中第 [ordinal] 章的归档内路径。
   String entryPathAt(int ordinal) => _entryPaths[ordinal];

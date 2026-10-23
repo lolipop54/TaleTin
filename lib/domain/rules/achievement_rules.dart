@@ -165,7 +165,8 @@ class AchievementFacts {
   final Set<String> completedBooks;
 
   /// 使用历史最佳连续天数，离线重算也能找回曾经达成的里程碑。
-  int get bestStreak {
+  late final int bestStreak = _bestStreak();
+  int _bestStreak() {
     // 日期仅比较日历相邻关系，使用 UTC 避免夏令时的 23 小时跨日被算成 0 天。
     final dates =
         statistics.days
@@ -185,13 +186,14 @@ class AchievementFacts {
     return best;
   }
 
+  late final int _days = statistics.days
+      .where((d) => d.totalMs >= 60000)
+      .length;
+  late final int _time = statistics.days.fold(0, (sum, d) => sum + d.totalMs);
+
   int value(AchievementMetric metric) => switch (metric) {
-    AchievementMetric.days =>
-      statistics.days.where((d) => d.totalMs >= 60000).length,
-    AchievementMetric.time => statistics.days.fold(
-      0,
-      (sum, d) => sum + d.totalMs,
-    ),
+    AchievementMetric.days => _days,
+    AchievementMetric.time => _time,
     AchievementMetric.completed => completedBooks.length,
     AchievementMetric.streak => bestStreak,
   };

@@ -1,3 +1,4 @@
+import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../app/di/app_providers.dart';
@@ -140,7 +141,8 @@ class BookSearchController extends Notifier<BookSearchState> {
       if (ref.mounted && version == _version && !token.cancelled) {
         _prepareMore();
       }
-    } catch (error) {
+    } catch (error, appStack) {
+      AppErrors.report(error, appStack, operation: '搜索正文失败');
       if (ref.mounted && version == _version && !token.cancelled) {
         state = state.copyWith(busy: false, error: '搜索失败：$error');
       }

@@ -23,7 +23,7 @@ import '../../../core/widgets/gt_icon.dart';
 /// 重排仍停在原句子上，
 /// 退出应用再进来仍然是这套设置；面板不再提供恢复全局入口。
 ///
-/// 排版模式（W7）：只有 EPUB 有「简化 / 原书」两选。两种模式都能调整行高、
+/// EPUB／MOBI／AZW3 有「简化 / 原书」两选。两种模式都能调整行高、
 /// 段落间距；首行缩进可保留或关闭，图片段落始终不缩进。
 /// 字号、页边距与阅读主题仍然生效（设计文档 2.4）。
 class PanelTypography extends ConsumerWidget {
@@ -45,8 +45,31 @@ class PanelTypography extends ConsumerWidget {
     // 这里只显示当前字体名称，打开字体选择页才准备整份名单与预览。
     final fontNames = ReadingFonts.loadedNames;
     // 原书排版只对 EPUB 开放；TXT 没有原书样式，不出现这个开关
-    final showLayoutMode = bookFormat == BookFormat.epub;
-
+    final showLayoutMode = bookFormat?.supportsOriginalLayout == true;
+    final pdf = bookFormat == BookFormat.pdf;
+    if (pdf && settings.settings.layoutMode.isOriginal) {
+      return ReaderSheet(
+        title: '设置',
+        onClose: () => ref.read(readerProvider.notifier).closePanel(),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: GtSpacing.s5,
+            vertical: GtSpacing.s3,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _sectionLabel(context, '排版模式'),
+              const SizedBox(height: GtSpacing.s2),
+              _modeRow(context, ref, settings),
+              const SizedBox(height: GtSpacing.s4),
+              _optionRow(context, ref, settings),
+            ],
+          ),
+        ),
+      );
+    }
 
     return ReaderSheet(
       title: '设置',
@@ -70,11 +93,13 @@ class PanelTypography extends ConsumerWidget {
               settings: settings.fontSettings,
               fontNames: fontNames,
               // TXT 没有书内字体，旧的原书排版设置也不能显示该选项。
-              supportsOriginalFont: showLayoutMode,
+              supportsOriginalFont: showLayoutMode && !pdf,
               onSize: vm.setFontSize,
               onFont: () => showReaderFontSheet(
-                context, ref, bookId,
-                supportsOriginalFont: showLayoutMode,
+                context,
+                ref,
+                bookId,
+                supportsOriginalFont: showLayoutMode && !pdf,
               ),
             ),
             const SizedBox(height: GtSpacing.s0),
@@ -114,43 +139,39 @@ class PanelTypography extends ConsumerWidget {
               onChanged: vm.setPagePadding,
             ),
             const SizedBox(height: GtSpacing.s2),
-            Row(
-              children: [
-                Expanded(
-                  child: _optionButton(
-                    context,
-                    settings.settings.pageTurnEffect.label,
-                    '翻页方式',
-                    () => showReaderLayoutOption(
-                      context,
-                      ref,
-                      bookId,
-                      turn: true,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: GtSpacing.s3),
-                Expanded(
-                  child: _optionButton(
-                    context,
-                    '其他设置',
-                    '其他设置',
-                    () => showReaderLayoutOption(
-                      context,
-                      ref,
-                      bookId,
-                      turn: false,
-                    ),
-                  ),
-                ),
-              ],
-            ),
+            _optionRow(context, ref, settings),
             const SizedBox(height: GtSpacing.s2),
           ],
         ),
       ),
     );
   }
+
+  Widget _optionRow(
+    BuildContext context,
+    WidgetRef ref,
+    ReaderSettingsState settings,
+  ) => Row(
+    children: [
+      Expanded(
+        child: _optionButton(
+          context,
+          settings.settings.pageTurnEffect.label,
+          '翻页方式',
+          () => showReaderLayoutOption(context, ref, bookId, turn: true),
+        ),
+      ),
+      const SizedBox(width: GtSpacing.s3),
+      Expanded(
+        child: _optionButton(
+          context,
+          '其他设置',
+          '其他设置',
+          () => showReaderLayoutOption(context, ref, bookId, turn: false),
+        ),
+      ),
+    ],
+  );
 
   /// 两个浅色胶囊共用一行，翻页入口直接显示当前方式；箭头提示还有下一层。
   Widget _optionButton(
@@ -204,9 +225,17 @@ class PanelTypography extends ConsumerWidget {
     final current = settings.settings.layoutMode;
     return Row(
       children: [
-        for (final (mode, label, hint) in const [
-          (ReadingLayoutMode.simplified, '简化排版', '阅读器排版'),
-          (ReadingLayoutMode.original, '原书排版', '还原原书样式'),
+        for (final (mode, label, hint) in [
+          (
+            ReadingLayoutMode.simplified,
+            bookFormat == BookFormat.pdf ? '电子书模式' : '简化排版',
+            '阅读器排版',
+          ),
+          (
+            ReadingLayoutMode.original,
+            bookFormat == BookFormat.pdf ? 'PDF模式' : '原书排版',
+            '还原原书样式',
+          ),
         ]) ...[
           if (mode == ReadingLayoutMode.original)
             const SizedBox(width: GtSpacing.s3),
@@ -235,12 +264,13 @@ class PanelTypography extends ConsumerWidget {
                             : colors.textPrimary,
                       ).copyWith(fontSize: 15),
                     ),
-                    const SizedBox(height: 2),
-                    Text(
-                      hint,
-                      style: GtText.caption(colors.textMuted)
-                          .copyWith(fontSize: 11),
-                    ),
+                    if (bookFormat != BookFormat.pdf) const SizedBox(height: 2),
+                    if (bookFormat != BookFormat.pdf)
+                      Text(
+                        hint,
+                        style: GtText.caption(colors.textMuted)
+                            .copyWith(fontSize: 11),
+                      ),
                   ],
                 ),
               ),

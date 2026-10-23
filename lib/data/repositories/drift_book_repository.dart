@@ -16,11 +16,13 @@ import '../../domain/models/book_document.dart';
 import '../../domain/repositories/book_repository.dart';
 import '../../engine/parsers/epub/epub_parser.dart';
 import '../database/app_database.dart';
+import 'book_cover_repository.dart';
 import '../mappers/book_mapper.dart';
 import '../services/book_source_path.dart';
 import '../services/book_source_availability.dart';
 import '../services/book_source_integrity.dart';
 import '../services/source_position_preparation.dart';
+import 'drift_reading_statistics_repository.dart';
 
 // 独立函数限定闭包捕获范围，避免同方法的数据库事务闭包让 this 随任务发送。
 Future<Map<String, String>> _resolveLegacyTitlesInBackground(
@@ -50,7 +52,7 @@ class DriftBookRepository implements BookRepository {
     return found;
   }
 
-  /// 书架观察流：墓碑删除的书籍不出现（设计文档 7.3），并带上阅读进度。
+  /// 书架观察流：旧版已删除记录不出现（设计文档 7.3），并带上阅读进度。
   ///
   /// 进度来自 `reading_positions`，所以那张表变化时也要重新发一次，
   /// 否则读完退回书架看到的还是旧百分比。
@@ -102,6 +104,8 @@ class DriftBookRepository implements BookRepository {
   Future<List<Book>> _withReadingProgress(List<BookRow> rows) async {
     if (rows.isEmpty) return const [];
     final bookIds = [for (final row in rows) row.id];
+    final covers = await DriftBookCoverRepository.load(_db, bookIds);
+    final defaults = await DriftBookCoverRepository.loadDefaults(_db);
     final positionTable = _db.readingPositions;
     // 翻页会刷新后台书架；只取比例和时间，不读取章节或传回位置 JSON。
     final positions =
@@ -149,6 +153,8 @@ class DriftBookRepository implements BookRepository {
           lastReadAt: positionOf[row.id]?.updatedAt,
           readProgress: positionOf[row.id]?.progress,
           sourceFileName: nameOf[row.id],
+          coverChoice:
+              covers[row.id] ?? defaults[BookFormat.fromCode(row.format)],
         ),
     ];
   }
@@ -158,7 +164,14 @@ class DriftBookRepository implements BookRepository {
     final row = await (_db.select(
       _db.books,
     )..where((t) => t.id.equals(id))).getSingleOrNull();
-    return row == null ? null : _sourceIntegrity.check(bookFromRow(row));
+    if (row == null) return null;
+    final covers = await DriftBookCoverRepository.load(_db, [id]);
+    final defaults = await DriftBookCoverRepository.loadDefaults(_db);
+    return _sourceIntegrity.check(
+      bookFromRow(row).copyWith(
+        coverChoice: covers[id] ?? defaults[BookFormat.fromCode(row.format)],
+      ),
+    );
   }
 
   @override
@@ -361,10 +374,7 @@ class DriftBookRepository implements BookRepository {
     );
   }
 
-  /// 标记墓碑删除，并清掉该书的章节索引行。
-  ///
-  /// 正文文件已经删除，索引行再留着就会指向不存在的文件；
-  /// 书籍行保留是为了重新导入同一文件时复用 bookId（阅读进度、笔记挂在它上面）。
+  /// 同一事务清除书籍和关联数据；临时清理任务只供文件删除中断后恢复。
   @override
   Future<void> markRemoved(String bookId, DateTime deletedAt) =>
       _db.transaction(() => _writeRemoved(bookId, deletedAt));
@@ -379,6 +389,35 @@ class DriftBookRepository implements BookRepository {
     await (_db.delete(
       _db.chapters,
     )..where((t) => t.bookId.equals(bookId))).go();
+    await (_db.delete(
+      _db.readingPositions,
+    )..where((t) => t.bookId.equals(bookId))).go();
+    await (_db.delete(
+      _db.annotations,
+    )..where((t) => t.bookId.equals(bookId))).go();
+    await (_db.delete(
+      _db.preferences,
+    )..where((t) => t.scopeId.equals(bookId))).go();
+    await (_db.delete(
+      _db.importJobs,
+    )..where((t) => t.targetBookId.equals(bookId))).go();
+    await DriftReadingStatisticsRepository(_db).deleteBook(bookId);
+    await _db.customStatement('DELETE FROM book_completions WHERE book_id=?', [
+      bookId,
+    ]);
+    _db.notifyUpdates({const TableUpdate('book_completions')});
+    // 数据和文件无法同一事务提交。只暂存清理任务ID，不保留旧书名、来源或阅读数据；
+    // 文件删除成功即删除此任务，失败由现有启动恢复继续处理。
+    await upsertJob(
+      ImportJobRecord(
+        id: 'delete:$bookId',
+        stage: 'deleting',
+        targetBookId: bookId,
+      ),
+    );
+    await (_db.delete(_db.books)..where((t) => t.id.equals(bookId))).go();
+    _checkedTitles.remove(bookId);
+    await _sourceIntegrity.forget(bookId);
   }
 
   @override

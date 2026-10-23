@@ -9,22 +9,28 @@ class _SpeechFollowState {
   Object? key, boundaryKey;
   late ListeningService service;
   late AppLifecycleListener lifecycle;
+  final diagnostics = ListeningFollowDiagnostics('original');
 }
 
 extension _OriginalSpeechFollow on _OriginalReaderAreaState {
   ListeningState get _speechSnapshot => _speech.service.snapshot;
   Locator? _speechTarget(ListeningState state) =>
-      state.bookId != widget.bookId || !state.hasSession || !state.followReading
-      ? null
-      : state.status == TtsStatus.paused
-      ? state.resumeLocator
-      : state.confirmedLocator;
+      state.bookId == widget.bookId ? state.pageFollowLocator : null;
 
   void _initSpeech() {
     _speech.service = ref.read(listeningServiceProvider);
     _speech.lifecycle = AppLifecycleListener(
       onStateChange: (state) {
         _speech.visible = state == AppLifecycleState.resumed;
+        if (_speechSnapshot.bookId == widget.bookId) {
+          _speech.diagnostics.lifecycle(state.name, {
+            'status': _speechSnapshot.status.name,
+            'hasTarget': _speechTarget(_speechSnapshot) != null,
+            'running': _speech.running,
+            'queued': _speech.queued,
+            'landing': _landing,
+          });
+        }
         _speech.version++;
         _speech.key = null;
         if (!_speech.visible) {
@@ -83,6 +89,17 @@ extension _OriginalSpeechFollow on _OriginalReaderAreaState {
         _speech.queued = false;
         final state = _speechSnapshot, version = _speech.version;
         final target = _speechTarget(state);
+        _speech.diagnostics.step('check', {
+          'status': state.status.name,
+          'hasTarget': target != null,
+          'chapter': widget.session.chapterIndex,
+          'page': _page,
+          'targetChapter': widget.session.chapters.indexWhere(
+            (c) => c.id == target?.chapterId,
+          ),
+          'targetOffset': target?.utf16Offset,
+          'landing': _landing,
+        });
         if (target != null && target.chapterId != widget.session.chapter.id) {
           if (!_landing && !_speech.covering) {
             await _prepareJumpCover();
@@ -97,7 +114,7 @@ extension _OriginalSpeechFollow on _OriginalReaderAreaState {
         final host = _host;
         if (host == null) continue;
         if (_landing) {
-          if (host.pageCount != null) {
+          if (host.hasReadableWindow) {
             _paginatedChapter = widget.session.chapterIndex;
             _everReady = true;
             await _finishChapterReadable(widget.session.chapterIndex);
@@ -106,8 +123,8 @@ extension _OriginalSpeechFollow on _OriginalReaderAreaState {
         }
         await _curlKey.currentState?.settleForSpeech();
         if (!_speechCurrent(version, state)) continue;
-        await _paintSpeech(host, state, version);
-        if (_speechCurrent(version, state)) {
+        final painted = await _paintSpeech(host, state, version);
+        if (painted && _speechCurrent(version, state)) {
           _releaseSpeechCover();
           if (target == null) _speech.engaged = false;
         }
@@ -136,16 +153,18 @@ extension _OriginalSpeechFollow on _OriginalReaderAreaState {
     final unit = state.hasSession && state.bookId == widget.bookId
         ? state.activeUnit
         : null;
-    if (target == null) {
+    if (unit == null) {
       // 清理过程中相邻页可能完成预加载，遍历快照避免列表变化。
       for (final entry in _hosts.values.toList()) {
         if (!_speechCurrent(version, state)) return false;
         await entry.clearTtsRange(version);
       }
     }
-    if (!state.hasSession || state.bookId != widget.bookId || !state.followReading) return true;
-    final anchor = target ?? state.resumeLocator ?? session.currentAnchor;
-    if (anchor == null || anchor.chapterId != session.chapter.id) return false;
+    if (target == null) {
+      return true;
+    }
+    final anchor = target;
+    if (anchor.chapterId != session.chapter.id) return false;
     final map = await widget.controller.positionMap(
       session.chapterIndex,
       session.chapter.href ?? '',
@@ -161,18 +180,17 @@ extension _OriginalSpeechFollow on _OriginalReaderAreaState {
     if (_speech.boundaryKey != boundaryKey) {
       final points = await host.ttsBoundaries(map.nodes);
       if (!_speechCurrent(version, state) || host != _host) return false;
+      if (points == null) return false; // 旧 iframe 已在设置切换中撤下，等待新页重报。
       _speech.service.setPageBoundaries(
         this,
         points.map(map.locatorOf).toList(),
       );
       _speech.boundaryKey = boundaryKey;
     }
-    if (target != null) {
-      if (!await host.followTtsPoint(map.point(target))) {
-        throw StateError('无法定位当前听书文字');
-      }
-      if (!_speechCurrent(version, state)) return false;
+    if (!await host.followTtsPoint(map.point(target))) {
+      throw StateError('无法定位当前听书文字');
     }
+    if (!_speechCurrent(version, state)) return false;
     if (unit != null &&
         !unit.isChapterTitle &&
         unit.sentenceStart.chapterId == session.chapter.id) {
@@ -189,13 +207,16 @@ extension _OriginalSpeechFollow on _OriginalReaderAreaState {
     }
     await host.presented();
     if (!_speechCurrent(version, state) || host != _host) return false;
-    if (target != null) {
-      final fraction = await host.fractionForPage(await host.page);
-      if (!_speechCurrent(version, state)) return false;
-      ref
-          .read(readerSessionProvider(widget.bookId).notifier)
-          .reportSpeechPosition(target, fraction);
-    }
+    final fraction = await host.fractionForPage(await host.page);
+    if (!_speechCurrent(version, state)) return false;
+    ref
+        .read(readerSessionProvider(widget.bookId).notifier)
+        .reportSpeechPosition(target, fraction);
+    _speech.diagnostics.step('positioned', {
+      'chapter': session.chapterIndex,
+      'fraction': fraction,
+      'visible': _speech.visible,
+    });
     return true;
   }
 

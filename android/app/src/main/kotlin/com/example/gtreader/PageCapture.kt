@@ -102,6 +102,9 @@ object PageCapture {
                             }
                             observer.addOnDrawListener(listener)
                             web.invalidate()
+                            // 显式定位确认仍走一次完整窗口绘制。正文平常的失效
+                            // 通知只更新纹理，不能拿它冒充窗口的OnDraw确认。
+                            OriginalScrollDraw.wrapper(web)?.invalidate()
                             return
                         }
                         // 退出阅读或退到后台后，晚到的绘制回调不能重新占用工作区。
@@ -143,7 +146,7 @@ object PageCapture {
             }
     }
 
-    private fun findWebView(view: View?): WebView? {
+    internal fun findWebView(view: View?): WebView? {
         if (view is WebView) return view
         if (view is ViewGroup) {
             for (index in 0 until view.childCount) {

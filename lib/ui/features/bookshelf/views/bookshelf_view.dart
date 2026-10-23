@@ -1,11 +1,9 @@
 import '../../../../app/di/book_group_providers.dart';
-import '../widgets/book_group_sheet.dart';
+import '../widgets/shelf_selection_bar.dart';
 
 import 'dart:math' as math;
 
-import 'package:taletin/platform/channels/system_toast.dart';
 import 'package:taletin/ui/core/widgets/gt_button.dart';
-import 'package:taletin/ui/core/widgets/gt_dialog_action.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../domain/models/import_job.dart';
@@ -23,9 +21,9 @@ import '../../../core/widgets/gt_icon.dart';
 import '../../../core/widgets/state_views.dart';
 import '../../../core/widgets/frame_fade.dart';
 import '../../../../domain/models/book.dart';
-import '../../../../domain/use_cases/delete_books.dart';
 import '../widgets/invalid_book_dialog.dart';
 import '../view_models/bookshelf_view_model.dart';
+import '../view_models/visible_shelf_books.dart';
 import '../view_models/shelf_sort_controller.dart';
 import '../widgets/bookshelf_widgets.dart';
 import '../widgets/shelf_header.dart';
@@ -45,6 +43,7 @@ class BookshelfView extends ConsumerWidget {
     final colors = context.gtColors;
     final shelf = ref.watch(bookshelfProvider);
     final library = ref.watch(libraryBooksProvider);
+    final visible = ref.watch(visibleShelfBooksProvider);
     final groups = ref.watch(bookGroupsProvider);
     final sort = ref.watch(shelfSortProvider);
     if (!sort.hasValue) {
@@ -73,14 +72,11 @@ class BookshelfView extends ConsumerWidget {
 
     final route = ModalRoute.of(context);
     if (route?.isCurrent != false &&
-        library.value?.any((book) => book.format == BookFormat.epub) == true) {
+        library.value?.any((book) => book.format.usesOriginalWebView) == true) {
       OriginalWebViewWarmup.schedule(
         allowed: () => context.mounted && (route?.isCurrent ?? true),
       );
     }
-    final visible = library.value == null
-        ? const <Book>[]
-        : shelf.apply(library.value!);
     // 普通标题和多选工具栏共用行高；多选工具栏仍需 48dp 内容区，
     // 顶部三个普通按钮缩至 36dp，进入多选也不推移搜索框。
     final scaler = MediaQuery.textScalerOf(context);
@@ -100,6 +96,7 @@ class BookshelfView extends ConsumerWidget {
         if (!didPop) ref.read(bookshelfProvider.notifier).clearSelection();
       },
       child: Scaffold(
+        bottomSheet: shelf.selectionMode ? const ShelfSelectionBar() : null,
         body: SafeArea(
           bottom: false,
           child: Column(
@@ -108,7 +105,7 @@ class BookshelfView extends ConsumerWidget {
               ShelfHeader(
                 height: headerHeight,
                 selectionHeader: shelf.selectionMode
-                    ? _buildSelectionHeader(context, ref, colors, visible)
+                    ? _buildSelectionHeader(context, ref, colors)
                     : null,
               ),
               const SizedBox(height: GtSpacing.s2),
@@ -121,21 +118,21 @@ class BookshelfView extends ConsumerWidget {
                     shelf.sort,
                     shelf.gridView,
                   ),
-                  child: switch (library) {
-                    AsyncData(:final value) => _buildBody(
-                      context,
-                      ref,
-                      shelf.apply(value),
-                      hasBooks: value.isNotEmpty,
-                      query: shelf.query.trim(),
-                    ),
-                    AsyncError(:final error) => GtErrorView(
-                      title: '书架读取失败',
-                      message: '$error',
-                      onRetry: () => ref.invalidate(libraryBooksProvider),
-                    ),
-                    _ => const GtLoadingView(label: '正在整理书架…'),
-                  },
+                  child: visible.hasValue
+                      ? _buildBody(
+                          context,
+                          ref,
+                          visible.requireValue,
+                          hasBooks: library.value?.isNotEmpty ?? false,
+                          query: shelf.query.trim(),
+                        )
+                      : visible.hasError
+                      ? GtErrorView(
+                          title: '书架读取失败',
+                          message: '${visible.error}',
+                          onRetry: () => ref.invalidate(libraryBooksProvider),
+                        )
+                      : const GtLoadingView(label: '正在整理书架…'),
                 ),
               ),
             ],
@@ -145,142 +142,30 @@ class BookshelfView extends ConsumerWidget {
     );
   }
 
-  /// 多选操作使用图标缩短占用：退出、已选数量、全选、移动、删除。
   Widget _buildSelectionHeader(
     BuildContext context,
     WidgetRef ref,
     GtColors colors,
-    List<Book> visible,
   ) {
     final shelf = ref.watch(bookshelfProvider);
-    final vm = ref.read(bookshelfProvider.notifier);
-    final count = shelf.selectedIds.length;
-    final allSelected =
-        visible.isNotEmpty &&
-        shelf.selectedIds.containsAll(visible.map((b) => b.id));
     return Padding(
-      padding: const EdgeInsets.fromLTRB(
-        GtSpacing.s2,
-        GtSpacing.s4,
-        GtSpacing.s4,
-        0,
-      ),
+      padding: const EdgeInsets.fromLTRB(20, 16, 16, 0),
       child: Row(
         children: [
-          GtButton.icon(
-            key: const ValueKey('shelf-exit-selection'),
-            onPressed: vm.clearSelection,
-            tooltip: '退出多选',
-            icon: GtIcon(GtIcons.close, size: 20, color: colors.textPrimary),
-          ),
           Expanded(
-            child: FittedBox(
-              fit: BoxFit.scaleDown,
-              alignment: Alignment.centerLeft,
-              child: Text(
-                '已选 $count 本',
-                style: GtText.pageTitle(colors.textPrimary),
-                maxLines: 1,
-              ),
+            child: Text(
+              '已选 ${shelf.selectedIds.length} 本',
+              style: GtText.pageTitle(colors.textPrimary),
             ),
           ),
-          GtButton.icon(
-            key: const ValueKey('shelf-select-all'),
-            tooltip: allSelected ? '取消全选' : '全选',
-            onPressed: () => vm.toggleSelectAll(visible.map((b) => b.id)),
-            icon: GtIcon(
-              allSelected ? GtIcons.checkbox : GtIcons.checkboxSelected,
-              color: colors.textPrimary,
-            ),
-          ),
-          GtButton.icon(
-            key: const ValueKey('shelf-move-selected'),
-            tooltip: '移动',
-            onPressed: count == 0
-                ? null
-                : () => showBookGroupSheet(context, ref, [
-                    for (final book
-                        in ref.read(libraryBooksProvider).value ?? <Book>[])
-                      if (shelf.selectedIds.contains(book.id)) book,
-                  ]),
-            icon: GtIcon(GtIcons.folderInput, color: colors.textPrimary),
-          ),
-          GtButton.icon(
-            key: const ValueKey('shelf-delete-selected'),
-            tooltip: '删除',
-            onPressed: count == 0
-                ? null
-                : () => _confirmDelete(context, ref, visible),
-            icon: GtIcon(GtIcons.trash, color: colors.danger),
+          GtButton(
+            key: const ValueKey('shelf-exit-selection'),
+            onPressed: ref.read(bookshelfProvider.notifier).clearSelection,
+            child: Text('完成', style: GtText.body(colors.actionPrimary)),
           ),
         ],
       ),
     );
-  }
-
-  /// 删除所选书籍：先说明影响（占用空间、保留书籍记录），确认后再删。
-  Future<void> _confirmDelete(
-    BuildContext context,
-    WidgetRef ref,
-    List<Book> visible,
-  ) async {
-    final shelf = ref.read(bookshelfProvider);
-    final selected = [
-      for (final book in visible)
-        if (shelf.selectedIds.contains(book.id)) book,
-    ];
-    if (selected.isEmpty) return;
-
-    final deleteBooks = ref.read(deleteBooksProvider);
-    final size = await deleteBooks.estimateSize(selected.map((b) => b.id));
-    if (!context.mounted) return;
-
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text('删除 ${selected.length} 本书籍？'),
-        content: Text(
-          '会清理应用保存的正文、封面等书籍数据，不删除手机目录中的原文件，'
-          '共约 ${formatBytes(size)}，删除后书架不再显示。',
-          style: GtText.body(context.gtColors.textSecondary)
-              .copyWith(fontSize: 14, height: 1.6),
-        ),
-        actions: [
-          GtDialogAction(
-            key: const ValueKey('shelf-delete-cancel'),
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            label: '取消',
-          ),
-          GtDialogAction(
-            key: const ValueKey('shelf-delete-confirm'),
-            role: GtDialogActionRole.danger,
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            label: '删除',
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true) return;
-
-    try {
-      final result = await deleteBooks.run(
-        selected.map((b) => b.id),
-        now: DateTime.now().toUtc(),
-      );
-      if (!context.mounted) return;
-      // 这些书已经从数据库流里消失，选择集合里也要去掉，避免残留选中态
-      ref.read(bookshelfProvider.notifier).pruneSelection(result.undeletedIds);
-      SystemToast.show(
-        result.undeletedIds.isNotEmpty
-            ? '已删除 ${result.deletedCount} 本，${result.undeletedIds.length} 本未删除，请重试'
-            : result.failedCount == 0
-            ? '已删除 ${result.deletedCount} 本，释放 ${formatBytes(result.freedBytes)}'
-            : '已删除 ${result.deletedCount} 本，其中 ${result.failedCount} 本的文件将在下次启动时清理',
-      ).ignore();
-    } catch (error) {
-      if (!context.mounted) return;
-      SystemToast.show('未完成删除，请重试：$error').ignore();
-    }
   }
 
   /// 有数据后按「空书架 / 搜索无结果 / 列表」三种情况展示。
@@ -442,9 +327,12 @@ class _ListRow extends ConsumerWidget {
               children: [
                 BookCover(
                   bookId: book.id,
+                  format: book.format,
                   title: book.title,
                   author: book.author,
                   imagePath: coverFile,
+                  preset: book.coverChoice?.preset,
+                  showImageText: book.coverChoice?.imagePath != null,
                 ),
                 if (book.status == BookStatus.contentMissing)
                   const Positioned.fill(child: InvalidBookOverlay()),

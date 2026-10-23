@@ -7,8 +7,11 @@ import 'package:direct_read_rust/direct_read_rust.dart';
 import 'package:html/dom.dart';
 
 import '../../../core/diagnostics/import_timing.dart';
+import '../../../core/diagnostics/reader_work_trace.dart';
 import '../../../domain/models/book_document.dart';
 import '../../../domain/models/content_table.dart';
+import '../../../domain/services/toc_entry_index.dart';
+import 'toc_anchor_metadata.dart';
 import 'dom_text_map.dart';
 import 'epub_archive.dart';
 import 'xhtml_models.dart';
@@ -36,10 +39,55 @@ class XhtmlBlockBuilder {
   XhtmlBlocks convertBytes(Uint8List source) =>
       _convert(() => NativeHtml.bytes(source));
 
-  XhtmlBlocks _convert(NativeHtml Function() open) {
-    final native = importTiming?.detail('html_dom_parse', open) ?? open();
+  /// TOC-only source mapping. Keep the full DOM and source pieces native and
+  /// transfer only target blocks; grapheme snapping remains the Locator rule.
+  static Map<String, double?>? anchorPositions(
+    String source,
+    String basePath,
+    Iterable<String> fragments,
+  ) {
+    final wanted = anchorCandidates(fragments);
+    final native = NativeHtml(source);
     try {
-      final metadata = _metadata(native.references, basePath, resolveImage);
+      final metadata = _metadata(
+        native.references,
+        basePath,
+        (entry) => ResolvedImage(resourcePath: entry, width: 0, height: 0),
+      );
+      final data = native.anchorPositions({
+        ...metadata,
+        'anchors': wanted.toList(),
+      });
+      return decodeAnchorPositions(data, fragments);
+    } finally {
+      native.close();
+    }
+  }
+
+  XhtmlBlocks _convert(NativeHtml Function() open) {
+    // 只在性能包细分按需正文转换，避免把图片提取、原生转换和Dart模型
+    // 都误称为HTML解析；这些阶段包含在上层content.worker内，不能重复相加。
+    final trace = ReaderWorkTrace.start('content.xhtml.convert', {
+      'textMap': buildTextMap,
+      'statisticsOnly': statisticsOnly,
+    });
+    final NativeHtml native;
+    try {
+      native = importTiming?.detail('html_dom_parse', open) ?? open();
+      trace?.mark('native_parse');
+    } catch (error) {
+      trace?.finish(status: error.runtimeType.toString());
+      rethrow;
+    }
+    try {
+      final references = native.references;
+      trace?.mark('native_references');
+      if (trace != null) {
+        trace.details['imageRefs'] = (references['images'] as List).length;
+        trace.details['linkRefs'] = (references['links'] as List).length;
+      }
+      final metadata = _metadata(references, basePath, resolveImage);
+      trace?.mark('resolve_resources');
       Map<String, dynamic> convert() => native.convert(
         metadata,
         statisticsOnly: statisticsOnly,
@@ -47,6 +95,7 @@ class XhtmlBlockBuilder {
       );
       final result =
           importTiming?.detail('blocks_and_text_map', convert) ?? convert();
+      trace?.mark('native_convert_and_transfer');
       DomTextMap? textMap;
       if (buildTextMap) {
         final nodes = <int, Node>{};
@@ -93,9 +142,16 @@ class XhtmlBlockBuilder {
         }
         textMap = builder.build();
       }
-      return _result(result, statisticsOnly, textMap: textMap);
+      trace?.mark('text_map');
+      final converted = _result(result, statisticsOnly, textMap: textMap);
+      trace?.mark('dart_models');
+      return converted;
+    } catch (error) {
+      trace?.finish(status: error.runtimeType.toString());
+      rethrow;
     } finally {
       native.close();
+      trace?.finish();
     }
   }
 
@@ -107,6 +163,9 @@ class XhtmlBlockBuilder {
     ImportTiming? timing,
     List<Uint8List>? rawSources,
     bool statisticsOnly = true,
+    Map<String, List<String>> tocFragments = const {},
+    Map<String, Map<String, double?>>? tocPositions,
+    Map<String, Map<String, double>>? tocHeadings,
   }) {
     NativeHtmlBatch open() => rawSources == null
         ? NativeHtmlBatch(sources)
@@ -128,12 +187,39 @@ class XhtmlBlockBuilder {
           ),
       ];
       final input = timing?.detail('resource_metadata', metadata) ?? metadata();
+      for (var i = 0; i < paths.length; i++) {
+        final fragments = tocFragments[paths[i]];
+        if (fragments != null && fragments.isNotEmpty) {
+          input[i]['anchors'] = anchorCandidates(fragments).toList();
+        }
+      }
       final results =
           timing?.detail(
             'native_statistics_transfer',
             () => batch.convert(input, statisticsOnly: statisticsOnly),
           ) ??
           batch.convert(input, statisticsOnly: statisticsOnly);
+      for (var i = 0; i < paths.length; i++) {
+        final raw = (results[i] as Map)['tocPositions'];
+        if (raw == null) continue;
+        final positions = decodeAnchorPositions(
+          (raw as Map).cast<String, dynamic>(),
+          tocFragments[paths[i]]!,
+        );
+        if (positions != null) tocPositions?[paths[i]] = positions;
+        final converted = results[i] as Map;
+        final length = converted['length'] as int;
+        final headings = <String, double>{};
+        for (final heading in converted['tocHeadings'] as List? ?? []) {
+          final text = (heading[0] as String).trim();
+          final fraction = length == 0 ? 0.0 : (heading[1] as int) / length;
+          headings.putIfAbsent(text, () => fraction);
+          headings.putIfAbsent(tocHeadingWithoutNumber(text), () => fraction);
+        }
+        // An empty map also proves that the complete standard chapter contains
+        // no matching heading; do not reread it to repeat a known failed lookup.
+        tocHeadings?[paths[i]] = headings;
+      }
       return [
         for (final result in results)
           // 即使为位置匹配返回正文块，目录统计仍使用原生统计口径。

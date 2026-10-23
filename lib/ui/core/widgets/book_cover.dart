@@ -3,6 +3,9 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
+import '../../../domain/models/book.dart';
+import '../../../domain/models/book_cover_choice.dart';
+import 'preset_book_cover.dart';
 import '../theme/gt_tokens.dart';
 import 'cover_art.dart';
 import 'cover_art_spec.dart';
@@ -21,7 +24,10 @@ class BookCover extends StatelessWidget {
     required this.title,
     required this.author,
     this.imagePath,
+    this.preset,
     this.imageBytes,
+    this.showImageText = false,
+    this.format,
     this.radius = GtRadius.cover,
   });
 
@@ -31,7 +37,26 @@ class BookCover extends StatelessWidget {
 
   /// 封面图绝对路径；null 表示没有封面
   final String? imagePath;
+  final BookCoverPreset? preset;
   final Uint8List? imageBytes;
+
+  /// 仅导入的自定义图片叠加书名、作者；原书封面已有自己的文字。
+  final bool showImageText;
+
+  /// 自定义图片同时限制解码宽高，细长图片也不能撑大缩略图内存。
+  static ImageProvider imageProvider(
+    String path,
+    int width, {
+    bool custom = false,
+  }) => ResizeImage(
+    FileImage(File(path)),
+    width: width,
+    height: custom ? (width / GtSize.coverAspectRatio).ceil() : null,
+    policy: ResizeImagePolicy.fit,
+  );
+
+  /// 书架传入格式；阅读记录等微型封面省略底部标识。
+  final BookFormat? format;
   final double radius;
 
   @override
@@ -44,30 +69,143 @@ class BookCover extends StatelessWidget {
         child: LayoutBuilder(
           builder: (context, constraints) {
             final w = constraints.maxWidth;
+            final labelPadding = (w * 0.05).clamp(4.0, 6.0);
+            final labelStyle = DefaultTextStyle.of(context).style.copyWith(
+              color: Colors.white,
+              fontSize: (w * 0.095).clamp(9.0, 11.0),
+              height: 1,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0.4,
+            );
             final path = imagePath;
-            if (imageBytes case final bytes?) {
-              return Image.memory(bytes, fit: BoxFit.fill,
-                gaplessPlayback: true,
-                cacheWidth: (w * MediaQuery.devicePixelRatioOf(context)).round(),
-                errorBuilder: (context, error, stack) => _placeholder(w, spec));
-            }
-            if (path != null) {
-              // 只按格子宽度解码，避免大封面图占满内存
-              final cacheWidth =
-                  (w * MediaQuery.devicePixelRatioOf(context)).round();
-              return Image.file(
-                File(path),
-                // 按格子尺寸拉伸填满，不裁切图片中间（宁可轻微变形也不丢内容）
+            final Widget cover;
+            if (preset case final preset?) {
+              cover = PresetBookCover(
+                preset: preset,
+                title: title,
+                author: author,
+              );
+            } else if (imageBytes case final bytes?) {
+              cover = Image.memory(
+                bytes,
                 fit: BoxFit.fill,
-                cacheWidth: cacheWidth <= 0 ? null : cacheWidth,
+                gaplessPlayback: true,
+                frameBuilder: _imageFrame,
+                cacheWidth: (w * MediaQuery.devicePixelRatioOf(context))
+                    .round(),
                 errorBuilder: (context, error, stack) => _placeholder(w, spec),
               );
+            } else if (path != null) {
+              // 只按格子宽度解码，避免大封面图占满内存
+              final cacheWidth = (w * MediaQuery.devicePixelRatioOf(context))
+                  .round();
+              cover = Image(
+                image: imageProvider(
+                  path,
+                  cacheWidth.clamp(1, 4096),
+                  custom: showImageText,
+                ),
+                gaplessPlayback: true,
+                frameBuilder: _imageFrame,
+                // 按格子尺寸拉伸填满，不裁切图片中间（宁可轻微变形也不丢内容）
+                fit: BoxFit.fill,
+                errorBuilder: (context, error, stack) => _placeholder(w, spec),
+              );
+            } else {
+              cover = _placeholder(w, spec);
             }
-            return _placeholder(w, spec);
+            return Stack(
+              fit: StackFit.expand,
+              children: [
+                cover,
+                if (format case final format?)
+                  Positioned(
+                    right: 0,
+                    bottom: 0,
+                    width: _formatLabelWidth(labelStyle) + labelPadding * 2,
+                    // 紧贴右下角，只给对角两端圆角；标签不接收点击或长按。
+                    child: IgnorePointer(
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF9B9B96),
+                          borderRadius: BorderRadius.only(
+                            topLeft: Radius.circular(radius),
+                            bottomRight: Radius.circular(radius),
+                          ),
+                        ),
+                        child: Padding(
+                          padding: EdgeInsets.symmetric(
+                            horizontal: labelPadding,
+                            vertical: 2,
+                          ),
+                          child: Text(
+                            format.label,
+                            maxLines: 1,
+                            textAlign: TextAlign.center,
+                            // 与封面文字一样按封面尺寸缩放，避免小封面标签溢出。
+                            textScaler: TextScaler.noScaling,
+                            style: labelStyle,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            );
           },
         ),
       ),
     );
+  }
+
+  Widget _imageFrame(
+    BuildContext context,
+    Widget child,
+    int? frame,
+    bool synchronous,
+  ) {
+    if (!showImageText || (!synchronous && frame == null)) return child;
+    return LayoutBuilder(
+      builder: (context, constraints) => Stack(
+        fit: StackFit.expand,
+        children: [
+          child,
+          // 沿用默认封面的居中排版；轻阴影保证浅色照片上的白字仍可辨认。
+          _centeredBlock(
+            constraints.maxWidth,
+            const CoverSpec(
+              art: CoverArt.geometric,
+              background: Colors.transparent,
+              ink: Colors.white,
+              titleColor: Colors.white,
+              authorColor: Colors.white,
+            ),
+            atBottom: false,
+            shadows: const [
+              Shadow(color: Colors.black, blurRadius: 3, offset: Offset(0, 1)),
+              Shadow(color: Colors.black54, blurRadius: 1),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 按当前字体实测四种格式，以最宽者统一标签宽度，避免短格式标签变窄。
+  double _formatLabelWidth(TextStyle style) {
+    final painter = TextPainter(
+      textDirection: TextDirection.ltr,
+      textScaler: TextScaler.noScaling,
+      maxLines: 1,
+    );
+    var width = 0.0;
+    for (final format in BookFormat.values) {
+      painter.text = TextSpan(text: format.label, style: style);
+      painter.layout();
+      if (painter.width > width) width = painter.width;
+    }
+    painter.dispose();
+    return width.ceilToDouble();
   }
 
   /// 书名占位封面：图案 + 文字，跟随封面宽度等比缩放。
@@ -93,7 +231,12 @@ class BookCover extends StatelessWidget {
   }
 
   /// 居中（或偏下）排布：书名在上，副题、作者依次向下。
-  Widget _centeredBlock(double w, CoverSpec spec, {required bool atBottom}) {
+  Widget _centeredBlock(
+    double w,
+    CoverSpec spec, {
+    required bool atBottom,
+    List<Shadow>? shadows,
+  }) {
     // 字号随封面宽度缩放，格子变小时整体等比缩小
     final titleSize = (w * 0.13).clamp(9.0, 26.0);
     final smallSize = (w * 0.07).clamp(6.0, 12.0);
@@ -114,6 +257,7 @@ class BookCover extends StatelessWidget {
               height: 1.28,
               fontWeight: FontWeight.w600,
               color: spec.titleColor,
+              shadows: shadows,
               letterSpacing: titleSize * 0.04,
             ),
           ),
@@ -148,6 +292,7 @@ class BookCover extends StatelessWidget {
             style: TextStyle(
               fontSize: smallSize,
               color: spec.authorColor,
+              shadows: shadows,
             ),
           ),
         ],

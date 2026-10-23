@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:html/dom.dart';
 import 'package:html/parser.dart' as html;
 import 'package:hyphen/hyphen.dart';
+import 'package:crypto/crypto.dart';
 
 import '../normalization/display_hyphens.dart';
 export '../normalization/display_hyphens.dart';
@@ -11,6 +12,8 @@ export '../normalization/display_hyphens.dart';
 /// Hunspell 英文词典只加载一次，词级结果小量缓存；不改变书籍文件。
 abstract final class EnglishHyphenation {
   static Hyphen? _dictionary;
+  static String? _fingerprint;
+  static String? get fingerprint => _fingerprint;
   static Future<void>? _preparing;
   static final _words = <String, List<int>>{};
   static final _word = RegExp(r'[A-Za-z]{5,}');
@@ -32,6 +35,7 @@ abstract final class EnglishHyphenation {
   /// 后台原书会话使用主线程读取的词典字节，在自己的 isolate 内解析。
   /// 与普通 prepare 共用同一个词典和断字算法，不改变软连字符的位置。
   static void prepareFromBytes(Uint8List bytes) {
+    _fingerprint ??= sha256.convert(bytes).toString();
     _dictionary ??= Hyphen.fromDictionaryBytes(bytes);
   }
 

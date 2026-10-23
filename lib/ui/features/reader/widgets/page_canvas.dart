@@ -13,6 +13,7 @@ import '../../../../engine/layout/chapter_layout.dart';
 import '../../../../engine/layout/chapter_paginator.dart';
 import '../../../../engine/layout/layout_options.dart';
 import '../../../../engine/layout/measured_block.dart';
+import '../../../../engine/selection/selection_rects.dart' show CaretGeometry;
 import '../../../../domain/models/book_document.dart';
 import '../../../core/theme/reading_theme.dart';
 import 'prepared_page_view.dart';
@@ -45,6 +46,7 @@ class PageCanvas extends StatelessWidget {
   final ReadingTheme theme;
   final PageInformation? information;
   final PageTextCache? textCache;
+
   /// 图片与正文齐备后报告当前页可绘制，供跳转遮盖判断何时撤去。
   final VoidCallback? onReady;
 
@@ -52,7 +54,7 @@ class PageCanvas extends StatelessWidget {
   final List<Rect> selectionRects;
 
   /// 两端只画在各自所在页上，翻页画布与截图也带上它们。
-  final List<Offset> selectionHandles;
+  final List<CaretGeometry> selectionHandles;
   final Color handleColor;
   final List<Rect> speechRects;
 
@@ -62,6 +64,23 @@ class PageCanvas extends StatelessWidget {
 
   /// 正文图片相对路径 → 绝对路径
   final String Function(String resourcePath) resolveResource;
+
+  /// 只预备不变的文字／分隔线；选区、高亮、信息行仍在每次绘制时更新。
+  void prepareText() {
+    final slice = layout.page(pageIndex), cache = textCache;
+    if (slice == null || cache == null) return;
+    final painter = _PagePainter(
+      slice: slice,
+      options: layout.options,
+      theme: theme,
+    );
+    cache.prepare(
+      layout,
+      pageIndex,
+      theme,
+      (canvas) => painter.paint(canvas, layout.contentSize),
+    );
+  }
 
   /// 静态页和折页共用原有文字、装饰与选区画法；图片由准备好的页面补画。
   void paintText(Canvas canvas) {
@@ -87,20 +106,24 @@ class PageCanvas extends StatelessWidget {
     if (cache == null) {
       painter.paint(canvas, layout.contentSize);
     } else {
-      cache.paint(canvas, layout, pageIndex, theme,
-          (target) => painter.paint(target, layout.contentSize));
+      cache.paint(
+        canvas,
+        layout,
+        pageIndex,
+        theme,
+        (target) => painter.paint(target, layout.contentSize),
+      );
     }
     for (final mark in thoughtMarkers) {
       paintThoughtMarker(canvas, mark.rect, mark.color);
     }
-    for (final anchor in selectionHandles) {
-      canvas.save();
-      canvas.translate(anchor.dx - kHandleTouchSize / 2, anchor.dy);
-      SelectionHandlePainter(
+    for (final caret in selectionHandles) {
+      SelectionHandlePainter.paintAt(
+        canvas,
+        Offset(caret.left, caret.bottom),
         color: handleColor,
-        atEnd: true,
-      ).paint(canvas, const Size.square(kHandleTouchSize));
-      canvas.restore();
+        lineHeight: caret.height,
+      );
     }
   }
 
@@ -160,10 +183,18 @@ class _PagePainter extends CustomPainter {
     for (final fragment in slice.fragments) {
       if (fragment.tableFrame case final frame?) {
         if (fragment.block.tableHeader) {
-          canvas.drawRect(frame, Paint()..color = theme.secondary.withValues(alpha: .08));
+          canvas.drawRect(
+            frame,
+            Paint()..color = theme.secondary.withValues(alpha: .08),
+          );
         }
-        canvas.drawRect(frame, Paint()..color = theme.secondary.withValues(alpha: .3)
-          ..style = PaintingStyle.stroke..strokeWidth = .7);
+        canvas.drawRect(
+          frame,
+          Paint()
+            ..color = theme.secondary.withValues(alpha: .3)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = .7,
+        );
       }
       if (fragment.frameOnly) continue;
       switch (fragment.block.kind) {
@@ -186,10 +217,14 @@ class _PagePainter extends CustomPainter {
     final line = block.lines[fragment.lineFrom];
     // 与测量用的是同一个宽度，不用盒子宽度：两者一旦不等，行尾就会留白
     final maxWidth = block.layoutWidth ?? options.contentWidthFor(block.kind);
-    final justify = block.tableId == null && switch (block.kind) {
-      BlockKind.paragraph || BlockKind.listItem || BlockKind.footnote => true,
-      _ => false,
-    };
+    final justify =
+        block.tableId == null &&
+        switch (block.kind) {
+          BlockKind.paragraph ||
+          BlockKind.listItem ||
+          BlockKind.footnote => true,
+          _ => false,
+        };
 
     var index = fragment.lineFrom;
     var top = fragment.y;

@@ -1,3 +1,4 @@
+import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'dart:async';
 import 'dart:io';
 
@@ -111,7 +112,8 @@ class RestoreViewModel extends Notifier<RestoreViewState> {
       }
     } on BackupCancelled {
       state = RestoreViewState(preview: _preview, cancelled: true);
-    } catch (error) {
+    } catch (error, appStack) {
+      AppErrors.report(error, appStack, operation: '恢复备份失败');
       state = RestoreViewState(preview: _preview, message: '$error');
     } finally {
       state = RestoreViewState(

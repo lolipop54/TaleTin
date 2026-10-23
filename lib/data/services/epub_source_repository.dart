@@ -12,6 +12,17 @@ library;
 
 import 'dart:async';
 import 'dart:io';
+import 'dart:convert';
+
+import 'package:crypto/crypto.dart';
+
+import '../../core/diagnostics/reader_delivery_experiments.dart';
+import '../../domain/models/locator.dart';
+import '../../engine/normalization/content_fingerprint.dart';
+import '../../engine/parsers/epub/locator_dom_point.dart';
+import '../../engine/parsers/epub/anchor_locator.dart';
+import '../../platform/channels/original_resources.dart';
+import 'original_preparation_cache.dart';
 
 import 'package:path/path.dart' as p;
 import 'package:flutter/services.dart';
@@ -40,16 +51,23 @@ class EpubSourceRepository {
     required this.libraryRoot,
     required this.cacheRoot,
     this.hyphenateText = true,
+    this.cacheDocuments = true,
   });
 
   /// 后台目录解析只需要源文字，不加载 Flutter 字典资源，也不准备显示断点。
   final bool hyphenateText;
+
+  /// Search/listening need anchor HTML, but must not cache an entire traversal.
+  final bool cacheDocuments;
 
   /// `files/library` 绝对路径
   final String libraryRoot;
 
   /// 缓存根目录；原书模式解出的内容放它下面的 `original/`
   final String cacheRoot;
+  late final preparations = OriginalPreparationCache(
+    p.join(cacheRoot, 'original_prepared'),
+  );
   final _sessions = <EpubSourceSession>{};
   final _changing = <String>{};
   final _opening = <Future<EpubSourceSession>, String>{};
@@ -102,6 +120,15 @@ class EpubSourceRepository {
       // bookId 与正文规则版本不会因源文件编辑而变化。关闭旧读取后清掉旧网页、字体和图片缓存。
       final cached = Directory(p.join(cacheRoot, 'original', bookId));
       if (await cached.exists()) await cached.delete(recursive: true);
+      for (final name in ['reading', 'mobi']) {
+        final root = p.join(cacheRoot, name);
+        final cached = Directory(p.join(root, bookId));
+        if (!p.isWithin(root, cached.path)) {
+          throw const FormatException('缓存书籍路径越界');
+        }
+        if (await cached.exists()) await cached.delete(recursive: true);
+      }
+      await preparations.clear(bookId);
     } catch (_) {
       _changing.remove(bookId);
       rethrow;
@@ -115,6 +142,7 @@ class EpubSourceRepository {
     for (final session in _sessions.toList()) {
       await session.close();
     }
+    await preparations.pending;
   }
 
   /// 打开一本书的原书内容。
@@ -148,6 +176,7 @@ class EpubSourceRepository {
       bookId: bookId,
       contentVersion: contentVersion,
       chapters: chapters,
+      cacheDocuments: cacheDocuments,
       dictionary: dictionary?.buffer.asUint8List(
         dictionary.offsetInBytes,
         dictionary.lengthInBytes,
@@ -170,6 +199,11 @@ class EpubSourceRepository {
 
 /// 一本书的原书内容会话。界面离开阅读页时 [close]。
 class EpubSourceSession {
+  Future<Map<String, Map<String, double?>>> preparedTocPositions() =>
+      _worker.tocIndex();
+
+  Future<Map<String, Map<String, double>>> preparedTocHeadings() =>
+      _worker.tocHeadingIndex();
   EpubSourceSession._(
     this._repository,
     this._worker, {
@@ -187,6 +221,142 @@ class EpubSourceSession {
   final EpubSourceRepository _repository;
   final int contentVersion;
   final EpubSourceWorker _worker;
+  late final nativeSessionId =
+      '$bookId:$contentVersion:${DateTime.now().microsecondsSinceEpoch}';
+  final _nativeBindings = <(String, String?), Future<void>>{};
+  final _nativeWanted = <String, String?>{};
+  final _preparedWrites = <String, (int, Map<String, dynamic>)>{};
+  bool _preparationBackgroundAllowed = false, _drainingPrepared = false;
+  Timer? _preparationQuiet;
+
+  /// 压缩约需百毫秒；等正式画面/原动效/连续触摸交接结束后才占用后台CPU。
+  void allowPreparationBackground(bool allowed) {
+    _preparationBackgroundAllowed = allowed;
+    if (allowed) {
+      _schedulePreparedWrites();
+    } else {
+      _preparationQuiet?.cancel();
+      _preparationQuiet = null;
+    }
+  }
+
+  void _schedulePreparedWrites() {
+    if (_closed ||
+        !_preparationBackgroundAllowed ||
+        _preparedWrites.isEmpty ||
+        _preparationQuiet != null) {
+      return;
+    }
+    // 定位完成后的进度淡出仍可能在继续；仅缓存写盘再等一秒安静时间。
+    // 正文、触摸和原有动画不等待这个计时器，连续操作会取消它。
+    _preparationQuiet = Timer(const Duration(seconds: 1), () {
+      _preparationQuiet = null;
+      if (_preparationBackgroundAllowed) unawaited(_drainPreparedWrites());
+    });
+  }
+
+  Future<void> _drainPreparedWrites() async {
+    if (_drainingPrepared || _closed) return;
+    _drainingPrepared = true;
+    try {
+      while (_preparationBackgroundAllowed &&
+          !_closed &&
+          _preparedWrites.isNotEmpty) {
+        final key = _preparedWrites.keys.first;
+        final (generation, data) = _preparedWrites.remove(key)!;
+        await _repository.preparations.write(
+          bookId,
+          key,
+          data,
+          generation: generation,
+        );
+      }
+    } catch (_) {
+      // 可重建缓存失败不影响已经确认的正文及位置。
+    } finally {
+      _drainingPrepared = false;
+    }
+  }
+
+  Future<void> bindResources(Object view, {String? injection}) {
+    if (!OriginalResources.enabled || _closed) return Future.value();
+    if (!_nativeWanted.containsKey('$view') ||
+        _nativeWanted['$view'] != injection) {
+      _nativeWanted['$view'] = injection;
+      _nativeBindings.removeWhere((key, _) => key.$1 == '$view');
+    }
+    return _nativeBindings.putIfAbsent(('$view', injection), () async {
+      final proof = await resourceProof();
+      if (proof != null && !_closed && _nativeWanted['$view'] == injection) {
+        await OriginalResources.bind(
+          view,
+          nativeSessionId,
+          pathPrefix,
+          proof,
+          injection: injection,
+        );
+      }
+    });
+  }
+
+  /// 小型来源证明；命中位置表和原生直读之前仍执行原来的源文件核验。
+  Future<Map<String, dynamic>?> resourceProof() => _read(_worker.proof);
+
+  Future<LocatorDomMap> preparePositions(
+    int ordinal,
+    String href,
+    ChapterContent content,
+    Locator locator,
+  ) async {
+    final generation = _repository.preparations.generation;
+    final proof = ReaderDeliveryExperiments.originalPrepared
+        ? await resourceProof()
+        : null;
+    final key = proof == null
+        ? null
+        : sha256
+              .convert(
+                utf8.encode(
+                  jsonEncode([
+                    'original-positions-1',
+                    kAnchorMappingVersion,
+                    proof['scope'],
+                    href,
+                    await ContentFingerprint.of(content),
+                  ]),
+                ),
+              )
+              .toString();
+    if (key != null) {
+      final cached = await _repository.preparations.read(
+        bookId,
+        key,
+        href,
+        content,
+        locator,
+      );
+      if (cached != null) return cached;
+    }
+    final html = await chapterDocument(ordinal);
+    if (html == null) throw StateError('无法读取听书位置对应的原书');
+    final map = await parseLocatorDomMap(
+      html,
+      href,
+      content,
+      locator,
+      prepareProgressMap: ReaderDeliveryExperiments.originalStartup,
+      prepareStored: key != null,
+    );
+    if (key != null && !_closed) {
+      _preparedWrites[key] = (generation, map.preparedData);
+      // 连续远跳期间不堆积整本书的待写资料；当前及邻章最多保留三份。
+      while (_preparedWrites.length > 3) {
+        _preparedWrites.remove(_preparedWrites.keys.first);
+      }
+      _schedulePreparedWrites();
+    }
+    return map;
+  }
 
   /// spine 条目（这些进 WebView 前要净化）
   final _chapterEntries = <String>{};
@@ -259,6 +429,13 @@ class EpubSourceSession {
     return _read(() => _worker.document(_worker.entries[ordinal]));
   }
 
+  /// Resolve only TOC metadata in the existing background worker. This does not
+  /// transfer a full DOM or generate a whole-book HTML cache on first opening.
+  Future<Map<String, double?>?> chapterTocPositions(
+    int ordinal,
+    List<String> fragments,
+  ) => _read(() => _worker.tocPositions(_worker.entries[ordinal], fragments));
+
   /// 换章时重置归档的解压总量预算（见 [EpubSourceReader.resetBudget]）。
   void resetBudget() {
     if (!_closed) _worker.resetBudget();
@@ -279,11 +456,30 @@ class EpubSourceSession {
   /// 立即停止接受新请求，已有资源落盘后关闭后台归档。重复调用共用结果。
   Future<void> close() {
     _closed = true;
+    _preparationQuiet?.cancel();
+    _preparationQuiet = null;
     return _closing ??= _drainAndClose();
   }
 
   Future<void> _drainAndClose() async {
     try {
+      await Future.wait(_nativeBindings.values);
+      // 听书后台线程也会读取原书目录，但没有绑定 WebView，更没有平台通道。
+      // 仅为实际登记过原生资源的会话发送关闭命令，其余照常关闭后台文件。
+      if (_nativeBindings.isNotEmpty) {
+        await OriginalResources.closeSession(nativeSessionId);
+      }
+      final pending = _preparedWrites.entries.toList();
+      _preparedWrites.clear();
+      for (final entry in pending) {
+        final (generation, data) = entry.value;
+        await _repository.preparations.write(
+          bookId,
+          entry.key,
+          data,
+          generation: generation,
+        );
+      }
       await Future.wait(
         _pending.toList().map(
           (f) => f.then<void>((_) {}, onError: (Object _) {}),

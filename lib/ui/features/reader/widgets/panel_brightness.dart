@@ -9,6 +9,7 @@ import '../view_models/reader_settings_view_model.dart';
 import '../view_models/reader_view_model.dart';
 import 'reader_sheet.dart';
 import 'reader_theme_choices.dart';
+import '../view_models/pdf_book_provider.dart';
 import '../../settings/widgets/settings_slider.dart';
 
 /// 亮度面板（参考图 03-2）。
@@ -86,12 +87,14 @@ class PanelBrightness extends ConsumerWidget {
                 color: colors.textSecondary,
               ),
             ),
+            if (!ref.watch(pdfModeProvider(bookId))) ...[
             const SizedBox(height: GtSpacing.s4),
             Container(height: 1, color: colors.borderSubtle),
             const SizedBox(height: GtSpacing.s3),
             Text('阅读主题', style: GtText.body(colors.textSecondary).copyWith(fontSize: 14)),
             const SizedBox(height: GtSpacing.s3),
-            ReaderThemeChoices(bookId: bookId),
+            if (!ref.watch(pdfModeProvider(bookId))) ReaderThemeChoices(bookId: bookId),
+            ],
             const SizedBox(height: GtSpacing.s4),
           ],
         ),

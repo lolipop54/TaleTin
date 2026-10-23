@@ -167,6 +167,21 @@ external void gt_html_convert(
 @ffi.Native<ffi.Void Function(ffi.Pointer<ffi.Void>)>()
 external void gt_html_close(ffi.Pointer<ffi.Void> handle);
 
+@ffi.Native<
+  ffi.Void Function(
+    ffi.Pointer<ffi.Void>,
+    ffi.Pointer<ffi.Uint8>,
+    ffi.Size,
+    ffi.Pointer<GtScanResult>,
+  )
+>()
+external void gt_html_anchor_positions(
+  ffi.Pointer<ffi.Void> handle,
+  ffi.Pointer<ffi.Uint8> metadata,
+  int length,
+  ffi.Pointer<GtScanResult> result,
+);
+
 @ffi.Native<ffi.Pointer<ffi.Void> Function(ffi.Pointer<ffi.Uint8>, ffi.Size)>()
 external ffi.Pointer<ffi.Void> gt_html_batch_open(
   ffi.Pointer<ffi.Uint8> input,
@@ -273,6 +288,70 @@ external void gt_original_timings(
   ffi.Pointer<ffi.Void> handle,
   ffi.Pointer<GtScanResult> result,
 );
+
+@ffi.Native<ffi.Pointer<ffi.Void> Function(ffi.Pointer<ffi.Uint8>, ffi.Size)>()
+external ffi.Pointer<ffi.Void> gt_mobi_html_open(
+  ffi.Pointer<ffi.Uint8> input,
+  int length,
+);
+
+@ffi.Native<
+  ffi.Void Function(ffi.Pointer<ffi.Void>, ffi.Pointer<GtScanResult>)
+>()
+external void gt_mobi_html_refs(
+  ffi.Pointer<ffi.Void> handle,
+  ffi.Pointer<GtScanResult> result,
+);
+
+@ffi.Native<
+  ffi.Void Function(
+    ffi.Pointer<ffi.Void>,
+    ffi.Pointer<ffi.Uint8>,
+    ffi.Size,
+    ffi.Pointer<GtScanResult>,
+  )
+>()
+external void gt_mobi_html_finish(
+  ffi.Pointer<ffi.Void> handle,
+  ffi.Pointer<ffi.Uint8> edits,
+  int length,
+  ffi.Pointer<GtScanResult> result,
+);
+
+@ffi.Native<ffi.Void Function(ffi.Pointer<ffi.Void>)>()
+external void gt_mobi_html_close(ffi.Pointer<ffi.Void> handle);
+
+@ffi.Native<ffi.Pointer<ffi.Void> Function(ffi.Pointer<ffi.Uint8>, ffi.Size)>()
+external ffi.Pointer<ffi.Void> gt_mobi_batch_open(
+  ffi.Pointer<ffi.Uint8> input,
+  int length,
+);
+
+@ffi.Native<
+  ffi.Void Function(ffi.Pointer<ffi.Void>, ffi.Pointer<GtScanResult>)
+>()
+external void gt_mobi_batch_refs(
+  ffi.Pointer<ffi.Void> handle,
+  ffi.Pointer<GtScanResult> result,
+);
+
+@ffi.Native<
+  ffi.Void Function(
+    ffi.Pointer<ffi.Void>,
+    ffi.Pointer<ffi.Uint8>,
+    ffi.Size,
+    ffi.Pointer<GtScanResult>,
+  )
+>()
+external void gt_mobi_batch_finish(
+  ffi.Pointer<ffi.Void> handle,
+  ffi.Pointer<ffi.Uint8> edits,
+  int length,
+  ffi.Pointer<GtScanResult> result,
+);
+
+@ffi.Native<ffi.Void Function(ffi.Pointer<ffi.Void>)>()
+external void gt_mobi_batch_close(ffi.Pointer<ffi.Void> handle);
 
 final class GtScanResult extends ffi.Struct {
   external ffi.Pointer<ffi.Uint8> data;

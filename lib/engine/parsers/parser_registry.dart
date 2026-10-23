@@ -28,11 +28,13 @@ class ParserRegistry implements BookParserRegistry {
       return BookFormat.epub;
     }
 
-    // 2) MOBI：识别出来但阶段 6 前不支持，导入时给出明确说明
-    if (_isMobi(header)) return BookFormat.mobi;
+    // MOBI 和 AZW3 共用 Palm 容器；保留来源扩展名供备份和恢复使用。
+    if (_isMobi(header)) {
+      return probe.extension == 'azw3' ? BookFormat.azw3 : BookFormat.mobi;
+    }
 
     // 3) PDF 等已知不支持格式直接拒绝
-    if (_startsWith(header, const [0x25, 0x50, 0x44, 0x46])) return null;
+    if (_startsWith(header, const [0x25, 0x50, 0x44, 0x46])) return BookFormat.pdf;
 
     // 4) 其余按文本判断：出现零字节且不是 UTF-16 时视为二进制
     final guess = detectEncoding(header);

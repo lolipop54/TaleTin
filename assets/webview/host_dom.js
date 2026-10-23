@@ -3,6 +3,7 @@
   'use strict';
   var internal = window.__gtHost = window.__gtHost || {};
   var state = internal.state;
+  if (state.indexComplete === undefined) state.indexComplete = true;
   var pageAnchors = new Map(), anchorVersion = -1;
 
   function findFirstBlock(page) {
@@ -65,6 +66,15 @@
   }
 
   function captureAnchor() {
+    // 重排和保存进度使用同一个真实页首点。长章只建了局部索引时，旧的
+    // 容器遍历可能找不到文字；不能随后按局部页数比例跳到全章尾部。
+    if (window.__gtContentTarget && internal.selection) {
+      var point = internal.selection.scanPageAnchor();
+      if (point && pageOfPoint(point) === state.page) {
+        return {node: nodeOfPoint(point), offset: point.offset || 0,
+          element: point.element === true};
+      }
+    }
     try {
       var visible = firstVisibleTextAnchor(state.page);
       if (visible) return visible;
@@ -83,15 +93,22 @@
   }
 
   function anchorOffsetX(anchor) {
-    if (!anchor) return 0;
+    if (!anchor) return null;
     try {
       var node = anchor.node;
+      if (anchor.element) {
+        var box = node.getBoundingClientRect();
+        return internal.layout.toContentX(box.left);
+      }
       var max = node.nodeType === 3
         ? node.nodeValue.length
         : (node.childNodes ? node.childNodes.length : 0);
       var range = document.createRange();
-      range.setStart(node, Math.max(0, Math.min(anchor.offset, max)));
-      range.collapse(true);
+      var offset = Math.max(0, Math.min(anchor.offset, max));
+      range.setStart(node, offset);
+      // 字符范围比折叠光标可靠，跨栏或行首的折叠范围可能返回空矩形。
+      if (node.nodeType === 3 && offset < max) range.setEnd(node, offset + 1);
+      else range.collapse(true);
       var rect = range.getBoundingClientRect();
       if (rect && (rect.width || rect.height)) {
         return internal.layout.toContentX(rect.left);
@@ -99,7 +116,7 @@
     } catch (error) {
       // 节点失效时由比例恢复。
     }
-    return 0;
+    return null;
   }
 
   function firstTextOnPage(page) {
@@ -176,6 +193,7 @@
     if (!rect) return false;
     var contentX = internal.layout.toContentX(rect.left);
     var page = Math.max(0, Math.floor((contentX + 1) / state.width));
+    if (!state.indexComplete) state.pages = Math.max(state.pages, page + 1);
     internal.layout.setPage(page, false, false);
     var span = state.pages * state.width;
     reportRelocate(element, span > 0 ? contentX / span : null);
@@ -185,23 +203,43 @@
   function reportRelocate(anchorElement, anchorFraction) {
     var perfStart = window.gtReaderPerf ? performance.now() : 0;
     var traceStart = window.__gtTraceTurn ? performance.now() : null;
-    var firstText = anchorElement
+    var point = window.__gtContentTarget && internal.selection
+      ? internal.selection.scanPageAnchor() : null;
+    if (window.__gtContentTarget && internal.content && internal.content.fraction(point) === null) {
+      point = internal.index.pointForPage(state.page, true);
+    }
+    if (window.__gtContentTarget && !point && !state.indexComplete) {
+      var waitingPage = state.page;
+      internal.index.ensure(Infinity).then(function () {
+        if (state.page === waitingPage) reportRelocate(anchorElement, anchorFraction);
+      });
+      return;
+    }
+    var pointNode = point && nodeOfPoint(point);
+    var firstText = pointNode && pointNode.nodeType === 3
+      ? pointNode.nodeValue.slice(point.offset, point.offset + 60).replace(/\s+/g, ' ').trim()
+      : anchorElement
       ? textOfElement(anchorElement)
-      : firstTextOnPage(state.page);
+      : (window.__gtContentTarget ? '' : firstTextOnPage(state.page));
     var fraction = anchorFraction;
+    var contentFraction = point && internal.content ? internal.content.fraction(point) : null;
     if (fraction === undefined || fraction === null || !isFinite(fraction)) {
       fraction = state.pages <= 1 ? 0 : state.page / state.pages;
     }
     internal.post('relocate', {
       page: state.page,
-      pages: state.pages,
+      pages: state.indexComplete ? state.pages : null,
+      knownPages: state.pages,
+      indexComplete: state.indexComplete,
       width: state.width,
-      step: internal.layout.columnStep(),
+      step: window.__gtContentTarget ? state.width : internal.layout.columnStep(),
       columnWidth: state.columnWidth,
       contentWidth: state.contentWidth,
       scrollWidth: state.scrollWidth,
       fraction: Math.max(0, Math.min(1, fraction)),
-      firstText: firstText || firstTextOnPage(state.page)
+      contentFraction: contentFraction,
+      firstText: firstText,
+      point: point
     });
     window.gtReaderPerf?.step('original.page.positionQuery', perfStart, {page: state.page});
     if (traceStart !== null) internal.post('turnTrace', {
@@ -295,23 +333,41 @@
   }
 
   function goToDomPoint(point) {
+    var page = pageOfPoint(point);
+    if (page === null) return false;
+    // 精确点证明这一页存在，不受尚未完成的总页数索引夹限。
+    if (!state.indexComplete) state.pages = Math.max(state.pages, page + 1);
+    internal.layout.setPage(page, false);
+    return true;
+  }
+
+  function nodeOfPoint(point) {
     var node = document.body;
     for (var i = 0; i < point.path.length; i++) {
       node = node && node.childNodes[point.path[i]];
     }
-    if (point.element === true) return landOnElement(node);
+    return node;
+  }
+
+  function pageOfPoint(point) {
+    var node = nodeOfPoint(point);
+    if (point.element === true) {
+      if (!node || node.nodeType !== 1) return null;
+      var box = node.getBoundingClientRect();
+      if (!box.width && !box.height) return null;
+      return Math.max(0, Math.floor((internal.layout.toContentX(box.left) + 1) / state.width));
+    }
     if (!node || node.nodeType !== 3 || point.offset > node.length) {
-      return false;
+      return null;
     }
     var offset = Math.min(point.offset, Math.max(0, node.length - 1));
     var range = document.createRange();
     range.setStart(node, offset);
     range.setEnd(node, Math.min(node.length, offset + 1));
     var rects = range.getClientRects();
-    if (!rects.length) return false;
+    if (!rects.length) return null;
     var x = internal.layout.toContentX(rects[0].left);
-    internal.layout.setPage(Math.floor((x + 1) / state.width), false);
-    return true;
+    return Math.max(0, Math.floor((x + 1) / state.width));
   }
 
   function goToAnchor(id) {
@@ -333,6 +389,8 @@
   }
 
   internal.dom = {
+    pageOfPoint: pageOfPoint,
+    nodeOfPoint: nodeOfPoint,
     anchorOffsetX: anchorOffsetX,
     captureAnchor: captureAnchor,
     findHeadingOfText: findHeadingOfText,

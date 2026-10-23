@@ -1,4 +1,4 @@
-import 'package:taletin/platform/channels/system_toast.dart';
+import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'package:taletin/ui/core/widgets/gt_button.dart';
 
 import 'dart:async';
@@ -38,8 +38,8 @@ Future<void> showReaderImage(
       RawImage(image: image.image, fit: BoxFit.contain),
       Size(image.image.width.toDouble(), image.image.height.toDouble()),
     );
-  } catch (_) {
-    if (context.mounted) _imageFailure();
+  } catch (error, stack) {
+    AppErrors.report(error, stack, operation: '图片无法打开', notify: context.mounted);
   } finally {
     stream.removeListener(listener);
     image?.dispose();
@@ -63,14 +63,12 @@ Future<void> showReaderSvg(BuildContext context, BytesLoader loader) async {
       ),
       info.size,
     );
-  } catch (_) {
-    if (context.mounted) _imageFailure();
+  } catch (error, stack) {
+    AppErrors.report(error, stack, operation: '矢量图片无法打开', notify: context.mounted);
   } finally {
     info?.picture.dispose();
   }
 }
-
-void _imageFailure() => SystemToast.show('图片无法打开，请重试').ignore();
 
 class _VectorImage extends CustomPainter {
   const _VectorImage(this.info);

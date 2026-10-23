@@ -40,7 +40,7 @@ mixin _SimplifiedScrollTap on ConsumerState<SimplifiedScrollArea> {
       }
       before += layout.height;
     }
-    if (widget.session.book.format != BookFormat.epub) return false;
+    if (!widget.session.book.format.usesOriginalWebView) return false;
     final locator = _selectionModel()?.hit(point, exact: true);
     if (locator == null) return false;
     final entry = _window.entries.firstWhere((e) => e.layout.content.chapterId == locator.chapterId);

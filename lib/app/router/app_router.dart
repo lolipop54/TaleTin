@@ -1,3 +1,4 @@
+import '../../ui/features/bookshelf/view_models/bookshelf_view_model.dart';
 import '../di/book_group_providers.dart';
 
 import 'package:flutter/material.dart';
@@ -21,6 +22,7 @@ import 'main_pages_ready.dart';
 import 'main_navigation_bar.dart';
 import 'reader_route_page.dart';
 import '../../ui/core/widgets/frame_fade.dart';
+import '../../ui/core/widgets/book_loading.dart';
 
 import '../../ui/features/achievements/views/achievements_view.dart';
 import '../../ui/features/bookshelf/views/bookshelf_view.dart';
@@ -125,6 +127,7 @@ class _MainShellState extends ConsumerState<MainShell> {
   Future<void> _prepareFirstFrame() async {
     await Future.wait([
       MainNavigationBar.prepareIcons(context),
+      BookLoading.prepare(),
       ref
           .read(bookGroupsProvider.future)
           .then<void>((_) {}, onError: (Object _, StackTrace _) {}),
@@ -228,9 +231,17 @@ class _MainShellState extends ConsumerState<MainShell> {
           revision: navigationShell.currentIndex,
           child: navigationShell,
         ),
-        bottomNavigationBar: MainNavigationBar(
-          branchIndex: navigationShell.currentIndex,
-          onSelect: _goBranch,
+        bottomNavigationBar: Visibility(
+          visible:
+              navigationShell.currentIndex != 0 ||
+              !ref.watch(bookshelfProvider.select((s) => s.selectionMode)),
+          maintainSize: true,
+          maintainAnimation: true,
+          maintainState: true,
+          child: MainNavigationBar(
+            branchIndex: navigationShell.currentIndex,
+            onSelect: _goBranch,
+          ),
         ),
       ),
     );

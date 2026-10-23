@@ -50,16 +50,25 @@ class SourcePositionResolver {
       queries.putIfAbsent(key, () => point);
     }
     if (queries.isNotEmpty) {
-      final matcher = SourcePositionMatcher(queries.values.toList());
-      for (final chapter in chapters) {
-        final content = await contents.chapter(
-          old.first.bookId,
-          chapter,
-          textOnly: true,
-        );
-        matcher.add(chapter.id, content.blocks);
+      final background = await contents.matchSourcePositions(
+        old.first.bookId,
+        chapters,
+        queries.values.toList(),
+      );
+      if (background != null) {
+        stored.addAll(background);
+      } else {
+        final matcher = SourcePositionMatcher(queries.values.toList());
+        for (final chapter in chapters) {
+          final content = await contents.chapter(
+            old.first.bookId,
+            chapter,
+            textOnly: true,
+          );
+          matcher.add(chapter.id, content.blocks);
+        }
+        stored.addAll(matcher.finish());
       }
-      stored.addAll(matcher.finish());
       await saveMatches?.call(old.first.bookId, chapters, stored);
     }
     if (version != null) {

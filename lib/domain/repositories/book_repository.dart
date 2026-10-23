@@ -62,7 +62,7 @@ abstract class BookRepository {
   /// （设计文档 6.3）。正文由 [ChapterContentRepository] 按需读取。
   Future<List<Chapter>> chaptersOf(String bookId);
 
-  /// 按来源身份查重（本地文件为完整路径 URI），包含已删除行以复用 bookId。
+  /// 按来源身份查重（本地文件为完整路径 URI）；历史已删除行只用于清理旧数据。
   /// 方法名沿用历史命名，不代表新导入仍计算文件摘要。
   Future<Book?> findByHash(String sourceHash);
 
@@ -71,7 +71,7 @@ abstract class BookRepository {
   /// 事务提交即是书籍在书架可见的标志（设计文档 6.1）。
   Future<void> commitImport(ImportCommit commit);
 
-  /// 重新激活墓碑删除的书籍：复用原 bookId，替换元数据与章节。
+  /// 重新解析仍在书架的书籍：复用原 bookId，替换元数据与章节。
   ///
   /// 阅读历史与笔记挂在 bookId 上，复用 ID 才能保留（设计文档 6.1）。
   Future<void> reactivateImport(ImportCommit commit);
@@ -79,10 +79,10 @@ abstract class BookRepository {
   /// 标记正文文件缺失（启动恢复时使用）。
   Future<void> markContentMissing(Iterable<String> bookIds);
 
-  /// 标记为墓碑删除：书籍从书架隐藏，但同一文件重新导入时复用这一行。
+  /// 删除书籍及全部关联数据，文件清理中断时只保留临时清理任务。
   Future<void> markRemoved(String bookId, DateTime deletedAt);
 
-  /// 合并可见性刷新；返回没能写入墓碑的书籍，不把单本失败当整批成功。
+  /// 合并可见性刷新；返回数据库删除失败的书籍，不把单本失败当整批成功。
   Future<Set<String>> markRemovedMany(
     Iterable<String> ids,
     DateTime deletedAt,
@@ -98,7 +98,7 @@ abstract class BookRepository {
     return failed;
   }
 
-  /// 已删除（墓碑）的书籍，用于启动时回收残留文件。
+  /// 兼容旧版已删除记录，用于启动时回收残留文件；新版删除不保留书籍行。
   Future<List<Book>> deletedBooks();
 
   /// 清掉墓碑书籍残留的章节索引行（正文文件已删除，索引不该再留着）。

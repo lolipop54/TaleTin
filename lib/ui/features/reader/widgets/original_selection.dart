@@ -14,9 +14,8 @@ class _OriginalSelectionState {
   List<Rect> rects = const [];
   bool hasOverlay = false;
 
-  /// 按文字顺序的两端是否在本页；页首/页末另保留相邻页的扩选落点。
-  bool startOnPage = true;
-  bool endOnPage = true;
+  /// 按文字顺序的两端在本页的落点；页首/页末另保留相邻页的扩选落点。
+  Offset? leading, trailing;
 
   /// 两端交叉后仍保留正在拖动的端点身份，只交换它们的文字侧位置。
   bool reversed = false;
@@ -31,15 +30,30 @@ class _OriginalSelectionState {
   Offset? get startAnchor => reversed ? trailingAnchor : leadingAnchor;
   Offset? get endAnchor => reversed ? leadingAnchor : trailingAnchor;
 
+  /// 继续扩选手柄要使用邻页那行字的高度，不能沿用原页的字号。
+  double heightFor(bool atEnd) {
+    final value = geometry;
+    if (value == null) return 0;
+    final trailingSide = atEnd != reversed;
+    return (trailingSide
+            ? ((rects.isEmpty || trailing == null) && continuationAnchor != null
+                  ? value.continuationHeight
+                  : value.trailingHeight)
+            : ((rects.isEmpty || leading == null) &&
+                      previousContinuationAnchor != null
+                  ? value.previousContinuationHeight
+                  : value.leadingHeight)) *
+        scale;
+  }
+
   /// 按文字顺序的前端；页首边界也可以在上一页末抓取。
-  Offset? get leadingAnchor => rects.isEmpty || !startOnPage
+  Offset? get leadingAnchor => rects.isEmpty
       ? previousContinuationAnchor
-      : Offset(rects.first.left, rects.first.bottom);
+      : leading ?? previousContinuationAnchor;
 
   /// 按文字顺序的后端；页末边界也可以在下一页首抓取。
-  Offset? get trailingAnchor => rects.isEmpty || !endOnPage
-      ? continuationAnchor
-      : Offset(rects.last.right, rects.last.bottom);
+  Offset? get trailingAnchor =>
+      rects.isEmpty ? continuationAnchor : trailing ?? continuationAnchor;
 
   /// 任务版本：换章、翻页、重新长按时让在飞的换算作废
   int version = 0;
@@ -55,6 +69,7 @@ class _OriginalSelectionState {
 
   /// 已消费的拖动也要保留落点，停住不移动时翻页后仍按这个位置定位。
   Offset? dragHandle;
+  double dragHalfLine = 0;
 
   /// 一次只处理一个目标页：翻页期间忽略后续的页沿计时
   bool turning = false;
@@ -76,6 +91,46 @@ class _OriginalSelectionState {
 }
 
 extension _OriginalSelection on _OriginalReaderAreaState {
+  /// 全局指针事件：只要有手指抬起/取消，就当作这次手柄拖动结束。
+  ///
+  /// 原书正文是平台视图（WebView），手指抬起的事件可能被它拿走，手柄的
+  /// onPanEnd/onPanCancel 就收不到——拖动态一直挂着，页沿计时一页页续下去。
+  void _onGlobalPointer(PointerEvent event) {
+    if (event is! PointerUpEvent && event is! PointerCancelEvent) return;
+    if (!_selection.dragging && _selection.edgeTimer == null) return;
+    _finishSelectionDrag();
+  }
+
+  /// 全局选区已经被别处收起（笔记面板里删除、返回键、点空白）时，本页的矩形、
+  /// 页沿判定与提示跟着作废。
+  ///
+  /// 必须在 build 里同步清：宿主页画的持久高亮已经撤掉了，Flutter 这一层的临时
+  /// 底色若留着，用户看到的就是「点了删除，高亮还在，翻页才消失」（真机反馈）。
+  /// 这里只清内存状态、不动全局选区，也不调 setState（本来就在重建）。
+  void _dropSelectionIfCleared(SelectionRange? selection, bool fromMark) {
+    if (selection != null) {
+      // 已保存高亮只清临时底色；刚量好的矩形仍用于摆放操作菜单。
+      if (fromMark && _selection.hasOverlay) {
+        unawaited(_hosts[_selection.chapter]?.clearSelection());
+        _selection.hasOverlay = false;
+      }
+      return;
+    }
+    if (!_selection.hasOverlay && !_selection.active) return;
+    unawaited(_hosts[_selection.chapter]?.clearSelection());
+    _selection.hasOverlay = false;
+    _selection.geometry = null;
+    _selection.continuationAnchor = null;
+    _selection.previousContinuationAnchor = null;
+    _selection.leading = null;
+    _selection.trailing = null;
+    _selection.version++;
+    _cancelSelectionEdge();
+    _selection.dragging = false;
+    _selection.edgeHintShown = false;
+    _selection.rects = const [];
+  }
+
   /// 长按起选：这一点所在的整句，取回矩形后画在正文上。
   ///
   /// 位置一律走「DOM 点 → 标准正文 Locator」这一条路：重复句、内联标签、
@@ -107,7 +162,10 @@ extension _OriginalSelection on _OriginalReaderAreaState {
     // 先量一次句子范围的矩形：跨页时按「本页那一段」的两端把范围夹回来，
     // 两端手柄才都落在本页、看得见也抓得到（与简化模式同一条规则）
     final first = await _selectionGeometry(
-      map, sentence.start, sentence.end, paint: false,
+      map,
+      sentence.start,
+      sentence.end,
+      paint: false,
     );
     if (!_selectionCurrent(version, host) || first == null) return;
     final range = _clampToPage(map, sentence, first);
@@ -163,6 +221,8 @@ extension _OriginalSelection on _OriginalReaderAreaState {
     _selection.geometry = null;
     _selection.continuationAnchor = null;
     _selection.previousContinuationAnchor = null;
+    _selection.leading = null;
+    _selection.trailing = null;
     _selection.version++;
     _cancelSelectionEdge();
     _selection.dragging = false;
@@ -290,10 +350,12 @@ extension _OriginalSelection on _OriginalReaderAreaState {
       chapterOrdinals: chapterOrdinalsOf(widget.session.chapters),
     );
     final chapter = widget.session.chapter.id;
-    final from = ordered.start.chapterId == chapter ? selection.pointOf(ordered.start)
-      : selection.chapterEdgePoint(atEnd: false);
-    final to = ordered.end.chapterId == chapter ? selection.pointOf(ordered.end, end: true)
-      : selection.chapterEdgePoint(atEnd: true);
+    final from = ordered.start.chapterId == chapter
+        ? selection.pointOf(ordered.start)
+        : selection.chapterEdgePoint(atEnd: false);
+    final to = ordered.end.chapterId == chapter
+        ? selection.pointOf(ordered.end, end: true)
+        : selection.chapterEdgePoint(atEnd: true);
     if (from == null || to == null) return null;
     final color = kSelectionHighlight;
     final geometry = await host.selectionRects(
@@ -343,15 +405,22 @@ extension _OriginalSelection on _OriginalReaderAreaState {
     // 与简化模式一样按完整正文盒判定，末段较短时也必须拖到真正的页角。
     final top = origin.dy + geometry.content.top * scale;
     final bottom = top + geometry.content.height * scale;
-    final margin = widget.settings.horizontalPadding;
+    final settings = widget.settings;
+    final margin =
+        settings.horizontalPadding +
+        (settings.spreadEnabled
+            ? bookSpineWidth
+            : settings.bookEdges
+            ? bookEdgeWidth
+            : 0);
     _selection.edgeBox = Rect.fromLTRB(
       origin.dx + margin,
       top,
       origin.dx + pageWidth - margin,
       bottom,
     );
-    _selection.startOnPage = geometry.rects.first.onPage;
-    _selection.endOnPage = geometry.rects.last.onPage;
+    _selection.leading = onPage(geometry.leading);
+    _selection.trailing = onPage(geometry.trailing);
     _selection.rects = [
       for (final item in geometry.rects)
         if (item.onPage)

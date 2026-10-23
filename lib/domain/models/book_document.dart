@@ -1,4 +1,4 @@
-/// 标准化正文模型：EPUB / TXT / MOBI 都输出同一套结构。
+/// 标准化正文模型：EPUB / TXT / MOBI / AZW3 都输出同一套结构。
 ///
 /// 设计文档 6.3：`BookDocument → Chapter → ContentBlock → TextRun / Resource`。
 /// 块只保留语义（标题级别、加粗、斜体、图片），不存 Widget，也不保留
@@ -11,6 +11,7 @@ import 'dart:typed_data';
 import 'content_table.dart';
 import 'source_content_index.dart';
 import 'locator.dart';
+import 'pdf_page_info.dart';
 
 /// 当前正文版本号。
 ///
@@ -163,12 +164,14 @@ class ChapterContent {
     required this.blocks,
     this.tables = const [],
     this.epubDetailsRevision = 0,
+    this.pdfPage,
   });
 
   final String chapterId;
   final List<ContentBlock> blocks;
   final List<ContentTable> tables;
   final int epubDetailsRevision;
+  final PdfPageInfo? pdfPage;
 
   int get textLength {
     var n = 0;
@@ -180,6 +183,7 @@ class ChapterContent {
 
   Map<String, Object?> toJson() => {
     'chapterId': chapterId,
+    if (pdfPage != null) 'pdfPage': pdfPage!.toJson(),
     if (epubDetailsRevision > 0) 'epubDetailsRevision': epubDetailsRevision,
     'blocks': [for (final b in blocks) b.toJson()],
     if (tables.isNotEmpty) 'tables': tables.map((t) => t.toJson()).toList(),
@@ -189,6 +193,11 @@ class ChapterContent {
     final rawBlocks = json['blocks'];
     return ChapterContent(
       chapterId: json['chapterId'] as String? ?? '',
+      pdfPage: json['pdfPage'] is Map
+          ? PdfPageInfo.fromJson(
+              (json['pdfPage'] as Map).cast<String, dynamic>(),
+            )
+          : null,
       epubDetailsRevision: (json['epubDetailsRevision'] as num?)?.toInt() ?? 0,
       tables: [
         for (final table in (json['tables'] as List? ?? const []))
@@ -320,6 +329,7 @@ class BookDocument {
   final String encoding;
   final int tocRevision;
   final SourceContentIndex? sourceIndex;
+
   /// 临时解析结果，单独保存核对缓存，不加入正文清单或改变正文版本。
   final Map<String, Locator?> locationMatches;
 

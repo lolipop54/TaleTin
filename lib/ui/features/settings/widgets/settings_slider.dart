@@ -1,7 +1,8 @@
+import 'package:taletin/core/diagnostics/app_errors.dart';
+
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
-import 'package:taletin/platform/channels/system_toast.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/gt_tokens.dart';
@@ -143,9 +144,15 @@ class _SettingsSliderState extends State<SettingsSlider>
     // 松手沿用按下时开始的运动，不从半途重新缓出；末帧再对齐保存的步长。
     try {
       await widget.save!(value);
-    } catch (_) {
+    } catch (appError, appStack) {
+      AppErrors.report(
+        appError,
+        appStack,
+        operation: '设置未保存，请重试',
+        notify: false,
+      );
       if (mounted && request == _request) {
-        SystemToast.show('设置未保存，请重试').ignore();
+        AppErrors.report(appError, appStack, operation: '设置未保存，请重试');
       }
     } finally {
       // 保存可能立即完成，仍等这一次点击运动完成才撤销预览。
@@ -185,7 +192,7 @@ class _SettingsSliderState extends State<SettingsSlider>
         TextStyle(
           fontFamily: Theme.of(context).textTheme.bodyMedium?.fontFamily,
           fontSize: widget.compact ? 10 : 13,
-          fontWeight: widget.compact ? FontWeight.w500 : FontWeight.bold,
+          fontWeight: FontWeight.w500,
           fontFeatures: const [FontFeature.tabularFigures()],
           color: widget.save == null ? c.textMuted : c.textPrimary,
         );

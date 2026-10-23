@@ -1,3 +1,4 @@
+import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'package:taletin/ui/core/widgets/gt_switch.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -39,7 +40,8 @@ Future<void> showReaderLayoutOption(
       bookId: bookId,
       shrinkWrap: true,
     );
-  } catch (_) {
+  } catch (appError, appStack) {
+    AppErrors.report(appError, appStack, operation: '打开排版选项失败');
     container.read(readerProvider.notifier).showNotice('设置选项未能打开，请重试');
   } finally {
     lease.close();
@@ -63,11 +65,18 @@ class ReaderLayoutOption extends ConsumerStatefulWidget {
 
 class _LayoutOptionState extends ConsumerState<ReaderLayoutOption> {
   late PageTurnEffect _effect = widget.initial.pageTurnEffect;
-  late bool _indent = widget.initial.indent;
   bool _saving = false;
   Future<bool>? _pending;
 
   Future<bool> _save() async {
+    if (ref
+            .read(readerSettingsProvider(widget.bookId))
+            .value
+            ?.settings
+            .spreadEnabled ==
+        true) {
+      return true;
+    }
     if (!widget.turn) return await _pending ?? true;
     setState(() => _saving = true);
     try {
@@ -88,27 +97,6 @@ class _LayoutOptionState extends ConsumerState<ReaderLayoutOption> {
     }
   }
 
-  Future<bool> _setIndent(bool value) async {
-    setState(() => _saving = true);
-    try {
-      final vm = ref.read(readerSettingsProvider(widget.bookId).notifier);
-      vm.setIndent(value);
-      await vm.pendingWrites;
-      final applied =
-          ref
-              .read(readerSettingsProvider(widget.bookId))
-              .requireValue
-              .settings
-              .indent ==
-          value;
-      // 保存和正文设置准备好后才显示新值；失败保持上次生效的缩进状态。
-      if (mounted && applied) setState(() => _indent = value);
-      return applied;
-    } finally {
-      if (mounted) setState(() => _saving = false);
-    }
-  }
-
   @override
   Widget build(BuildContext context) => ReaderOptionAutosave(
     save: _save,
@@ -118,17 +106,79 @@ class _LayoutOptionState extends ConsumerState<ReaderLayoutOption> {
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
         child: widget.turn
             ? ReaderTurnChoices(
-                selected: _effect,
+                selected:
+                    ref
+                            .watch(readerSettingsProvider(widget.bookId))
+                            .value
+                            ?.settings
+                            .spreadEnabled ==
+                        true
+                    ? PageTurnEffect.curl
+                    : _effect,
+                curlOnly:
+                    ref
+                        .watch(readerSettingsProvider(widget.bookId))
+                        .value
+                        ?.settings
+                        .spreadEnabled ==
+                    true,
                 onSelect: (effect) {
                   if (!_saving) setState(() => _effect = effect);
                 },
               )
-            : _toggle('首行缩进', 'reader-indent-switch', _indent, (value) {
-                _pending = _setIndent(value);
-              }),
+            : _otherOptions(),
       ),
     ),
   );
+
+  Widget _otherOptions() {
+    final current = ref
+        .watch(readerSettingsProvider(widget.bookId))
+        .requireValue;
+    final saved = current.fontSettings;
+    final vm = ref.read(readerSettingsProvider(widget.bookId).notifier);
+    Widget option(
+      String label,
+      String key,
+      bool value,
+      ValueChanged<bool> set,
+    ) => Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: _toggle(label, key, value, (next) {
+        set(next);
+        _pending = vm.pendingWrites.then((_) => true);
+      }),
+    );
+    return SingleChildScrollView(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (!current.pdfMode)
+            option('首行缩进', 'reader-indent-switch', saved.indent, vm.setIndent),
+          if (!current.pdfMode)
+            option(
+              '书边效果',
+              'reader-book-edges-switch',
+              saved.bookEdges,
+              vm.setBookEdges,
+            ),
+          option(
+            '横屏',
+            'reader-landscape-switch',
+            saved.landscape,
+            vm.setLandscape,
+          ),
+          if (!current.pdfMode)
+            option(
+              '横屏双翻页',
+              'reader-landscape-spread-switch',
+              saved.landscapeSpread,
+              vm.setLandscapeSpread,
+            ),
+        ],
+      ),
+    );
+  }
 
   Widget _toggle(
     String label,

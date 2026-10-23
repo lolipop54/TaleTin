@@ -16,15 +16,73 @@
 
   var internal = window.__gtHost;
   var state = internal.state;
+  if (state.indexComplete === undefined) state.indexComplete = true;
   var post = internal.post;
   // 诊断包才开启：以浏览器自己的时钟区分加载、排版及等待，不读取正文。
   function trace(stage) {
     if (window.__gtTraceTurn) post('turnTrace', {stage: stage, ms: performance.now()});
   }
 
+  // 只在诊断包观察启动阶段的长帧，不触发几何查询或改变正文。
+  if (window.__gtTraceTurn && window.PerformanceObserver &&
+      PerformanceObserver.supportedEntryTypes.includes('long-animation-frame')) {
+    new PerformanceObserver(function(list) {
+      list.getEntries().forEach(function(entry) {
+        if (!state.started) post('turnTrace', {stage:'startup-frame', ms:entry.startTime,
+          duration:entry.duration, renderStart:entry.renderStart,
+          styleAndLayoutStart:entry.styleAndLayoutStart,
+          scriptMs:entry.scripts.reduce(function(sum, item) {return sum + item.duration;}, 0)});
+      });
+    }).observe({type:'long-animation-frame', buffered:true});
+  }
+
   /* ---------- 生命周期 ---------- */
 
   var reported = false;
+  var pointNavigation = 0;
+  var earlyLayout = null;
+
+  function prepareInitialLayout() {
+    if (!window.__gtFinalLayout || !window.parent || window.parent === window) return;
+    var query = new URL(window.location.href).searchParams;
+    var pager = window.parent.__gtPager;
+    var config = pager && pager.initialLayout(Number(query.get('gtSlot')), Number(query.get('gtLoad')));
+    if (!config || !config.width || config.width !== Math.round(window.innerWidth)) return;
+    var options = config.options;
+    if (options.fontFamily) internal.style.prepareFont(options.fontFamily, config.fontCss).catch(function() {});
+    internal.style.apply(options);
+    window.__gtInformation.configure(config.information);
+    internal.layout.setTurnEffect(config.information && config.information.pageTurnEffect);
+    state.width = config.width; state.margin = config.margin;
+    internal.style.markImageOnlyParagraphs();
+    internal.style.markHeadingMargins();
+    internal.layout.setupColumns();
+    internal.style.beginContentLayout();
+    earlyLayout = {width:state.width,margin:state.margin,
+      signature:internal.style.layoutSignature(),insets:window.__gtInformation.insets(),
+      top:window.__gtInformation.top()};
+    trace('initial-layout-prepared');
+  }
+
+  function followTts(point) {
+    var rect = window.__gtTts.rect(point);
+    if (!rect) return false;
+    var page = Math.floor((internal.layout.toContentX(rect.left) + 1) / state.width);
+    if (!state.indexComplete) state.pages = Math.max(state.pages, page + 1);
+    // 同页只画高亮；跟随不取得视觉进度保存权。
+    if (page !== state.page) internal.layout.setPage(page, false, false);
+    internal.layout.clearRelocate();
+    return true;
+  }
+
+  function legacyNavigation(action) {
+    var request = ++pointNavigation;
+    if (state.indexComplete) return action();
+    // 旧标题/文字查找没有可提前证明的 DOM 点，沿用完整索引后再落页。
+    return internal.index.ensure(Infinity).then(function() {
+      return request === pointNavigation && action();
+    });
+  }
 
   /* 兜底：万一分栏没跑起来（脚本出错等），也必须让正文显示出来，不能白屏 */
   setTimeout(internal.style.revealContent, 2500);
@@ -36,6 +94,9 @@
     // 这里只报告脚本就绪。设备字体由 Dart 按当前选择准备，不能把字体
     // 目录中的全部字体每章都读一遍；原书字体仍由首次排版的 ready 等待。
     post('ready', internal.dom.metrics());
+    // ready先交给Dart准备目录/位置资料；子文档同步拿同源父壳的最终参数，
+    // 不等这些资料往返后才开始真实布局。此时正文仍被旧页/加载层遮住。
+    prepareInitialLayout();
     internal.style.watchImages();
   }
 
@@ -56,43 +117,66 @@
         x + state.width * 2, innerHeight);
     },
     prepareFont: internal.style.prepareFont,
-    followTtsPoint: function(point) {
-      var rect = window.__gtTts.rect(point);
-      if (!rect) return false;
-      var page = Math.floor((internal.layout.toContentX(rect.left) + 1) /
-        state.width);
-      // 同页只画高亮，不重复定位和上报页首；跨页也不写视觉进度。
-      if (page !== state.page) internal.layout.setPage(page, false, false);
-      internal.layout.clearRelocate();
+    configure: function (options, information) {
+      internal.style.apply(options);
+      window.__gt.information(information);
       return true;
     },
+    followTtsPoint: function(point) {
+      var request = ++pointNavigation;
+      if (!state.indexComplete) return internal.index.ensureWindow(point).then(function(ready) {
+        return ready && request === pointNavigation && followTts(point);
+      });
+      return followTts(point);
+    },
+    completeIndex: function() { return internal.index.ensure(Infinity); },
     setTtsRange: function(value) { return window.__gtTts.set(value); },
     clearTtsRange: function(version) { return window.__gtTts.clear(version); },
     ttsBoundaries: function(points) { return window.__gtTts.boundaries(points, state); },
     /* 开始分栏：Dart 在收到 ready 后下发页宽 */
-    start: function (width, margin, initialFraction) {
+    start: function (width, margin, initialFraction, initialPoint) {
+      ++pointNavigation;
       trace('start');
       state.width = Math.max(1, Math.round(width));
       state.margin = Math.max(0, Math.round(margin || 0));
-      internal.style.markImageOnlyParagraphs();
-      internal.style.markHeadingMargins();
-      internal.layout.setupColumns();
+      var reuse = earlyLayout && earlyLayout.width === state.width && earlyLayout.margin === state.margin &&
+        earlyLayout.signature === internal.style.layoutSignature() &&
+        earlyLayout.insets === window.__gtInformation.insets() && earlyLayout.top === window.__gtInformation.top();
+      if (!reuse) {
+        internal.style.markImageOnlyParagraphs();
+        trace('prose-marked');
+        internal.style.markHeadingMargins();
+        trace('headings-marked');
+        internal.layout.setupColumns();
+      }
+      earlyLayout = null;
+      // 首次字体、主题、标记和分栏参数已备齐，再恢复原书display。
+      // 只改临时head样式，不改正文节点或原书的内联display。
+      if (window.__gtFinalLayout) internal.style.beginContentLayout();
       state.page = 0;
       internal.layout.applyTransform(false);
+      trace('columns-ready');
       // 等字体与图片就绪、再等两帧布局稳定，才量页数并显示正文：
       // 图片刚加载完时浏览器还没重排，此时测量会把页数算少一页
       // （实测第 6 章量成 11 页、实际 12 页），整个过程用户看不到。
       internal.style.whenContentReady(function () {
         trace('images-fonts-ready');
         requestAnimationFrame(function () {
-          requestAnimationFrame(function () {
-            internal.layout.measure();
+          requestAnimationFrame(async function () {
+            var windowReady = window.__gtDeliveryOriginal && window.__gtContentTarget && initialPoint &&
+              await internal.index.prepare(initialPoint);
+            if (!windowReady) internal.layout.measure();
             trace('measured');
             state.started = true;
             // 预载的上一章必须在首次显示前就落到末页，不能先露出章首页再定位。
             var fraction = Math.max(0, Math.min(1, initialFraction || 0));
-            state.page = internal.layout.pageAtFraction(fraction);
+            state.page = windowReady ? internal.dom.pageOfPoint(initialPoint) :
+              internal.layout.pageAtFraction(fraction);
             internal.layout.applyTransform(false);
+            if (initialPoint && !internal.dom.goToDomPoint(initialPoint)) {
+              post('error', {message: '原书中无法定位正文目标'});
+              return;
+            }
             // 正文与高亮一起出现：等高亮下发（最多 300ms）再揭开，
             // 不然会先看到一段没有底色的正文、隔一下高亮才补上
             function showReadyPage() { internal.highlight.whenReady(function () {
@@ -103,7 +187,9 @@
               requestAnimationFrame(function () {
                 requestAnimationFrame(function () {
                   trace('paint-frames-ready');
-                  post('paginated', { pages: state.pages, width: state.width, page: state.page,
+                  post('paginated', { pages: state.indexComplete ? state.pages : null,
+                    knownPages: state.pages, indexComplete: state.indexComplete,
+                    width: state.width, page: state.page,
                     deferredImagePixels: !!window.__gtImageDecodeVisible,
                     bookmarkPages: window.__gtInformation.bookmarkPages ? window.__gtInformation.bookmarkPages() : {},
                     probe: internal.layout.renderProbe() });
@@ -128,6 +214,9 @@
     },
     adjacentPage: function (delta) {
       var page = state.page + delta;
+      if (!state.indexComplete && page >= state.pages) {
+        return internal.index.ensure(page).then(function (exists) { return exists ? page : null; });
+      }
       if (!internal.layout.hasPage(page)) {
         return null;
       }
@@ -136,6 +225,12 @@
     },
     commitPage: function (page) { internal.layout.setPage(page, false); },
     next: function (duration) {
+      var request = ++pointNavigation;
+      if (!state.indexComplete && state.page + 1 >= state.pages) {
+        return internal.index.ensure(state.page + 1).then(function () {
+          return request === pointNavigation && window.__gt.next(duration);
+        });
+      }
       if (state.page >= state.pages - 1) {
         // 兜底：页数万一估保守了，先确认后面确实没字再报边界
         if (internal.layout.hasPage(state.page + 1)) {
@@ -150,6 +245,7 @@
       return true;
     },
     prev: function (duration) {
+      ++pointNavigation;
       if (state.page <= 0) {
         post('boundary', { edge: 'start', via: 'step' });
         return false;
@@ -179,7 +275,13 @@
     },
     /* 松手：Dart 已按最后明确方向决定 -1/0/1，不在网页重复判距离。 */
     settle: function (pageDelta) {
+      var request = ++pointNavigation;
       var target = state.page + pageDelta;
+      if (!state.indexComplete && target >= state.pages) {
+        return internal.index.ensure(target).then(function () {
+          return request === pointNavigation && window.__gt.settle(pageDelta);
+        });
+      }
       if (target > state.pages - 1) {
         // 往「最后一页之后」翻：先确认真的没内容，有就补一页
         if (internal.layout.hasPage(target)) {
@@ -202,6 +304,12 @@
        用 round(fraction × (pages - 1)) 的话，章末上报的 0.9（10 页的第 10 页）
        会算回第 9 页——就是「换章落点偶尔差一页」的来源。 */
     goToFraction: function (fraction) {
+      var request = ++pointNavigation;
+      if (!state.indexComplete) {
+        return internal.index.ensure(Infinity).then(function () {
+          return request === pointNavigation && window.__gt.goToFraction(fraction);
+        });
+      }
       var f = Math.max(0, Math.min(1, fraction));
       var page = internal.layout.pageAtFraction(f);
       internal.layout.setPage(page, false);
@@ -223,8 +331,8 @@
         return 'prev';
       }
       if (zone === 'next') {
-        window.__gt.next(duration);
-        return 'next';
+        var result = window.__gt.next(duration);
+        return result && result.then ? result.then(function () { return 'next'; }) : 'next';
       }
       post('centerTap');
       return 'center';
@@ -232,7 +340,7 @@
     /* 使用本次排版已校正的页数判定边界；超出范围仍保留一次真实内容探测。 */
     atEdge: function () {
       var atStart = state.page <= 0;
-      var atEnd = !internal.layout.hasPage(state.page + 1);
+      var atEnd = state.indexComplete && !internal.layout.hasPage(state.page + 1);
       if (atStart && atEnd) return 'both';
       if (atStart) return 'start';
       if (atEnd) return 'end';
@@ -240,6 +348,12 @@
     },
     /* 这一点是不是书里的链接？是就返回它的 href，不是返回 null。 */
     imageAt: internal.dom.imageAt,
+    setBackgroundAllowed: function (allowed) {
+      internal.index.setBackground(allowed);
+    },
+    setContentMap: function (value) { internal.content.set(value); },
+    setContentTitles: function(value) { window.__gtInformation.setTitles(value); },
+    pageContentFraction: function (page) { return internal.content.fractionForPage(page); },
     linkAt: internal.dom.linkAt,
     tapTarget: function (x, y) {
       return JSON.stringify({
@@ -265,6 +379,7 @@
     clearSelection: function () { internal.highlight.setSelection(null); },
     /* 持久高亮（笔记与高亮记录）：下发列表、清空、命中测试（S6） */
     setHighlights: function (value) { return internal.highlight.set(value); },
+    setStartupHighlights: function (value) { return internal.highlight.set(value, true); },
     clearHighlights: function (version) {
       return internal.highlight.clear(version);
     },
@@ -281,17 +396,30 @@
     },
     /* 按标题跳（目录条目名）：找不到标题返回 false，Dart 侧改用锚点或比例。 */
     goToHeading: function (text) {
-      return internal.dom.landOnElement(internal.dom.findHeadingOfText(text));
+      return legacyNavigation(function() {
+        return internal.dom.landOnElement(internal.dom.findHeadingOfText(text));
+      });
     },
     /* 跳到文档里的锚点（书内链接的 #片段）：按元素的内容坐标换页。
        找不到这个 id 时返回 false，Dart 侧会把位置留在原处。 */
-    goToDomPoint: internal.dom.goToDomPoint,
-    goToText: internal.dom.goToText,
-    goToAnchor: internal.dom.goToAnchor,
+    goToDomPoint: function (point) {
+      var request = ++pointNavigation;
+      if (state.indexComplete) return internal.dom.goToDomPoint(point);
+      return internal.index.ensureWindow(point).then(function (ready) {
+        return ready && request === pointNavigation && internal.dom.goToDomPoint(point);
+      });
+    },
+    goToText: function(text, fraction) {
+      return legacyNavigation(function() { return internal.dom.goToText(text, fraction); });
+    },
+    goToAnchor: function(id) {
+      return legacyNavigation(function() { return internal.dom.goToAnchor(id); });
+    },
     /* 主题与字号的覆盖式更新；options: {fontSizePx, colors:{bg,text,link}} */
     applyStyle: internal.style.apply,
     /* Flutter 侧的宽度变了（旋转、状态信息开关）：重新分栏并保持位置 */
     resize: function (width, margin) {
+      ++pointNavigation;
       // 先在旧列宽下记住页首，再改变几何；否则旋转会把新排版中的旧页号当落点。
       internal.layout.relayout(true, function () {
         state.width = Math.max(1, Math.round(width));
@@ -308,11 +436,13 @@
         margin: state.margin,
         columnWidth: state.columnWidth,
         page: state.page,
-        pages: state.pages,
+        pages: state.indexComplete ? state.pages : null,
+        knownPages: state.pages,
+        indexComplete: state.indexComplete,
         started: state.started,
         bookmarkPages: window.__gtInformation.bookmarkPages ? window.__gtInformation.bookmarkPages() : {},
         scrollWidth: document.body ? document.body.scrollWidth : 0,
-        contentWidth: internal.layout.contentWidth()
+        contentWidth: state.indexComplete ? internal.layout.contentWidth() : state.contentWidth
       });
     },
     /* 自检：把几种页数算法摆在一起，用来定位「翻不到的那一页」。

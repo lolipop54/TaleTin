@@ -1,3 +1,4 @@
+import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -76,7 +77,8 @@ class ListeningVoiceChoices extends AsyncNotifier<VoiceChoices> {
     try {
       final result = await connection;
       if (ref.mounted && detection == _detection) state = AsyncData(result);
-    } catch (error) {
+    } catch (error, appStack) {
+      AppErrors.report(error, appStack, operation: '读取音色失败');
       if (!ref.mounted || detection != _detection) return;
       state = AsyncData(
         VoiceChoices(
@@ -104,7 +106,8 @@ class ListeningVoiceChoices extends AsyncNotifier<VoiceChoices> {
     try {
       final next = await action(previous);
       if (ref.mounted) state = AsyncData(next);
-    } catch (error) {
+    } catch (error, appStack) {
+      AppErrors.report(error, appStack, operation: '选择音色失败');
       if (ref.mounted) {
         state = AsyncData(
           VoiceChoices(
@@ -139,7 +142,8 @@ class ListeningVoiceChoices extends AsyncNotifier<VoiceChoices> {
       if (ref.mounted && detection == _detection) {
         state = AsyncData(VoiceChoices(engines, voices, engine));
       }
-    } catch (error) {
+    } catch (error, appStack) {
+      AppErrors.report(error, appStack, operation: '切换语音引擎失败');
       if (ref.mounted && detection == _detection) {
         state = AsyncData(
           VoiceChoices(old.engines, const [], engine, error: '$error'),

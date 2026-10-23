@@ -4,11 +4,17 @@
 /// 不接收 `Ref`。数据库实例由 `bootstrap` 创建后 override，便于测试替换。
 library;
 
+import '../../domain/repositories/book_cover_repository.dart';
+import '../../ui/core/widgets/book_cover_resources.dart';
+
+import '../../core/diagnostics/app_errors.dart';
+
 import 'dart:async';
 
 import 'device_status_providers.dart';
 
 import '../../domain/services/library_file_gate.dart';
+import '../../domain/services/layout_checkpoint_store.dart';
 import '../../domain/repositories/listening_timer_repository.dart';
 import '../../data/repositories/drift_listening_timer_repository.dart';
 import '../../domain/repositories/tts_settings_repository.dart';
@@ -17,9 +23,11 @@ import '../../data/repositories/drift_tts_settings_repository.dart';
 import '../../domain/services/automatic_reading_tasks.dart';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
 import '../../data/services/backfill_source_locations.dart';
 import '../../data/services/source_position_preparation.dart';
 import '../../core/diagnostics/position_experiments.dart';
+
 import 'package:path/path.dart' as p;
 
 import '../../data/database/app_database.dart';
@@ -28,6 +36,7 @@ import '../../data/repositories/direct_book_search_repository.dart';
 import '../../data/services/book_search_source.dart';
 import '../../domain/repositories/book_search_repository.dart';
 import '../../data/repositories/drift_book_repository.dart';
+import '../../data/repositories/book_cover_repository.dart';
 import '../../data/repositories/drift_note_draft_repository.dart';
 import '../../data/repositories/drift_reading_position_repository.dart';
 import '../../data/repositories/drift_reading_settings_repository.dart';
@@ -111,8 +120,11 @@ final readingPositionRepositoryProvider = Provider<ReadingPositionRepository>(
 );
 
 final readingPositionCoordinatorProvider = Provider<ReadingPositionCoordinator>(
-  (ref) =>
-      ReadingPositionCoordinator(ref.watch(readingPositionRepositoryProvider)),
+  (ref) => ReadingPositionCoordinator(
+    ref.watch(readingPositionRepositoryProvider),
+    onError: (error, stack) =>
+        AppErrors.report(error, stack, operation: '保存阅读位置失败'),
+  ),
 );
 
 /// 全局阅读偏好：`bootstrap` 读库后注入，保证阅读页第一帧就是用户上次的主题
@@ -174,7 +186,10 @@ final importBooksProvider = Provider<ImportBooksUseCase>(
     textPreparation: ref.watch(textPreparationProvider),
     prepareContentChange: ref.watch(bookContentChangeProvider),
     loadSourcePositions: (id) => loadSourcePositionPreparation(
-      ref.read(appDatabaseProvider), ref.read(libraryRootPathProvider), id),
+      ref.read(appDatabaseProvider),
+      ref.read(libraryRootPathProvider),
+      id,
+    ),
     optimizeLocations: PositionExperiments.optimizedFlow,
   ),
 );
@@ -188,8 +203,17 @@ final libraryRootPathProvider = Provider<String>(
 
 /// 阅读引擎：排版与位置换算的入口（设计文档 4.3）。
 /// 应用级保活：排版缓存跨页面复用（设计文档 4.2）。
-final readerEngineProvider = Provider<ReaderEngine>(
-  (ref) => FlutterReaderEngine(),
+final readerEngineProvider = Provider<ReaderEngine>((ref) {
+  final engine = FlutterReaderEngine(
+    checkpoints: ref.watch(layoutCheckpointStoreProvider),
+  );
+  ref.onDispose(engine.invalidateLayout);
+  return engine;
+});
+
+/// 实际运行环境注入文件实现；独立引擎和无磁盘容器只保留内存复用。
+final layoutCheckpointStoreProvider = Provider<LayoutCheckpointStore?>(
+  (ref) => null,
 );
 
 /// 应用缓存目录（`cache`）；由 bootstrap 注入。
@@ -223,10 +247,22 @@ final chapterContentRepositoryProvider = Provider<ChapterContentRepository>((
 });
 
 /// 把书籍的相对封面路径解析成绝对路径；无封面时返回 null。
+final bookCoverRepositoryProvider = Provider<BookCoverRepository>(
+  (ref) => DriftBookCoverRepository(
+    ref.watch(appDatabaseProvider),
+    ref.watch(libraryRootPathProvider),
+    ref.watch(libraryFileGateProvider),
+  ),
+);
+
 final bookCoverFileProvider = Provider<String? Function(Book)>((ref) {
   final root = ref.watch(libraryRootPathProvider);
   return (book) {
-    final relative = book.coverPath;
+    if (book.coverChoice?.preset != null) return null;
+    final relative = book.coverChoice?.imagePath ?? book.coverPath;
+    if (relative?.startsWith('global-covers/') == true) {
+      return p.join(root, relative!);
+    }
     return relative == null ? null : p.join(root, book.id, relative);
   };
 });
@@ -278,7 +314,14 @@ final prepareListeningReaderProvider =
 
 /// 书架数据流：数据库是唯一事实来源，写入后界面自动更新。
 final libraryBooksProvider = StreamProvider<List<Book>>(
-  (ref) => ref.watch(bookRepositoryProvider).watchActiveBooks(),
+  (ref) => ref.watch(bookRepositoryProvider).watchActiveBooks().asyncMap((
+    books,
+  ) async {
+    if (books.any((b) => b.coverChoice?.preset != null)) {
+      await BookCoverResources.prepare();
+    }
+    return books;
+  }),
 );
 
 /// 可复用的文件交接：后台停读完成后允许变更，完成/失败均清掉正文与排版缓存。
@@ -307,8 +350,13 @@ final bookContentChangeProvider = Provider<PrepareBookContentChange>((ref) {
       release = await prepare(bookId);
       // 听书先保存最后确认点，再收回旧页面/旧播放的写入权。
       try {
-        await ref.read(readingPositionCoordinatorProvider).acquire(bookId, ReadingPositionSource.visual);
-      } catch (_) { release(); rethrow; }
+        await ref
+            .read(readingPositionCoordinatorProvider)
+            .acquire(bookId, ReadingPositionSource.visual);
+      } catch (_) {
+        release();
+        rethrow;
+      }
     } catch (_) {
       releaseAutomatic();
       rethrow;
@@ -317,15 +365,23 @@ final bookContentChangeProvider = Provider<PrepareBookContentChange>((ref) {
       // 删除或重解析前等待读取收尾；正文交接期间阻止旧搜索继续读取。
       releaseSearch = await prepareSearch(bookId);
       if (contents is FileChapterContentRepository) {
-        await backfillSourceLocations(ref.read(appDatabaseProvider), bookId,
-          (chapter) => contents.cachedPreviousChapter(bookId, chapter));
-        await preserveSourcePositionProof(ref.read(appDatabaseProvider),
-          ref.read(libraryRootPathProvider), bookId);
+        await backfillSourceLocations(
+          ref.read(appDatabaseProvider),
+          bookId,
+          (chapter) => contents.cachedPreviousChapter(bookId, chapter),
+        );
+        await preserveSourcePositionProof(
+          ref.read(appDatabaseProvider),
+          ref.read(libraryRootPathProvider),
+          bookId,
+        );
         releaseReader = await contents.prepareContentChange(bookId);
       }
       releaseOriginal = await ref
           .read(epubSourceRepositoryProvider)
           .prepareContentChange(bookId);
+      engine.invalidateLayout(bookId: bookId);
+      await ref.read(layoutCheckpointStoreProvider)?.clear(bookId);
     } catch (_) {
       releaseReader?.call();
       releaseSearch?.call();

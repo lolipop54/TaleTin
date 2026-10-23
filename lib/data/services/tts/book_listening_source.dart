@@ -26,7 +26,9 @@ class BookListeningSource implements ListeningSource {
   @override
   Future<ListeningBook> open(String bookId, int contentVersion) async {
     final book = await books.findById(bookId);
-    if (book == null || book.status != BookStatus.active || book.contentVersion != contentVersion) {
+    if (book == null ||
+        book.status != BookStatus.active ||
+        book.contentVersion != contentVersion) {
       throw StateError('书籍或正文版本已变化，请重新打开');
     }
     final chapters = await books.chaptersOf(bookId);
@@ -102,7 +104,7 @@ class RepositoryListeningBook implements ListeningBook {
   Future<Locator> chapterStart(String logicalChapterId) async {
     final entry = _entries.firstWhere((entry) => entry.id == logicalChapterId);
     final file = files.firstWhere((file) => file.id == entry.chapterId);
-    final content = await contents.chapter(bookId, file);
+    final content = await contents.chapter(bookId, file, textOnly: true);
     final targets = await _targetsFor(file, content);
     return targets.firstWhere((t) => t.chapter.id == logicalChapterId).start;
   }
@@ -147,7 +149,7 @@ class RepositoryListeningBook implements ListeningBook {
     if (content?.chapterId != file.id ||
         _maxLength != maxLength ||
         index == null) {
-      content = await contents.chapter(bookId, file);
+      content = await contents.chapter(bookId, file, textOnly: true);
       final targets = uniqueListeningTargets(await _targetsFor(file, content));
       var initialId = _entries.first.id;
       for (final entry in _entries) {
@@ -179,14 +181,16 @@ class RepositoryListeningBook implements ListeningBook {
     if (order < 0 && blocks.isNotEmpty && from.blockId.isNotEmpty) {
       throw StateError('听书位置已失效');
     }
-    var start = _continuations[from] ?? ready.indexWhere((unit) {
-      final unitOrder = blockOrder[unit.startLocator.blockId]!;
-      return unitOrder > order ||
-          (unitOrder == order &&
-              (unit.endLocator.utf16Offset > from.utf16Offset ||
-                  (unit.isChapterTitle &&
-                      unit.startLocator.utf16Offset == from.utf16Offset)));
-    });
+    var start =
+        _continuations[from] ??
+        ready.indexWhere((unit) {
+          final unitOrder = blockOrder[unit.startLocator.blockId]!;
+          return unitOrder > order ||
+              (unitOrder == order &&
+                  (unit.endLocator.utf16Offset > from.utf16Offset ||
+                      (unit.isChapterTitle &&
+                          unit.startLocator.utf16Offset == from.utf16Offset)));
+        });
     if (start < 0) start = ready.length;
     if (sentenceStart) {
       while (start > 0 &&

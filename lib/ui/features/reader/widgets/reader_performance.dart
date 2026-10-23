@@ -5,7 +5,10 @@ import 'dart:ui' show FramePhase, FrameTiming;
 
 import 'package:flutter/widgets.dart';
 import 'package:flutter/services.dart';
+
 import '../../../../core/diagnostics/reader_work_trace.dart';
+import '../../../../core/diagnostics/reader_turn_diagnostics.dart';
+import 'reader_turn_logging.dart';
 
 const readerPerformanceEnabled = bool.fromEnvironment('GT_TRACE_READER_PERF');
 
@@ -15,6 +18,15 @@ void readerPerf(
   int microseconds, [
   Map<String, Object?> details = const {},
 ]) {
+  // 旧阶段标签有时带完整桥接参数；手动日志只保留静态步骤名前缀。
+  ReaderTurnDiagnostics.active?.event(
+    'work.${stage.split(RegExp(r'[ =(]')).first}',
+    [
+      microseconds,
+      for (final entry in details.entries)
+        if (entry.value is num || entry.value is bool) [entry.key, entry.value],
+    ],
+  );
   if (!readerPerformanceEnabled) return;
   debugPrint(
     'GT_READER_PERF ${jsonEncode({'stage': stage, 'us': microseconds, 'wallUs': DateTime.now().microsecondsSinceEpoch, 'atUs': Timeline.now, ...details})}',
@@ -22,7 +34,9 @@ void readerPerf(
 }
 
 Future<T> measureReader<T>(String stage, Future<T> Function() action) async {
-  if (!readerPerformanceEnabled) return action();
+  if (!readerPerformanceEnabled && ReaderTurnDiagnostics.active == null) {
+    return action();
+  }
   final watch = Stopwatch()..start();
   try {
     return await action();
@@ -38,9 +52,11 @@ class ReaderPerformance extends StatefulWidget {
     super.key,
     required this.label,
     required this.child,
+    this.diagnosticContext = const {},
   });
   final String label;
   final Widget child;
+  final Map<String, Object?> diagnosticContext;
   @override
   State<ReaderPerformance> createState() => _ReaderPerformanceState();
 }
@@ -90,11 +106,20 @@ class _ReaderPerformanceState extends State<ReaderPerformance> {
 
   void _input(PointerEvent event) {
     // 只记按下与松手，和 Android 原生触摸时间配对，避免移动事件刷日志。
-    if (event is PointerDownEvent || event is PointerUpEvent || event is PointerCancelEvent) {
+    if (event is PointerDownEvent ||
+        event is PointerUpEvent ||
+        event is PointerCancelEvent) {
       ReaderWorkTrace.start('reader.input', {
-        'phase': event is PointerDownEvent ? 'down' : event is PointerUpEvent ? 'up' : 'cancel',
-        'pointer': event.pointer, 'eventUs': event.timeStamp.inMicroseconds,
-        'x': event.localPosition.dx, 'y': event.localPosition.dy, 'mode': widget.label,
+        'phase': event is PointerDownEvent
+            ? 'down'
+            : event is PointerUpEvent
+            ? 'up'
+            : 'cancel',
+        'pointer': event.pointer,
+        'eventUs': event.timeStamp.inMicroseconds,
+        'x': event.localPosition.dx,
+        'y': event.localPosition.dy,
+        'mode': widget.label,
       })?.finish();
     }
     final now = Timeline.now;
@@ -157,15 +182,23 @@ class _ReaderPerformanceState extends State<ReaderPerformance> {
   }
 
   @override
-  Widget build(BuildContext context) => !readerPerformanceEnabled
-      ? widget.child
-      : Listener(
-          onPointerDown: _input,
-          onPointerMove: _input,
-          onPointerUp: _input,
-          behavior: HitTestBehavior.translucent,
-          child: widget.child,
-        );
+  Widget build(BuildContext context) {
+    final content = readerTurnDiagnosticsEnabled
+        ? ReaderTurnLogging(
+            details: widget.diagnosticContext,
+            child: widget.child,
+          )
+        : widget.child;
+    return !readerPerformanceEnabled
+        ? content
+        : Listener(
+            onPointerDown: _input,
+            onPointerMove: _input,
+            onPointerUp: _input,
+            behavior: HitTestBehavior.translucent,
+            child: content,
+          );
+  }
 
   @override
   void dispose() {

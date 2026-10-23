@@ -47,8 +47,19 @@ abstract class ReaderEngine {
     LayoutToken? token,
   });
 
+  /// 只准备实际目标和直接邻页；完整结果仍可按需继续取得。
+  Future<ChapterLayout> layoutWindow(
+    LayoutRequest request, {
+    Locator? target,
+    bool atEnd = false,
+    LayoutToken? token,
+  });
+
   /// 一页的首尾锚点。
-  ({Locator start, Locator end}) pageBounds(ChapterLayout layout, int pageIndex);
+  ({Locator start, Locator end}) pageBounds(
+    ChapterLayout layout,
+    int pageIndex,
+  );
 
   /// 内容位置 → 章内页序；不在本章时返回 null。
   PageRef? pageOf(ChapterLayout layout, Locator locator);

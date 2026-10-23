@@ -14,10 +14,10 @@ object SystemToast {
         MethodChannel(engine.dartExecutor.binaryMessenger, "gtreader/toast")
             .setMethodCallHandler { call, result ->
                 when (call.method) {
-                    "show" -> {
+                    "show", "showError" -> {
                         current?.cancel()
                         current = Toast.makeText(appContext, call.arguments as String,
-                            Toast.LENGTH_SHORT).also { it.show() }
+                            if (call.method == "showError") Toast.LENGTH_LONG else Toast.LENGTH_SHORT).also { it.show() }
                         result.success(null)
                     }
                     "cancel" -> {

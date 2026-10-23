@@ -44,6 +44,22 @@ class BookSourceIntegrity {
   final _pending = <String, Future<BookStatus>>{};
   Future<void> _hashing = Future.value();
 
+  Future<void> forget(String bookId) async {
+    await Future.wait(
+      _pending.entries
+          .where((entry) => entry.key.startsWith('$bookId:'))
+          .map(
+            (entry) => entry.value.then<void>((_) {}, onError: (Object _) {}),
+          )
+          .toList(),
+    );
+    _verified.remove(bookId);
+    final root = libraryRoot;
+    if (root != null) {
+      _indexes.removeWhere((path, _) => p.isWithin(p.join(root, bookId), path));
+    }
+  }
+
   Future<Book> check(Book book) async {
     if (book.status == BookStatus.removed) return book;
     final root = libraryRoot;

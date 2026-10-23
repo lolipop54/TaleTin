@@ -1,38 +1,61 @@
+import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../../app/di/app_providers.dart';
 import '../../../../../core/diagnostics/bookmark_trace.dart';
 import '../../../../../domain/models/bookmark.dart';
+import '../../../../../domain/models/book_document.dart';
 import '../../../../core/theme/gt_tokens.dart';
 import '../../../../core/theme/reading_theme.dart';
 import '../../../../core/widgets/gt_icon.dart';
 import '../../../../core/widgets/gt_dialog_action.dart';
 import '../../../../core/widgets/state_views.dart';
 import '../../view_models/reader_session_view_model.dart';
+import '../../view_models/annotation_list_provider.dart';
 import '../../view_models/reader_progress_return.dart';
 import '../../view_models/reader_view_model.dart';
 import '../../view_models/original_layout_controller.dart';
 import 'note_tab.dart';
 
 /// 书签页签：按摘录或章节名搜索，可跳回原位置或删除。
-class BookmarkTab extends ConsumerWidget {
+class BookmarkTab extends ConsumerStatefulWidget {
   const BookmarkTab({super.key, required this.bookId, required this.query});
 
   final String bookId;
   final String query;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final bookmarks = ref.watch(bookmarksProvider(bookId)).value ?? const [];
+  ConsumerState<BookmarkTab> createState() => _BookmarkTabState();
+}
+
+class _BookmarkTabState extends ConsumerState<BookmarkTab> {
+  String get bookId => widget.bookId;
+  String get query => widget.query;
+  BookmarkList? _shown;
+  @override
+  void didUpdateWidget(covariant BookmarkTab oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.bookId != bookId) _shown = null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bookmarks = ref.watch(bookmarksProvider(bookId)).value;
+    if (bookmarks == null) return const GtLoadingView(label: '正在读取书签…');
     final session = ref.watch(readerSessionProvider(bookId)).value;
     final notifier = ref.read(readerSessionProvider(bookId).notifier);
     final searchQuery = query.trim();
-    final visible = [
-      for (final bookmark in bookmarks)
-        if (searchQuery.isEmpty || _matches(bookmark, session, searchQuery))
-          bookmark,
-    ];
+    final prepared = ref.watch(
+      bookmarkListProvider((
+        bookmarks,
+        session?.chapters ?? const <Chapter>[],
+        query,
+      )),
+    );
+    if (prepared.hasValue) _shown = prepared.requireValue;
+    if (_shown == null) return const GtLoadingView(label: '正在读取书签…');
+    final visible = _shown!.bookmarks;
 
     if (visible.isEmpty) {
       return GtEmptyView(
@@ -53,18 +76,18 @@ class BookmarkTab extends ConsumerWidget {
             quote: bookmark.quote.isEmpty ? '（无摘录）' : bookmark.quote,
             quoteHighlight: null,
             quoteMaxLines: 3,
-            location: _chapterTitleOf(session, bookmark),
+            location: _shown!.titles[bookmark.locator.chapterId] ?? '',
             onJump: () async {
               traceBookmark('jump-request', {
                 'id': bookmark.id,
                 'saved': bookmarkTraceLocator(bookmark.locator),
                 'from': bookmarkTraceLocator(session?.currentAnchor),
                 'fraction': session?.chapterProgress,
-                'original': notifier.layoutMode.isOriginal,
+                'original': notifier.usesOriginalWebView,
                 'scrolling': session?.scrolling,
               });
               final vm = ref.read(readerProvider.notifier);
-              final hold = notifier.layoutMode.isOriginal
+              final hold = notifier.usesOriginalWebView
                   ? ref
                         .read(originalLayoutProvider(bookId))
                         .value
@@ -86,7 +109,8 @@ class BookmarkTab extends ConsumerWidget {
                     .jump(jump);
                 // 面板此时已关闭，不再读取页面的ref；实际落点由会话上报日志记录。
                 traceBookmark('jump-complete', {'id': bookmark.id});
-              } catch (_) {
+              } catch (appError, appStack) {
+                AppErrors.report(appError, appStack, operation: '跳转书签失败');
                 traceBookmark('jump-failed', {'id': bookmark.id});
                 vm.showNotice('定位失败，请重试');
               }
@@ -128,21 +152,10 @@ class BookmarkTab extends ConsumerWidget {
     if (confirmed != true) return;
     try {
       await repository.removeBookmark(bookmark.id);
-    } catch (_) {
+    } catch (appError, appStack) {
+      AppErrors.report(appError, appStack, operation: '删除书签失败');
       vm.showNotice('书签没有删除成功，请重试');
     }
-  }
-
-  bool _matches(Bookmark bookmark, ReaderSession? session, String query) =>
-      bookmark.quote.contains(query) ||
-      _chapterTitleOf(session, bookmark).contains(query);
-
-  String _chapterTitleOf(ReaderSession? session, Bookmark bookmark) {
-    if (session == null) return '';
-    for (final chapter in session.chapters) {
-      if (chapter.id == bookmark.locator.chapterId) return chapter.title;
-    }
-    return '';
   }
 
   String _dateLabel(DateTime createdAt) {

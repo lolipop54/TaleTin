@@ -1,3 +1,4 @@
+import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'dart:async';
 
 import '../../../domain/models/locator.dart';
@@ -89,7 +90,8 @@ class ListeningController implements ListeningService {
             error: null,
           ),
         );
-      } catch (error) {
+      } catch (error, appStack) {
+        AppErrors.report(error, appStack, operation: '准备语音引擎失败');
         if (!_current(epoch)) return;
         _emit(snapshot.copyWith(voice: null, error: '$error'));
       }
@@ -167,7 +169,8 @@ class ListeningController implements ListeningService {
   Future<void> flushPosition() async {
     try {
       await positions?.flush();
-    } catch (error) {
+    } catch (error, appStack) {
+      AppErrors.report(error, appStack, operation: '保存听书位置失败');
       await _finish(TtsStatus.error, error: '听书位置保存失败：$error');
     }
   }
@@ -237,7 +240,8 @@ class ListeningController implements ListeningService {
   Future<void> _guard(int epoch, Future<void> Function() action) async {
     try {
       await action();
-    } catch (error) {
+    } catch (error, appStack) {
+      AppErrors.report(error, appStack, operation: '听书失败');
       if (!_current(epoch)) return;
       await _finish(TtsStatus.error, error: '听书失败：$error');
     }
@@ -625,7 +629,8 @@ class ListeningController implements ListeningService {
         await audioFocus?.release();
         await positions?.release();
       });
-    } catch (failure) {
+    } catch (failure, appStack) {
+      AppErrors.report(failure, appStack, operation: '停止听书失败');
       if (_current(epoch)) {
         _emit(
           snapshot.copyWith(status: TtsStatus.error, error: '停止听书失败：$failure'),
@@ -736,7 +741,8 @@ class ListeningController implements ListeningService {
         try {
           await settings.change(selected: voice, rate: rate);
           applied = true;
-        } catch (error) {
+        } catch (error, appStack) {
+          AppErrors.report(error, appStack, operation: '保存听书设置失败');
           failure = '听书设置未更改：$error';
         }
         // 即使用户在配置期间暂停，已成功落库的设置也要如实显示。
@@ -766,7 +772,8 @@ class ListeningController implements ListeningService {
           await _advance(epoch);
         }
       }
-    } catch (error) {
+    } catch (error, appStack) {
+      AppErrors.report(error, appStack, operation: '切换听书配置失败');
       if (_current(epoch)) await _finish(TtsStatus.error, error: '$error');
       return false;
     }

@@ -55,24 +55,72 @@ class _TopBar extends ConsumerWidget {
               children: [
                 GtButton.icon(
                   onPressed: () async {
+                    final trace = ReaderWorkTrace.start(
+                      'reader.exit.top_button',
+                      {
+                        'bookId': bookId,
+                        'controls': state.controlsVisible,
+                        'panel': state.panel.name,
+                        'scrolling': session?.scrolling,
+                        'layout': ref
+                            .read(readerSettingsProvider(bookId))
+                            .value
+                            ?.settings
+                            .layoutMode
+                            .name,
+                      },
+                    );
+                    var status = 'ok';
                     try {
-                      await ref
-                          .read(readingStatisticsServiceProvider)
-                          .leaveVisual();
-                      await ref
-                          .read(automaticReadingProvider(bookId).notifier)
-                          .pause();
-                      await ref
-                          .read(readerSessionProvider(bookId).notifier)
-                          .flushPendingPosition();
-                    } finally {
-                      await ref
-                          .read(readerSettingsProvider(bookId).notifier)
-                          .pendingWrites;
-                      if (context.mounted) {
-                        await prepareShelfReturn(ref);
-                        if (context.mounted) context.pop();
+                      // 只给原来的每次等待加起止日志，保留原有顺序和 finally。
+                      try {
+                        await traceReaderWork(
+                          'reader.exit.top.statistics',
+                          () => ref
+                              .read(readingStatisticsServiceProvider)
+                              .leaveVisual(),
+                        );
+                        await traceReaderWork(
+                          'reader.exit.top.auto_pause',
+                          () => ref
+                              .read(automaticReadingProvider(bookId).notifier)
+                              .pause(),
+                        );
+                        await traceReaderWork(
+                          'reader.exit.top.position',
+                          () => ref
+                              .read(readerSessionProvider(bookId).notifier)
+                              .flushPendingPosition(),
+                        );
+                      } finally {
+                        await traceReaderWork(
+                          'reader.exit.top.settings',
+                          () => ref
+                              .read(readerSettingsProvider(bookId).notifier)
+                              .pendingWrites,
+                        );
+                        if (context.mounted) {
+                          await traceReaderWork(
+                            'reader.exit.top.shelf',
+                            () => prepareShelfReturn(ref),
+                          );
+                          if (context.mounted) {
+                            trace?.mark('route_pop_requested');
+                            context.pop();
+                            trace?.mark('route_pop_returned');
+                          } else {
+                            status = 'unmounted_before_pop';
+                          }
+                        } else {
+                          status = 'unmounted_before_shelf';
+                        }
                       }
+                    } catch (error, appStack) {
+                      AppErrors.report(error, appStack, operation: '退出阅读失败');
+                      status = error.runtimeType.toString();
+                      rethrow;
+                    } finally {
+                      trace?.finish(status: status);
                     }
                   },
                   icon: GtIcon(
@@ -109,7 +157,7 @@ class _TopBar extends ConsumerWidget {
                         : context.gtColors.actionPrimary,
                   ),
                 ),
-                GtButton.icon(
+                if (!ref.watch(pdfModeProvider(bookId))) GtButton.icon(
                   style: GtButton.compactIconStyle,
                   tooltip: '全文搜索',
                   onPressed: () async {

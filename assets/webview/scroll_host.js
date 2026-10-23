@@ -140,14 +140,12 @@
       return prepare(meta, options, epoch);
     }
     let above = local, below = current.offsetHeight - local;
-    while (next[0].meta.index > 0 &&
-        (next.length === 1 || above < innerHeight * 2)) {
+    while (next[0].meta.index > 0 && above < innerHeight * 2) {
       const frame = await getFrame(next[0].meta.index - 1);
       if (!frame) return null;
       next.unshift(frame); above += frame.offsetHeight;
     }
-    while (next.at(-1).meta.index + 1 < host.count &&
-        (next.at(-1) === current || below < innerHeight * 3)) {
+    while (next.at(-1).meta.index + 1 < host.count && below < innerHeight * 3) {
       const frame = await getFrame(next.at(-1).meta.index + 1);
       if (!frame) return null;
       next.push(frame); below += frame.offsetHeight;
@@ -169,7 +167,7 @@
       }
       host.frames = next; host.options = options;
       host.paintDecorations?.();
-      if (point) host.restore(point); else scrollTo(0, 0);
+      if (point) host.restore(point); else scrollTo(0, current.offsetTop);
       host.center = current.meta.index;
       if (window.__gtImageDecodeVisible) {
         await host.prepareImagesAt();

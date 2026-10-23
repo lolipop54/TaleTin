@@ -1,3 +1,5 @@
+import 'package:taletin/core/diagnostics/app_errors.dart';
+
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -6,11 +8,17 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../app/di/app_providers.dart';
 import '../../../../core/diagnostics/bookmark_trace.dart';
 import '../../../../domain/models/bookmark.dart';
+import '../../../../domain/models/book.dart';
 import '../view_models/reader_session_view_model.dart';
 import '../view_models/reader_view_model.dart';
+import '../view_models/pdf_viewport.dart';
+import '../view_models/pdf_book_provider.dart';
 import '../view_models/original_layout_controller.dart';
 import '../../../core/theme/gt_tokens.dart';
 import 'bookmark_ribbon.dart';
+import 'book_paper.dart';
+import '../view_models/reader_settings_view_model.dart';
+import '../view_models/visible_spread.dart';
 import 'reader_drag_detector.dart';
 export 'bookmark_ribbon.dart' show bookmarkRibbonColor;
 
@@ -48,13 +56,28 @@ final currentBookmarkProvider = Provider.autoDispose.family<Bookmark?, String>((
   if (session == null || anchor == null) return null;
   final marks = ref.watch(bookmarksProvider(id)).value ?? const <Bookmark>[];
   final original = ref.watch(originalPageBookmarksProvider(id));
+  final spread =
+      ref.watch(readerSettingsProvider(id)).value?.settings.spreadEnabled ==
+          true
+      ? ref.watch(visibleSpreadProvider(id))
+      : const <SpreadPageRef>[];
   for (final mark in marks) {
     if (mark.locator.needsRelocation) continue;
-    if (session.isOriginal &&
+    if (!session.isOriginal && spreadContains(spread, mark.locator)) {
+      return mark;
+    }
+    if (session.book.format.usesOriginalWebView &&
+        session.isOriginal &&
         !session.scrolling &&
         original?.chapter == anchor.chapterId) {
       if (original!.ids.contains(mark.id)) return mark;
       continue; // 原书页首可能跨段，已取得DOM页码后不再用近似页首匹配上一页。
+    }
+    if (session.book.format == BookFormat.pdf &&
+        session.isOriginal &&
+        !session.scrolling &&
+        mark.locator.chapterId == anchor.chapterId) {
+      return mark;
     }
     if (mark.isAt(anchor)) return mark;
     // 简化分页重排后页首会改变，书签所在页仍应显示条带并允许取消。
@@ -75,10 +98,34 @@ Future<void> toggleReaderBookmark(WidgetRef ref, String id) async {
   final mark = ref.read(currentBookmarkProvider(id));
   final repository = ref.read(annotationRepositoryProvider);
   if (mark != null) {
-    traceBookmark('remove', {'id': mark.id, 'locator': bookmarkTraceLocator(mark.locator)});
-    await repository.removeBookmark(mark.id);
+    traceBookmark('remove', {
+      'id': mark.id,
+      'locator': bookmarkTraceLocator(mark.locator),
+    });
+    final spread =
+        ref.read(readerSettingsProvider(id)).value?.settings.spreadEnabled ==
+        true;
+    final visible = ref.read(visibleSpreadProvider(id));
+    final original = ref.read(originalPageBookmarksProvider(id));
+    // 横屏前左右两页可能各有历史书签；共用条带取消时一并移除这组可见书签。
+    final ids = <String>{
+      mark.id,
+      if (spread)
+        for (final m
+            in ref.read(bookmarksProvider(id)).value ?? const <Bookmark>[])
+          if (session.isOriginal
+              ? original?.ids.contains(m.id) == true
+              : spreadContains(visible, m.locator))
+            m.id,
+    };
+    for (final bookmarkId in ids) {
+      await repository.removeBookmark(bookmarkId);
+    }
   } else {
-    final exact = session.isOriginal && !session.scrolling
+    final exact =
+        session.book.format.usesOriginalWebView &&
+            session.isOriginal &&
+            !session.scrolling
         ? await ref
               .read(originalLayoutProvider(id))
               .value
@@ -98,7 +145,10 @@ Future<void> toggleReaderBookmark(WidgetRef ref, String id) async {
       locator: locator,
       quote: session.currentPageExcerpt,
     );
-    traceBookmark('saved', {'id': bookmarkId, 'locator': bookmarkTraceLocator(locator)});
+    traceBookmark('saved', {
+      'id': bookmarkId,
+      'locator': bookmarkTraceLocator(locator),
+    });
   }
 }
 
@@ -111,18 +161,48 @@ class ReaderBookmarkLayer extends ConsumerStatefulWidget {
     required this.allowPull,
     required this.topInset,
     required this.paper,
+    this.edgeToEdge = false,
   });
   final String bookId;
   final Widget child;
   final bool allowPull;
   final double topInset;
   final Color paper;
+  final bool edgeToEdge;
   @override
   ConsumerState<ReaderBookmarkLayer> createState() => _BookmarkLayerState();
 }
 
 class _BookmarkLayerState extends ConsumerState<ReaderBookmarkLayer>
     with SingleTickerProviderStateMixin {
+  late final _pdfView = ref.read(pdfViewportProvider(widget.bookId));
+  // 条带在 SafeArea 外，横屏时必须补上画布右侧的导航栏/挖孔留白。
+  // 系统栏隐藏后使用新 inset，不能保留原来的侧边距离。
+  double get _ribbonRight =>
+      bookmarkRibbonRight +
+      (widget.edgeToEdge ? 0 : MediaQuery.paddingOf(context).right) +
+      ((ref
+                  .watch(readerSettingsProvider(widget.bookId))
+                  .value
+                  ?.settings
+                  .bookEdges ??
+              false)
+          ? bookEdgeWidth
+          : 0);
+  bool get _canPull =>
+      !ref.read(pdfModeProvider(widget.bookId)) || _pdfView.canTurn;
+
+  @override
+  void initState() {
+    super.initState();
+    _pdfView.addListener(_viewChanged);
+  }
+
+  void _viewChanged() {
+    if (!_canPull && _dragging) _finish(cancelled: true);
+    if (mounted) setState(() {});
+  }
+
   late final _return = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 180),
@@ -139,7 +219,7 @@ class _BookmarkLayerState extends ConsumerState<ReaderBookmarkLayer>
       : _releaseOffset * (1 - Curves.easeOutCubic.transform(_return.value));
 
   void _start() {
-    if (_saving || _awaitingRibbon) return;
+    if (_saving || _awaitingRibbon || !_canPull) return;
     _return.stop();
     setState(() {
       _distance = 0;
@@ -151,7 +231,7 @@ class _BookmarkLayerState extends ConsumerState<ReaderBookmarkLayer>
 
   Future<void> _finish({bool cancelled = false}) async {
     if (!_dragging) return;
-    final pulled = !cancelled && _distance >= 64;
+    final pulled = !cancelled && _canPull && _distance >= 64;
     _releaseOffset = _offset;
     setState(() {
       _dragging = false;
@@ -173,7 +253,8 @@ class _BookmarkLayerState extends ConsumerState<ReaderBookmarkLayer>
     _saving = true;
     try {
       await toggleReaderBookmark(ref, widget.bookId);
-    } catch (_) {
+    } catch (appError, appStack) {
+      AppErrors.report(appError, appStack, operation: '书签未保存');
       if (mounted) {
         _awaitingRibbon = false;
         ref.read(readerProvider.notifier).showNotice('书签未保存，请重试');
@@ -185,12 +266,14 @@ class _BookmarkLayerState extends ConsumerState<ReaderBookmarkLayer>
 
   @override
   void dispose() {
+    _pdfView.removeListener(_viewChanged);
     _return.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    ref.watch(pdfViewportProvider(widget.bookId));
     final marked = ref.watch(currentBookmarkProvider(widget.bookId)) != null;
     final session = ref.watch(readerSessionProvider(widget.bookId)).value;
     final scrolling = session?.scrolling == true;
@@ -200,7 +283,12 @@ class _BookmarkLayerState extends ConsumerState<ReaderBookmarkLayer>
         (anchor?.chapterId, anchor?.blockId, anchor?.utf16Offset);
     final pending = _awaitingRibbon && samePage;
     final original = ref.watch(originalPageBookmarksProvider(widget.bookId));
-    final painted = session?.isOriginal == true && !scrolling
+    // 只有网页原书需要等待DOM回报；PDF书签直接画在原页画布上。
+    // 否则PDF会一直等待不存在的DOM信号，过渡条带也无法结束。
+    final painted =
+        session?.book.format.usesOriginalWebView == true &&
+            session?.isOriginal == true &&
+            !scrolling
         ? original?.chapter == anchor?.chapterId &&
               original?.ids.isNotEmpty == true
         : marked;
@@ -216,7 +304,7 @@ class _BookmarkLayerState extends ConsumerState<ReaderBookmarkLayer>
     return RawGestureDetector(
       behavior: HitTestBehavior.translucent,
       gestures: {
-        if (widget.allowPull)
+        if (widget.allowPull && _canPull)
           ReaderPullDownRecognizer:
               GestureRecognizerFactoryWithHandlers<ReaderPullDownRecognizer>(
                 () => ReaderPullDownRecognizer(debugOwner: this),
@@ -246,7 +334,7 @@ class _BookmarkLayerState extends ConsumerState<ReaderBookmarkLayer>
             if (pulling)
               Positioned(
                 top: widget.topInset + 14,
-                right: bookmarkRibbonRight + bookmarkRibbonSize.width + 12,
+                right: _ribbonRight + bookmarkRibbonSize.width + 12,
                 child: Opacity(
                   opacity: _dragging
                       ? 1
@@ -286,7 +374,7 @@ class _BookmarkLayerState extends ConsumerState<ReaderBookmarkLayer>
                     if (pulling || pending)
                       Positioned(
                         top: widget.topInset,
-                        right: bookmarkRibbonRight - 3,
+                        right: _ribbonRight - 3,
                         width: 22,
                         height: 31,
                         child: ColoredBox(color: paper),
@@ -294,7 +382,7 @@ class _BookmarkLayerState extends ConsumerState<ReaderBookmarkLayer>
                     if (scrolling && marked && !pulling)
                       Positioned(
                         top: widget.topInset,
-                        right: bookmarkRibbonRight,
+                        right: _ribbonRight,
                         child: IgnorePointer(
                           child: CustomPaint(
                             size: Size(
@@ -313,7 +401,7 @@ class _BookmarkLayerState extends ConsumerState<ReaderBookmarkLayer>
               Positioned(
                 // 上沿固定在阅读画布边界；显示状态栏时从安全区下沿开始，全屏时自然是屏幕边缘。
                 top: widget.topInset,
-                right: bookmarkRibbonRight,
+                right: _ribbonRight,
                 child: IgnorePointer(
                   child: Opacity(
                     opacity:

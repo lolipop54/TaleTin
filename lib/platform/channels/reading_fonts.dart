@@ -1,4 +1,7 @@
 import 'dart:io';
+import 'dart:isolate';
+
+import 'package:crypto/crypto.dart';
 
 import 'package:flutter/services.dart';
 
@@ -12,6 +15,53 @@ abstract final class ReadingFonts {
   static final _names = <String, String?>{...PresetFonts.names};
   static Future<Map<String, String?>>? _pending;
   static Future<String?>? _system;
+  static final _layoutDigests = <String, Future<String?>>{};
+  static final _fileDigests = <String, String>{};
+  static Future<String?>? _environmentDigest;
+
+  /// 排版磁盘缓存只认实际已注册的字体文件；未知回退不产生可信摘要。
+  static Future<String?> layoutFingerprint(String? family) async {
+    final id = resolve(family);
+    if (id == null) return null;
+    return _layoutDigests[id] ??= () async {
+      try {
+        final primary = _fileDigests[id] ?? await _presetDigest(id);
+        if (primary == null) return null;
+        final system = await loadSystem();
+        final fallback = system == id ? primary : _fileDigests[system];
+        if (fallback == null) return null;
+        final environment = await (_environmentDigest ??=
+            const MethodChannel('gtreader/reading_fonts').invokeMethod<String>('environmentDigest'));
+        if (environment == null) return null;
+        final bold = PresetFonts.families[id]?.bold;
+        if (bold == null) return '$primary:$fallback:$environment';
+        final extra = await _assetDigest('${PresetFonts.root}$bold');
+        return extra == null ? null : '$primary:$fallback:$extra:$environment';
+      } on Object {
+        return null;
+      }
+    }();
+  }
+
+  static Future<String?> _presetDigest(String id) {
+    final preset = PresetFonts.families[id];
+    return preset == null
+        ? Future.value(null)
+        : _assetDigest('${PresetFonts.root}${preset.file}');
+  }
+
+  /// Android 复用平台 SHA 实现，避免在开书前把整套字体搬进 Dart 再重复计算。
+  static Future<String?> _assetDigest(String asset) async {
+    try {
+      return await const MethodChannel('gtreader/reading_fonts')
+          .invokeMethod<String>('assetDigest', {'asset': asset});
+    } on MissingPluginException {
+      final data = await rootBundle.load(asset);
+      return Isolate.run(
+        () => sha256.convert(data.buffer.asUint8List()).toString(),
+      );
+    }
+  }
 
   /// 首页只准备当前系统字体，完整目录仍在字体页打开前准备。
   static Future<String?> loadSystem() =>
@@ -60,6 +110,8 @@ abstract final class ReadingFonts {
     }
     _pending = null;
     _system = null;
+    _layoutDigests.clear();
+    _environmentDigest = null;
     await loadSystem();
   }
 
@@ -84,6 +136,7 @@ abstract final class ReadingFonts {
       final names = <String, String?>{};
       final loading = <Future<void>>[];
       final paths = <String, String>{};
+      final digests = <String, String>{};
       final aliases = <String, String>{};
       for (final entry in entries) {
         final id = entry['id'] as String;
@@ -99,6 +152,7 @@ abstract final class ReadingFonts {
           loading.add(loader.load());
         }
         paths[id] = path;
+        if (entry['digest'] case final String digest) digests[id] = digest;
         names[id] = entry['name'] as String;
         for (final alias in entry['aliases'] as List) {
           aliases[alias as String] = id;
@@ -108,6 +162,7 @@ abstract final class ReadingFonts {
       await Future.wait(loading);
       trace?.mark('font_bytes_and_registration');
       _paths.addAll(paths);
+      _fileDigests.addAll(digests);
       _aliases.addAll(aliases);
       _names.addAll(names);
       return names;

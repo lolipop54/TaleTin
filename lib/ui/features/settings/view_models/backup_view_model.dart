@@ -1,3 +1,4 @@
+import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'dart:async';
 import 'dart:io';
 
@@ -27,12 +28,14 @@ class BackupViewState {
     this.done = 0,
     this.total = 0,
     this.snapshot,
+    this.failed = false,
   });
   final bool busy;
   final bool canCancel;
   final String message;
   final int done, total;
   final BackupSnapshot? snapshot;
+  final bool failed;
 }
 
 final backupViewProvider =
@@ -86,10 +89,13 @@ class BackupViewModel extends Notifier<BackupViewState> {
     );
     try {
       await action(_operation!);
-    } catch (error) {
-      state = BackupViewState(snapshot: state.snapshot, message: '$error');
+    } catch (error, appStack) {
+      AppErrors.report(error, appStack, operation: '备份操作失败');
+      state = BackupViewState(snapshot: state.snapshot, message: '$error',
+        failed: !isExpectedAppCancellation(error));
     } finally {
-      state = BackupViewState(snapshot: state.snapshot, message: state.message);
+      state = BackupViewState(snapshot: state.snapshot, message: state.message,
+        failed: state.failed);
       _operation = null;
     }
   }

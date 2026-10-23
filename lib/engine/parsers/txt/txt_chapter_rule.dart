@@ -36,12 +36,8 @@ class TxtChapterRule {
   /// 这里直接拒绝，配合「只测短行」共同限制执行时间。
   static const int maxPatternLength = 200;
 
-  static final RegExp _volume = RegExp(
-    r'^第\s*[0-9〇零一二三四五六七八九十百千万两]+\s*[卷部篇册]',
-  );
-  static final RegExp _chapter = RegExp(
-    r'^第\s*[0-9〇零一二三四五六七八九十百千万两]+\s*[章节回]',
-  );
+  static final RegExp _volume = RegExp(r'^第\s*[0-9〇零一二三四五六七八九十百千万两]+\s*[卷部篇册]');
+  static final RegExp _chapter = RegExp(r'^第\s*[0-9〇零一二三四五六七八九十百千万两]+\s*[章节回]');
   static final RegExp _english = RegExp(r'^(Chapter|CHAPTER)\s+[0-9IVXLC]+');
 
   /// 句号、分号仍作为正文线索；问号、叹号、省略号常见于独立章题。
@@ -54,12 +50,21 @@ class TxtChapterRule {
   /// 2. 内置规则额外排除带句子标点的行，例如「第二章的内容如下。」
   ///    ——这行虽然以「第二章」开头，但明显是正文。
   TxtHeading? matchLine(String rawLine, int lineIndex) {
+    if (rawLine.isEmpty || hasIndent(rawLine)) return null;
+    final pattern = customPattern;
+    // 内置章题只能以“第”或C开头；明显的正文无需再次规范化整行。
+    // normalizeInline可能移除的其余前导空白仍走旧判断，自定义规则也不筛。
+    if (pattern == null) {
+      final possible = switch (rawLine.codeUnitAt(0)) {
+        0x7b2c || 0x43 || 0x0a || 0x0d || 0x0c || 0x0b || 0x85 || 0xa0 => true,
+        _ => false,
+      };
+      if (!possible) return null;
+    }
     if (isBlankLine(rawLine)) return null;
-    if (hasIndent(rawLine)) return null;
     final title = normalizeInline(rawLine);
     if (title.isEmpty || title.length > maxHeadingLength) return null;
 
-    final pattern = customPattern;
     if (pattern != null) {
       if (pattern.length > maxPatternLength) return null;
       final regExp = _compiled[pattern];

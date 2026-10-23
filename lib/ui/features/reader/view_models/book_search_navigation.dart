@@ -1,3 +1,4 @@
+import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../app/di/app_providers.dart';
@@ -58,7 +59,7 @@ class BookSearchNavigation extends Notifier<SearchNavigationState> {
     final transition = ref.read(readerProgressReturnProvider(bookId).notifier);
     await transition.prepareJumpCover?.call();
     final session = ref.read(readerSessionProvider(bookId)).value;
-    final hold = session?.isOriginal == true && session?.scrolling == false
+    final hold = ref.read(readerSessionProvider(bookId).notifier).usesOriginalWebView && session?.scrolling == false
         ? ref.read(originalLayoutProvider(bookId)).value?.holdPageDuringJump
         : null;
     if (hold != null) {
@@ -146,7 +147,8 @@ class BookSearchNavigation extends Notifier<SearchNavigationState> {
           );
         }
       });
-    } catch (error) {
+    } catch (error, appStack) {
+      AppErrors.report(error, appStack, operation: '定位搜索结果失败');
       if (!ref.mounted) return;
       state = old;
       ref.read(readerProvider.notifier).showNotice('无法定位搜索结果：$error');
@@ -170,7 +172,8 @@ class BookSearchNavigation extends Notifier<SearchNavigationState> {
             );
         if (ref.mounted) state = const SearchNavigationState();
       });
-    } catch (error) {
+    } catch (error, appStack) {
+      AppErrors.report(error, appStack, operation: '返回搜索位置失败');
       if (!ref.mounted) return;
       state = old;
       ref.read(readerProvider.notifier).showNotice('无法返回搜索前位置：$error');

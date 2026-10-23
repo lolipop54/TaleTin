@@ -17,6 +17,8 @@ import '../../domain/models/bookmark.dart';
 import '../../domain/models/locator.dart';
 import '../../domain/repositories/annotation_repository.dart';
 import '../database/app_database.dart';
+import '../mappers/annotation_mapper.dart';
+import '../services/annotation_compute.dart';
 
 class DriftAnnotationRepository implements AnnotationRepository {
   DriftAnnotationRepository(this._db);
@@ -25,9 +27,10 @@ class DriftAnnotationRepository implements AnnotationRepository {
 
   /// 更新来源时一次读取快照，不建立界面订阅；包含书签。
   Future<List<Annotation>> loadForRelocation(String bookId) async {
-    final rows = await (_db.select(_db.annotations)
-      ..where((t) => t.bookId.equals(bookId))).get();
-    return rows.map(_toAnnotation).toList();
+    final rows = await (_db.select(
+      _db.annotations,
+    )..where((t) => t.bookId.equals(bookId))).get();
+    return decodeAnnotations(rows);
   }
 
   /// kind 取值：书签 / 高亮 / 笔记（与 `AnnotationKind.code` 一致）
@@ -44,16 +47,17 @@ class DriftAnnotationRepository implements AnnotationRepository {
   Stream<AnnotationPage> watchAnnotationPage(AnnotationQuery filter) {
     final a = _db.annotations;
     final b = _db.books;
-    final query = _db.select(a).join([
-      innerJoin(b, b.id.equalsExp(a.bookId)),
-    ])..where(a.kind.isIn(_textKinds));
+    final query = _db.select(a).join([innerJoin(b, b.id.equalsExp(a.bookId))])
+      ..where(a.kind.isIn(_textKinds));
     if (filter.bookId != null) query.where(a.bookId.equals(filter.bookId!));
     final keyword = filter.keyword.trim().toLowerCase();
     if (keyword.isNotEmpty) {
       // instr 匹配原字符，用户输入的 %/_ 不会变成 SQL 通配符。
       Expression<bool> contains(Expression<String> text) =>
-        FunctionCallExpression<int>('instr', [text.lower(), Variable(keyword)])
-          .isBiggerThanValue(0);
+          FunctionCallExpression<int>('instr', [
+            text.lower(),
+            Variable(keyword),
+          ]).isBiggerThanValue(0);
       query.where(contains(a.quote) | contains(a.body));
     }
     if (filter.from != null) {
@@ -62,17 +66,25 @@ class DriftAnnotationRepository implements AnnotationRepository {
     if (filter.until != null) {
       query.where(a.createdAt.isSmallerThanValue(filter.until!));
     }
-    query.orderBy([OrderingTerm.desc(a.updatedAt),
-      OrderingTerm.desc(a.createdAt), OrderingTerm.asc(a.id)]);
+    query.orderBy([
+      OrderingTerm.desc(a.updatedAt),
+      OrderingTerm.desc(a.createdAt),
+      OrderingTerm.asc(a.id),
+    ]);
     query.limit(filter.limit + 1);
-    return query.watch().map((rows) => AnnotationPage([
-      for (final row in rows.take(filter.limit))
-        BookAnnotation(_noteBook(row.readTable(b)), _toAnnotation(row.readTable(a))),
-    ], rows.length > filter.limit));
+    return query.watch().map(
+      (rows) => AnnotationPage([
+        for (final row in rows.take(filter.limit))
+          BookAnnotation(
+            _noteBook(row.readTable(b)),
+            annotationFromRow(row.readTable(a)),
+          ),
+      ], rows.length > filter.limit),
+    );
   }
 
-  AnnotatedBook _noteBook(BookRow row) => AnnotatedBook(
-    row.id, row.title, BookStatus.fromCode(row.status));
+  AnnotatedBook _noteBook(BookRow row) =>
+      AnnotatedBook(row.id, row.title, BookStatus.fromCode(row.status));
 
   @override
   Stream<List<AnnotatedBook>> watchAnnotatedBooks() {
@@ -83,16 +95,24 @@ class DriftAnnotationRepository implements AnnotationRepository {
       ..join([innerJoin(a, a.bookId.equalsExp(b.id))])
       ..where(a.kind.isIn(_textKinds))
       ..orderBy([OrderingTerm.asc(b.title), OrderingTerm.asc(b.id)]);
-    return query.watch().map((rows) => [for (final row in rows)
-      AnnotatedBook(row.read(b.id)!, row.read(b.title)!,
-        BookStatus.fromCode(row.read(b.status)!))]);
+    return query.watch().map(
+      (rows) => [
+        for (final row in rows)
+          AnnotatedBook(
+            row.read(b.id)!,
+            row.read(b.title)!,
+            BookStatus.fromCode(row.read(b.status)!),
+          ),
+      ],
+    );
   }
 
   @override
   Stream<int> watchAnnotationCount() {
     final a = _db.annotations;
     final count = a.id.count();
-    final query = _db.selectOnly(a)..addColumns([count])
+    final query = _db.selectOnly(a)
+      ..addColumns([count])
       ..where(a.kind.isIn(_textKinds));
     return query.watchSingle().map((row) => row.read(count) ?? 0);
   }
@@ -102,9 +122,7 @@ class DriftAnnotationRepository implements AnnotationRepository {
     final query = _db.select(_db.annotations)
       ..where((t) => t.bookId.equals(bookId) & t.kind.equals(bookmarkKind))
       ..orderBy([(t) => OrderingTerm.desc(t.createdAt)]);
-    return query.watch().map(
-          (rows) => [for (final row in rows) _toBookmark(row)],
-        );
+    return query.watch().asyncMap(decodeBookmarks);
   }
 
   @override
@@ -112,22 +130,19 @@ class DriftAnnotationRepository implements AnnotationRepository {
     required Locator locator,
     required String quote,
   }) async {
-    final rows = await (_db.select(_db.annotations)
-          ..where((t) =>
-              t.bookId.equals(locator.bookId) & t.kind.equals(bookmarkKind)))
-        .get();
-    for (final row in rows) {
-      final existing = _toBookmark(row);
-      // 同一页首再加一次不重复建：返回已有书签
-      if (!existing.locator.needsRelocation && existing.locator.chapterId == locator.chapterId &&
-          existing.locator.blockId == locator.blockId &&
-          existing.locator.utf16Offset == locator.utf16Offset) {
-        return existing.id;
-      }
-    }
+    final rows =
+        await (_db.select(_db.annotations)..where(
+              (t) =>
+                  t.bookId.equals(locator.bookId) & t.kind.equals(bookmarkKind),
+            ))
+            .get();
+    final existing = await findBookmarkInRows(rows, locator);
+    if (existing != null) return existing;
 
     final id = _uuid.v4();
-    await _db.into(_db.annotations).insert(
+    await _db
+        .into(_db.annotations)
+        .insert(
           AnnotationsCompanion.insert(
             id: id,
             bookId: locator.bookId,
@@ -155,22 +170,15 @@ class DriftAnnotationRepository implements AnnotationRepository {
         (t) => OrderingTerm.desc(t.updatedAt),
         (t) => OrderingTerm.desc(t.createdAt),
       ]);
-    return query.watch().map(
-          (rows) => [for (final row in rows) _toAnnotation(row)],
-        );
+    return query.watch().asyncMap(decodeAnnotations);
   }
 
   @override
   Future<Annotation?> findByRange(String bookId, SelectionRange range) async {
-    final rows = await (_db.select(_db.annotations)
-          ..where((t) => t.bookId.equals(bookId) & t.kind.isIn(_textKinds)))
-        .get();
-    for (final row in rows) {
-      final annotation = _toAnnotation(row);
-      if (!annotation.start.needsRelocation && annotation.end?.needsRelocation != true &&
-          sameSelectionRange(annotation.range, range)) { return annotation; }
-    }
-    return null;
+    final rows = await (_db.select(
+      _db.annotations,
+    )..where((t) => t.bookId.equals(bookId) & t.kind.isIn(_textKinds))).get();
+    return findAnnotationInRows(rows, range);
   }
 
   @override
@@ -207,20 +215,20 @@ class DriftAnnotationRepository implements AnnotationRepository {
     );
 
     if (targetId == null) {
-      await _db.into(_db.annotations).insert(
-            values.copyWith(createdAt: Value(now)),
-          );
+      await _db
+          .into(_db.annotations)
+          .insert(values.copyWith(createdAt: Value(now)));
       return rowId;
     }
     // 改已有那条：写不进任何一行时说明记录已被删掉，按新建补回，
     // 避免用户刚写的想法随一条并发删除一起丢掉
-    final updated = await (_db.update(_db.annotations)
-          ..where((t) => t.id.equals(targetId)))
-        .write(values);
+    final updated = await (_db.update(
+      _db.annotations,
+    )..where((t) => t.id.equals(targetId))).write(values);
     if (updated == 0) {
-      await _db.into(_db.annotations).insert(
-            values.copyWith(createdAt: Value(now)),
-          );
+      await _db
+          .into(_db.annotations)
+          .insert(values.copyWith(createdAt: Value(now)));
     }
     return rowId;
   }
@@ -228,48 +236,5 @@ class DriftAnnotationRepository implements AnnotationRepository {
   @override
   Future<void> deleteAnnotation(String id) async {
     await (_db.delete(_db.annotations)..where((t) => t.id.equals(id))).go();
-  }
-
-  Bookmark _toBookmark(AnnotationRow row) => Bookmark(
-        id: row.id,
-        locator: _decodeLocator(row.startLocatorJson),
-        quote: row.quote,
-        createdAt: row.createdAt,
-      );
-
-  /// 数据库行 → 领域模型。位置 JSON 坏掉时给空位置：列表里仍看得到摘录，
-  /// 点它不会有反应，不会因为一条坏数据让整个笔记页打不开。
-  Annotation _toAnnotation(AnnotationRow row) => Annotation(
-        id: row.id,
-        bookId: row.bookId,
-        kind: AnnotationKind.fromCode(row.kind),
-        start: _decodeLocator(row.startLocatorJson),
-        end: row.endLocatorJson == null
-            ? null
-            : _decodeLocator(row.endLocatorJson!),
-        quote: row.quote,
-        body: row.body,
-        color: AnnotationColor.fromCode(row.colorToken),
-        chapterTitle: row.chapterTitle,
-        createdAt: row.createdAt,
-        // v3 老行没有修改时间，按创建时间算（模型自己兜底）
-        updatedAt: row.updatedAt,
-      );
-
-  /// 位置 JSON 坏掉时给一个空位置：列表里仍能看到书签，点它不会有反应
-  Locator _decodeLocator(String json) {
-    try {
-      final decoded = jsonDecode(json);
-      if (decoded is Map<String, Object?>) return Locator.fromJson(decoded);
-    } on FormatException {
-      // 落到下面的兜底
-    }
-    return const Locator(
-      bookId: '',
-      contentVersion: 1,
-      chapterId: '',
-      blockId: '',
-      utf16Offset: 0,
-    );
   }
 }

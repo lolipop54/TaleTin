@@ -171,6 +171,7 @@ class BackupImportService {
         databaseVersion: AppDatabase.currentSchemaVersion,
         createdAt: manifest.createdAt,
         bookCount: manifest.bookCount,
+        storageVersion: manifest.storageVersion,
         files: [
           for (final entry in manifest.files)
             entry.path == databaseEntry.path ? databaseEntry : entry,

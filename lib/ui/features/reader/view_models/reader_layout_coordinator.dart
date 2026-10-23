@@ -2,6 +2,40 @@ part of 'reader_session_view_model.dart';
 
 /// 集中章节排版、相邻章预取和过期结果丢弃，状态仍由主 Notifier 提交。
 mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
+  StreamSubscription<ChapterLayout>? _layoutUpdates;
+  ChapterLayout? _observedLayout;
+
+  void _watchLayout(ChapterLayout layout) {
+    _observedLayout?.task?.pauseBackground();
+    _observedLayout = layout;
+    unawaited(_layoutUpdates?.cancel());
+    _layoutUpdates = layout.updates.listen((updated) {
+      final latest = state.value;
+      if (!ref.mounted || latest?.layout?.identity != updated.identity) return;
+      // 后文只能补索引；不选择目标、不回报落点、不保存当前位置。
+      state = AsyncData(latest!.copyWith(layout: updated));
+    });
+  }
+
+  Future<void> _ensureForwardPage() async {
+    final before = state.value;
+    final layout = before?.layout;
+    if (before == null ||
+        layout == null ||
+        layout.isComplete ||
+        before.pageIndex + 1 < layout.pageCount) {
+      return;
+    }
+    final prepared = await layout.ensurePage(before.pageIndex + 1);
+    final latest = state.value;
+    if (!ref.mounted ||
+        latest?.layout?.identity != layout.identity ||
+        latest?.pageIndex != before.pageIndex) {
+      return;
+    }
+    state = AsyncData(latest!.copyWith(layout: prepared));
+  }
+
   String get bookId;
   LayoutOptions? get _options;
   set _options(LayoutOptions? value);
@@ -21,6 +55,7 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
 
   ReadingPosition? _restoredPosition(Locator anchor);
   Future<void> persist();
+  void cancelProgressNavigation();
   Locator? get displayTarget;
   void reportDisplayArrival(Locator anchor);
 
@@ -42,6 +77,10 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
   }) async {
     final session = state.value;
     if (session == null) return;
+    if (_options != null &&
+        _options!.layoutSignature != options.layoutSignature) {
+      cancelProgressNavigation();
+    }
     final unchanged =
         session.isReady &&
         session.viewportSignature == options.layoutSignature &&
@@ -56,7 +95,11 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
       chapterIndex: session.chapterIndex,
       options: options,
       // 首次排版时用上次退出时的位置落页（设计文档 7.1）
-      anchor: displayTarget ?? restored?.locator ?? session.currentAnchor ?? _pendingAnchor,
+      anchor:
+          displayTarget ??
+          restored?.locator ??
+          session.currentAnchor ??
+          _pendingAnchor,
       prefetch: prefetch,
     );
   }
@@ -68,6 +111,7 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
     if (session.pageIndex + 1 < session.pageCount) {
       return (layout: session.layout!, pageIndex: session.pageIndex + 1);
     }
+    if (!session.layout!.isComplete) return null;
     final next = _nextChapterLayout;
     if (next != null && next.pageCount > 0) {
       return (layout: next, pageIndex: 0);
@@ -97,9 +141,27 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
     bool forward,
   ) async {
     final cached = forward ? peekNext() : peekPrevious();
-    if (cached != null) return cached;
     final session = state.value, options = _options;
     if (session == null || options == null) return null;
+    if (cached != null) {
+      if (session.book.format == BookFormat.pdf) {
+        // 排版还在内存中，不代表可重建的扫描图片仍在磁盘缓存中。
+        // 翻页解码前补齐并保护图片，保留动画已使用的同一份排版。
+        final chapter = session.chapters.firstWhere(
+          (c) => c.id == cached.layout.chapterId,
+        );
+        await ref
+            .read(chapterContentRepositoryProvider)
+            .chapter(bookId, chapter);
+      }
+      return cached;
+    }
+    if (forward && !session.layout!.isComplete) {
+      final layout = await session.layout!.ensurePage(session.pageIndex + 1);
+      if (session.pageIndex + 1 < layout.pageCount) {
+        return (layout: layout, pageIndex: session.pageIndex + 1);
+      }
+    }
     final index = session.chapterIndex + (forward ? 1 : -1);
     if (index < 0 || index >= session.chapters.length) return null;
     final chapter = session.chapters[index];
@@ -108,7 +170,7 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
         .chapter(bookId, chapter);
     final layout = await ref
         .read(readerEngineProvider)
-        .layoutChapter(
+        .layoutWindow(
           LayoutRequest(
             bookId: bookId,
             contentVersion: session.book.contentVersion,
@@ -116,7 +178,18 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
             content: content,
             options: options,
           ),
+          atEnd: !forward,
         );
+    if (ref.mounted &&
+        state.value?.chapterIndex == session.chapterIndex &&
+        _options?.layoutSignature == options.layoutSignature) {
+      // 动画和落页共用这一份页片段，不能在提交时重新生成另一份排版。
+      if (forward) {
+        _nextChapterLayout = layout;
+      } else {
+        _previousChapterLayout = layout;
+      }
+    }
     return (layout: layout, pageIndex: forward ? 0 : layout.pageCount - 1);
   }
 
@@ -137,6 +210,7 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
     bool atChapterEnd = false,
     int? chapterOffset,
     bool prefetch = true,
+    ChapterLayout? preparedLayout,
   }) async {
     final session = state.value;
     if (session == null || options == null) return false;
@@ -145,6 +219,7 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
     final engine = ref.read(readerEngineProvider);
 
     // 旧排版作废：切章或改参数后回来的结果不再上屏
+    _observedLayout?.task?.pauseBackground();
     final token = LayoutToken(++_tokenVersion);
     _token?.cancel();
     _token = token;
@@ -156,41 +231,107 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
 
     final ChapterContent content;
     try {
-      content = chapterIndex == session.chapterIndex && session.content != null
+      // PDF原页只需定位数据；电子书排版前仍须经过仓库准备真实图片。
+      content =
+          session.book.format != BookFormat.pdf &&
+              chapterIndex == session.chapterIndex &&
+              session.content != null
           ? session.content!
           : await contents.chapter(bookId, chapter);
-    } on Object catch (error) {
+    } on Object catch (error, stack) {
       if (!token.isCancelled) {
-        state = AsyncError(error, StackTrace.current);
+        state = AsyncError(error, stack);
       }
       return false;
     }
     if (token.isCancelled) return false;
 
     final ChapterLayout layout;
+    final target =
+        anchor ??
+        (chapterOffset == null || !ReaderDeliveryExperiments.contentTarget
+            ? null
+            : locatorForFraction(
+                content: content,
+                bookId: bookId,
+                contentVersion: session.book.contentVersion,
+                chapterId: chapter.id,
+                fraction: content.textLength == 0
+                    ? 0
+                    : chapterOffset / content.textLength,
+              ));
     try {
-      layout = await traceTurnStep('load simplified-layout', () => engine.layoutChapter(
-        LayoutRequest(
-          bookId: bookId,
-          contentVersion: session.book.contentVersion,
-          chapter: chapter,
-          content: content,
-          options: options,
-        ),
-        token: token,
-      ));
+      final request = LayoutRequest(
+        bookId: bookId,
+        contentVersion: session.book.contentVersion,
+        chapter: chapter,
+        content: content,
+        options: options,
+      );
+      layout =
+          preparedLayout ??
+          await traceTurnStep(
+            'load simplified-layout',
+            () =>
+                chapterOffset != null &&
+                    !ReaderDeliveryExperiments.contentTarget
+                ? engine.layoutChapter(request, token: token)
+                : engine.layoutWindow(
+                    request,
+                    target: target,
+                    atEnd: atChapterEnd,
+                    token: token,
+                  ),
+          );
     } on LayoutCancelled {
       return false;
     }
     if (token.isCancelled) return false;
 
-    final pageIndex = switch ((anchor, chapterOffset, atChapterEnd)) {
+    final pageIndex = switch ((target, chapterOffset, atChapterEnd)) {
       (final Locator target, _, _) => layout.pageIndexOf(target) ?? 0,
       (_, final int offset, _) => _pageForChapterOffset(layout, offset),
       // 空章节（没有正文，比如封面页）没有页，落回第 0 页而不是 -1
       (_, _, true) => layout.pageCount == 0 ? 0 : layout.pageCount - 1,
       _ => 0,
     };
+
+    try {
+      // PDF一页就是一个内部章。跳转先显示目标页，不等待两侧扫描页提图；
+      // 后面的预取仍准备相邻页，用户立刻翻页时也沿用等待目标就绪的流程。
+      if (ReaderDeliveryExperiments.incremental &&
+          prefetch &&
+          session.book.format != BookFormat.pdf) {
+        Future<ChapterLayout> neighbor(int index, bool atEnd) async {
+          final nextChapter = session.chapters[index];
+          final nextContent = await contents.chapter(bookId, nextChapter);
+          return engine.layoutWindow(
+            LayoutRequest(
+              bookId: bookId,
+              contentVersion: session.book.contentVersion,
+              chapter: nextChapter,
+              content: nextContent,
+              options: options,
+            ),
+            atEnd: atEnd,
+            token: token,
+          );
+        }
+
+        // 只把直接可翻到的跨章页列为首屏必需，普通中部目标不排无关前章。
+        if (pageIndex == 0 && chapterIndex > 0) {
+          _previousChapterLayout = await neighbor(chapterIndex - 1, true);
+        }
+        if (layout.isComplete &&
+            pageIndex + 1 >= layout.pageCount &&
+            chapterIndex + 1 < session.chapters.length) {
+          _nextChapterLayout = await neighbor(chapterIndex + 1, false);
+        }
+        if (token.isCancelled) return false;
+      }
+    } on LayoutCancelled {
+      return false;
+    }
 
     // 上次的位置用完了（第一次排版就落在它那一页）
     _pendingAnchor = null;
@@ -211,15 +352,20 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
         viewportSignature: options.layoutSignature,
         originalAnchor: keepOriginal ? session.originalAnchor : null,
         originalFraction: keepOriginal ? session.originalFraction : 0,
+        originalContentProgress:
+            keepOriginal && session.originalContentProgress,
       ),
     );
+    _watchLayout(layout);
     final arrival = state.value?.currentAnchor;
     if (arrival != null) reportDisplayArrival(arrival);
     // 打开书、换章、重排之后都记一次位置：退出应用再进来能接着读
     unawaited(persist());
     if (!prefetch) return true;
     _prefetchNext(chapterIndex, options);
-    _prefetchPrevious(chapterIndex, options);
+    if (!ReaderDeliveryExperiments.incremental || pageIndex == 0) {
+      _prefetchPrevious(chapterIndex, options);
+    }
     return true;
   }
 
@@ -243,6 +389,7 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
     }
     final chapter = session.chapters[nextIndex];
     final signature = options.layoutSignature;
+    final version = _tokenVersion;
     unawaited(() async {
       try {
         final content = await ref
@@ -250,7 +397,7 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
             .chapter(bookId, chapter);
         final layout = await ref
             .read(readerEngineProvider)
-            .layoutChapter(
+            .layoutWindow(
               LayoutRequest(
                 bookId: bookId,
                 contentVersion: session.book.contentVersion,
@@ -261,13 +408,16 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
             );
         // 参数或书变了就丢弃这份预取
         final latest = state.value;
-        if (latest == null ||
+        if (_tokenVersion != version ||
+            latest == null ||
             latest.viewportSignature != signature ||
             latest.chapterIndex != chapterIndex) {
           return;
         }
         _nextChapterLayout = layout;
-        traceTurn('prefetch next ready chapter=$nextIndex pages=${layout.pageCount}');
+        traceTurn(
+          'prefetch next ready chapter=$nextIndex pages=${layout.pageCount}',
+        );
         // 通知一次界面：下一章的首页可以参与翻页过渡了（prefetch 不在 state 里，
         // 但拖动过渡要用到它）
         final current = state.value;
@@ -297,7 +447,9 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
       return;
     }
     final chapter = session.chapters[previousIndex];
+    if (_previousChapterLayout?.chapterId == chapter.id) return;
     final signature = options.layoutSignature;
+    final version = _tokenVersion;
     unawaited(() async {
       try {
         final content = await ref
@@ -316,13 +468,18 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
             );
         // 参数或书变了就丢弃这份预取
         final latest = state.value;
-        if (latest == null ||
+        if (_tokenVersion != version ||
+            latest == null ||
             latest.viewportSignature != signature ||
             latest.chapterIndex != chapterIndex) {
           return;
         }
+        // 手势可能已经准备了上一页；迟到的预取不能把动画的页片段换掉。
+        if (_previousChapterLayout?.chapterId == chapter.id) return;
         _previousChapterLayout = layout;
-        traceTurn('prefetch previous ready chapter=$previousIndex pages=${layout.pageCount}');
+        traceTurn(
+          'prefetch previous ready chapter=$previousIndex pages=${layout.pageCount}',
+        );
         // 通知一次界面：上一章的最后一页可以参与翻页过渡了（prefetch 不在 state 里，
         // 但拖动过渡要用到它）
         final current = state.value;

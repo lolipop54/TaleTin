@@ -1,3 +1,4 @@
+import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'package:taletin/ui/core/widgets/gt_dialog_action.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -64,7 +65,8 @@ Future<void> confirmBookCompletion(
           .read(readerProvider.notifier)
           .showNotice(completed ? '已撤销完成记录' : '已记入已读书籍');
     }
-  } catch (_) {
+  } catch (appError, appStack) {
+    AppErrors.report(appError, appStack, operation: '完成阅读记录未保存');
     if (context.mounted) {
       ref.read(readerProvider.notifier).showNotice('完成记录未保存，请重试');
     }

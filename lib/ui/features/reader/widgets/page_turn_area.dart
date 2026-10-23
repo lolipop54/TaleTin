@@ -11,6 +11,7 @@ library;
 
 import 'dart:ui' show FramePhase, FrameTiming;
 import 'dart:async';
+import '../../../../core/diagnostics/reader_turn_diagnostics.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart' show kTouchSlop;
@@ -25,13 +26,29 @@ import 'turn_trace.dart';
 import 'turn_response_trace.dart';
 import 'reader_drag_detector.dart';
 import 'reader_turn_timing.dart';
+import 'original_scroll_frames.dart';
 
 part 'page_turn_input.dart';
+part 'page_turn_logging.dart';
 
 /// 翻页方向
 enum PageTurnDirection { forward, backward }
 
 class PageTurnArea extends StatefulWidget {
+  /// PDF第二指按下时撤销尚未提交的翻页，后续移动交给缩放。
+  static void cancelGesture(GlobalKey key) {
+    final state = key.currentState;
+    if (state is! _PageTurnAreaState || state._committing) return;
+    state._pointerCancelled = true;
+    state._ignorePointer = true;
+    state._clearFold();
+    state._controller.stop();
+    state._dragAccepted = false;
+    state._direction = null;
+    state._neighbour = null;
+    state._offset = state._dragged = 0;
+    state._motion.value++;
+  }
   static Future<void> turn(GlobalKey key, bool forward) async {
     final state = key.currentState;
     if (state is _PageTurnAreaState && !state._controller.isAnimating && !state._committing && !state._finishingInput) {
@@ -57,10 +74,16 @@ class PageTurnArea extends StatefulWidget {
     this.onSettling,
     this.traceLabel = 'simplified',
     this.inputRevision,
+    this.inputAllowed,
+    this.spread = false,
+    this.slideImages = false,
   });
 
   /// 诊断日志里区分两套排版（简化 / 原书），只用于 GT_PROFILE_CAPTURE 采样。
   final String traceLabel;
+  final bool spread;
+  /// 原书平移使用整页截图；简化排版和PDF继续各自原有的页面交接。
+  final bool slideImages;
 
   /// 当前页
   final Widget currentPage;
@@ -70,6 +93,7 @@ class PageTurnArea extends StatefulWidget {
   final FutureOr<void> Function()? onGestureFinished;
   /// 外部跳转或排版变化使未处理手势失效，正常翻页不改变此值。
   final Object? inputRevision;
+  final bool Function()? inputAllowed;
   final Future<Widget?> Function(PageTurnDirection)? resolvePage;
   final VoidCallback? onInteractionStart;
   final void Function(PageTurnDirection)? onSettling;
@@ -91,7 +115,7 @@ class PageTurnArea extends StatefulWidget {
 }
 
 class _PageTurnAreaState extends State<PageTurnArea>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   /// 无动画翻页的距离阈值：页宽的 1/4。
   static const double _commitFraction = 0.25;
 
@@ -107,6 +131,14 @@ class _PageTurnAreaState extends State<PageTurnArea>
   double _offset = 0;
   // 拖动只更新动画子树，不让外层尺寸布局和手势识别器逐帧重建。
   final _motion = ValueNotifier<int>(0);
+  // 原书截图（含横屏双页）拖动需要连续帧时钟，仿真也不能漏掉。
+  // 避免触点恰好落在vsync后时再空等一帧；松手后由原动画接管。
+  // 只调度帧；位移仍完全来自原有触点，绘制与动画规则不变。
+  late final _dragFrames = OriginalScrollFrames(this);
+  late final AppLifecycleListener _dragLifecycle;
+  bool get _needsDragFrames => widget.slideImages &&
+      (widget.effect == PageTurnEffect.curl ||
+          widget.effect == PageTurnEffect.slide || widget.effect == PageTurnEffect.cover);
 
   /// 本次手势累计的横向位移（不做 clamp）；相邻页没排好时用它判定是否翻页
   double _dragged = 0;
@@ -141,6 +173,7 @@ class _PageTurnAreaState extends State<PageTurnArea>
 
   int? _pointer;
   final _responseTrace = TurnResponseTrace();
+  ReaderTurnTrace? _turnLog;
 
   // 包括图片/链接判断和落页确认在内，一轮操作结束前不接受新操作。
   // 忙碌期间的新输入整轮忽略，不排队、不补翻。
@@ -151,6 +184,9 @@ class _PageTurnAreaState extends State<PageTurnArea>
     }
     _finishingInput = true;
     final responsePointer = _responseTrace.active;
+    final turnLog = _turnLog;
+    turnLog?.operationActive = true;
+    turnLog?.event('input.action.begin');
     try {
       await traceTurnStep('input action pointer=$responsePointer', action);
       if (mounted) {
@@ -160,6 +196,8 @@ class _PageTurnAreaState extends State<PageTurnArea>
     } finally {
       _responseTrace.finish(responsePointer);
       _finishingInput = false;
+      turnLog?.operationActive = false;
+      turnLog?.finish('inputReleased');
       traceTurn('input released $_traceInput');
     }
   }
@@ -167,6 +205,10 @@ class _PageTurnAreaState extends State<PageTurnArea>
   @override
   void initState() {
     super.initState();
+    final lifecycle = WidgetsBinding.instance.lifecycleState;
+    _dragFrames.setForeground(lifecycle == null || lifecycle == AppLifecycleState.resumed);
+    _dragLifecycle = AppLifecycleListener(onStateChange: (state) =>
+      _dragFrames.setForeground(state == AppLifecycleState.resumed));
     if (turnTraceEnabled || const bool.fromEnvironment('GT_PROFILE_CAPTURE') || const bool.fromEnvironment('GT_TRACE_FRAMES')) {
       WidgetsBinding.instance.addTimingsCallback(_profileFrames);
     }
@@ -207,6 +249,7 @@ class _PageTurnAreaState extends State<PageTurnArea>
     _fold = null;
     _foldPending = null;
     _touchPosition = null;
+    _edgeCurl = false;
     _edgeOriginY = null;
     _settledTouch = false;
     _foldProgress = 0.5;
@@ -251,7 +294,9 @@ class _PageTurnAreaState extends State<PageTurnArea>
       }
       if (widget.effect == PageTurnEffect.curl || widget.effect == PageTurnEffect.cover) {
         frames?.preparePainting(context.size!, MediaQuery.devicePixelRatioOf(context),
-            backward: direction == PageTurnDirection.backward);
+            backward: direction == PageTurnDirection.backward,
+            // 覆盖只平移整页图，不使用卷曲网格的裁剪图。
+            curl: widget.effect == PageTurnEffect.curl);
       }
       stage('paint');
       setState(() => _fold = frames);
@@ -272,6 +317,7 @@ class _PageTurnAreaState extends State<PageTurnArea>
           'revisionChanged=${oldWidget.inputRevision != widget.inputRevision} '
           'effectChanged=${oldWidget.effect != widget.effect}');
       _ignorePointer = true;
+      _dragFrames.stop();
       _clearFold();
     }
     if (oldWidget.turnId != widget.turnId || oldWidget.effect != widget.effect ||
@@ -292,6 +338,8 @@ class _PageTurnAreaState extends State<PageTurnArea>
 
   @override
   void dispose() {
+    _dragLifecycle.dispose();
+    _dragFrames.dispose();
     if (turnTraceEnabled || const bool.fromEnvironment('GT_PROFILE_CAPTURE') || const bool.fromEnvironment('GT_TRACE_FRAMES')) {
       WidgetsBinding.instance.removeTimingsCallback(_profileFrames);
     }
@@ -328,6 +376,16 @@ class _PageTurnAreaState extends State<PageTurnArea>
     // 各分支只负责几何画法，不能各自决定是否重新加载正文图片。
     final current = RepaintBoundary(child: PreparedPageTransfer(
         page: _landing ?? _fold?.preparedCurrent, child: widget.currentPage));
+    // 原书平移复用已经确认的原尺寸截图。两页一起移动，不能套用底页不动的覆盖画法。
+    // 没准备好时仍显示旧页；拖动期间不再逐次等待 WebView 执行位移。
+    if (widget.slideImages && widget.effect == PageTurnEffect.slide &&
+        _fold?.hasPageImages == true) {
+      return CustomPaint(
+        willChange: true,
+        painter: SlideFramesPainter(
+          _fold!, _offset, _direction == PageTurnDirection.backward),
+      );
+    }
     if ((widget.effect == PageTurnEffect.curl || widget.effect == PageTurnEffect.cover) &&
         widget.prepareFold != null) {
       final frames = _fold;
@@ -418,7 +476,7 @@ class _PageTurnAreaState extends State<PageTurnArea>
     _direction = direction;
     _neighbour = backward ? widget.previousPage : widget.nextPage;
     if (widget.effect != PageTurnEffect.none) {
-      _touchPosition = Offset(backward ? -size.width : size.width,
+      _touchPosition = Offset(widget.spread ? _foldSize.width : backward ? -size.width : size.width,
           _edgeCurl ? _edgeOriginY! : (_fromTop ? 0 : size.height));
       _foldProgress = 0;
       _settledTouch = true; // 点按已给出完整端点，不再当成手指拖动约束。
@@ -499,12 +557,19 @@ class _PageTurnAreaState extends State<PageTurnArea>
     _dragged += delta;
     final forward = _direction == PageTurnDirection.forward;
     // localPosition 保留实际纵坐标，纯上下移动也更新折角。
-    _touchPosition = !forward && widget.effect == PageTurnEffect.curl
+    _touchPosition = widget.spread
+        ? Offset(forward ? details.localPosition.dx - width / 2 : width / 2 - details.localPosition.dx, _edgeCurl ? _edgeOriginY! : details.localPosition.dy)
+        : !forward && widget.effect == PageTurnEffect.curl
         ? Offset(details.localPosition.dx, _edgeOriginY!) : details.localPosition;
     // 回翻覆盖页的右边缘直接跟随触点，不能只累计起手后的位移。
     final shift = widget.effect == PageTurnEffect.cover && !forward
         ? details.localPosition.dx : _offset + delta;
     _offset = shift.clamp(forward ? -width : 0, forward ? 0 : width);
+    if (widget.spread && _touchPosition != null) {
+      final leaf = _foldSize;
+      final corner = Offset(leaf.width, _edgeCurl ? _edgeOriginY! : _fromTop ? 0 : leaf.height);
+      _touchPosition = PageFold.dragTouch(leaf, corner, _touchPosition!, backward: false, edgeCurl: _edgeCurl);
+    }
     _motion.value++;
   }
 
@@ -583,7 +648,8 @@ class _PageTurnAreaState extends State<PageTurnArea>
     if (!mounted || token != _foldToken) return;
     final moved = await traceTurnStep('drag commit $_traceInput', () => widget.onTurn(direction));
     traceTurn('drag commit-result moved=$moved $_traceInput');
-    if (!mounted) return;
+    // 目录／搜索跳转或提交期间的重建可能已清掉本次折页；旧手势不能再回弹。
+    if (!mounted || token != _foldToken) return;
     if (!moved) {
       // 到边界了：弹回原位
       _committing = false;
@@ -622,12 +688,16 @@ class _PageTurnAreaState extends State<PageTurnArea>
     });
   }
 
+  Size get _foldSize => widget.spread ? Size(context.size!.width / 2, context.size!.height) : context.size!;
+
   Future<void> _animateTo(double target, {bool cornerTap = false, bool tap = false}) {
+    final turnLog = _turnLog;
+    turnLog?.event('animation.begin', [_offset, target, tap, cornerTap]);
     final watch = readerPerformanceEnabled ? (Stopwatch()..start()) : null;
     final from = _offset;
     final progressFrom = _foldProgress;
-    final size = context.size!;
-    final fromLeft = _direction == PageTurnDirection.backward;
+    final size = _foldSize;
+    final fromLeft = !widget.spread && _direction == PageTurnDirection.backward;
     final corner = Offset(size.width,
         _edgeCurl ? _edgeOriginY! : (_fromTop ? 0 : size.height));
     // 从已经受书脊限制的纸边出发，一直补到完整展开或移出屏幕。
@@ -650,6 +720,7 @@ class _PageTurnAreaState extends State<PageTurnArea>
           : PageFold.settleTouch(touchFrom, touchTo, curve.value, unfolded: unfolded);
       _foldProgress = progressFrom + ((target == 0 ? 0 : 1) - progressFrom) * curve.value;
       _motion.value++;
+      turnLog?.event('animation.tick', [_controller.value, _offset]);
     }
 
     _controller
@@ -662,6 +733,7 @@ class _PageTurnAreaState extends State<PageTurnArea>
     return _controller.forward().orCancel.catchError((Object error) {
       if (error is! TickerCanceled) throw error;
     }).whenComplete(() {
+      turnLog?.event('animation.end', [_controller.value]);
       if (watch != null) {
         readerPerf('${widget.traceLabel}.${widget.effect.name}.animation',
             watch.elapsedMicroseconds, {'cancelled': _controller.value < 1});

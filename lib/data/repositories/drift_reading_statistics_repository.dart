@@ -3,7 +3,7 @@ import 'package:drift/drift.dart';
 import '../../domain/models/reading_statistics.dart';
 import '../../domain/repositories/reading_statistics_repository.dart';
 import '../database/app_database.dart';
-import '../../domain/services/reading_statistics_aggregation.dart';
+import '../services/statistics_compute.dart';
 import 'reading_statistics_queries.dart';
 
 class DriftReadingStatisticsRepository implements ReadingStatisticsRepository {
@@ -99,14 +99,42 @@ class DriftReadingStatisticsRepository implements ReadingStatisticsRepository {
             variables: [Variable.withString(date)],
           )
           .get();
-      if (rows.isEmpty) continue;
-      final day = aggregateReadingDays(rows.map(_segment)).single;
+      if (rows.isEmpty) {
+        await db.customStatement('DELETE FROM daily_stats WHERE local_date=?', [
+          date,
+        ]);
+        continue;
+      }
+      // 仍在同一事务内读取/提交；只有纯分组、解码和区间合并交给后台。
+      final day = await computeReadingDay([for (final row in rows) row.data]);
       await db.customStatement(
         '''INSERT OR REPLACE INTO daily_stats
         (local_date,visual_ms,audio_ms,total_union_ms) VALUES(?,?,?,?)''',
         [date, day.visualMs, day.audioMs, day.totalMs],
       );
     }
+  }
+
+  /// 书籍删除事务内调用；先记受影响日期，再移除明细并按剩余书籍重算并集。
+  /// 不能直接减去本书时长，因为看书和听书的时间可能与其他书重叠。
+  Future<void> deleteBook(String bookId) async {
+    final days = await db
+        .customSelect(
+          '''SELECT DISTINCT local_date FROM reading_segments
+      WHERE session_id IN (SELECT id FROM reading_sessions WHERE book_id=?)''',
+          variables: [Variable.withString(bookId)],
+        )
+        .get();
+    await db.customStatement(
+      '''DELETE FROM reading_segments WHERE session_id IN
+      (SELECT id FROM reading_sessions WHERE book_id=?)''',
+      [bookId],
+    );
+    await db.customStatement('DELETE FROM reading_sessions WHERE book_id=?', [
+      bookId,
+    ]);
+    await _rebuildDays(days.map((row) => row.read<String>('local_date')));
+    db.notifyUpdates({const TableUpdate('reading_segments')});
   }
 
   ReadingSegment _segment(QueryRow r) => ReadingSegment(

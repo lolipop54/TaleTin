@@ -22,10 +22,10 @@ enum LocatorAffinity {
   final int value;
 
   static LocatorAffinity fromValue(int value) => switch (value) {
-        -1 => LocatorAffinity.before,
-        1 => LocatorAffinity.after,
-        _ => LocatorAffinity.center,
-      };
+    -1 => LocatorAffinity.before,
+    1 => LocatorAffinity.after,
+    _ => LocatorAffinity.center,
+  };
 }
 
 /// 摘录与前后文的长度上限：够重新定位即可，不把整段抄进进度记录。
@@ -47,6 +47,7 @@ class Locator {
     this.epubCfi,
     this.needsRelocation = false,
     this.imageResource,
+    this.pdfY,
   });
 
   final String bookId;
@@ -71,8 +72,12 @@ class Locator {
 
   /// 源文件已换内容，旧块号不能再直接用于显示或跳转。
   final bool needsRelocation;
+
   /// 图片在标准正文中的资源路径；不与 EPUB 的章节路径混用。
   final String? imageResource;
+
+  /// PDF原页中的纵向位置；章、块、文字偏移仍是两种模式共用的位置。
+  final double? pdfY;
 
   Locator copyWith({
     String? chapterId,
@@ -84,56 +89,59 @@ class Locator {
     String? suffix,
     bool? needsRelocation,
     String? imageResource,
-  }) =>
-      Locator(
-        bookId: bookId,
-        contentVersion: contentVersion,
-        chapterId: chapterId ?? this.chapterId,
-        blockId: blockId ?? this.blockId,
-        utf16Offset: utf16Offset ?? this.utf16Offset,
-        affinity: affinity ?? this.affinity,
-        exact: exact ?? this.exact,
-        prefix: prefix ?? this.prefix,
-        suffix: suffix ?? this.suffix,
-        resourceHref: resourceHref,
-        epubCfi: epubCfi,
-        needsRelocation: needsRelocation ?? this.needsRelocation,
-        imageResource: imageResource ?? this.imageResource,
-      );
+    double? pdfY,
+  }) => Locator(
+    bookId: bookId,
+    contentVersion: contentVersion,
+    chapterId: chapterId ?? this.chapterId,
+    blockId: blockId ?? this.blockId,
+    utf16Offset: utf16Offset ?? this.utf16Offset,
+    affinity: affinity ?? this.affinity,
+    exact: exact ?? this.exact,
+    prefix: prefix ?? this.prefix,
+    suffix: suffix ?? this.suffix,
+    resourceHref: resourceHref,
+    epubCfi: epubCfi,
+    needsRelocation: needsRelocation ?? this.needsRelocation,
+    imageResource: imageResource ?? this.imageResource,
+    pdfY: pdfY ?? this.pdfY,
+  );
 
   Map<String, Object?> toJson() => {
-        'bookId': bookId,
-        'contentVersion': contentVersion,
-        'chapterId': chapterId,
-        'blockId': blockId,
-        'utf16Offset': utf16Offset,
-        if (affinity != LocatorAffinity.center) 'affinity': affinity.value,
-        if (exact.isNotEmpty) 'exact': exact,
-        if (prefix.isNotEmpty) 'prefix': prefix,
-        if (suffix.isNotEmpty) 'suffix': suffix,
-        if (resourceHref != null) 'resourceHref': resourceHref,
-        if (epubCfi != null) 'epubCfi': epubCfi,
-        if (needsRelocation) 'needsRelocation': true,
-        if (imageResource != null) 'imageResource': imageResource,
-      };
+    'bookId': bookId,
+    'contentVersion': contentVersion,
+    'chapterId': chapterId,
+    'blockId': blockId,
+    'utf16Offset': utf16Offset,
+    if (affinity != LocatorAffinity.center) 'affinity': affinity.value,
+    if (exact.isNotEmpty) 'exact': exact,
+    if (prefix.isNotEmpty) 'prefix': prefix,
+    if (suffix.isNotEmpty) 'suffix': suffix,
+    if (resourceHref != null) 'resourceHref': resourceHref,
+    if (epubCfi != null) 'epubCfi': epubCfi,
+    if (needsRelocation) 'needsRelocation': true,
+    if (imageResource != null) 'imageResource': imageResource,
+    if (pdfY != null) 'pdfY': pdfY,
+  };
 
   static Locator fromJson(Map<String, Object?> json) => Locator(
-        bookId: json['bookId'] as String? ?? '',
-        contentVersion: (json['contentVersion'] as num?)?.toInt() ?? 1,
-        chapterId: json['chapterId'] as String? ?? '',
-        blockId: json['blockId'] as String? ?? '',
-        utf16Offset: (json['utf16Offset'] as num?)?.toInt() ?? 0,
-        affinity: LocatorAffinity.fromValue(
-          (json['affinity'] as num?)?.toInt() ?? 0,
-        ),
-        exact: json['exact'] as String? ?? '',
-        prefix: json['prefix'] as String? ?? '',
-        suffix: json['suffix'] as String? ?? '',
-        resourceHref: json['resourceHref'] as String?,
-        epubCfi: json['epubCfi'] as String?,
-        needsRelocation: json['needsRelocation'] == true,
-        imageResource: json['imageResource'] as String?,
-      );
+    bookId: json['bookId'] as String? ?? '',
+    contentVersion: (json['contentVersion'] as num?)?.toInt() ?? 1,
+    chapterId: json['chapterId'] as String? ?? '',
+    blockId: json['blockId'] as String? ?? '',
+    utf16Offset: (json['utf16Offset'] as num?)?.toInt() ?? 0,
+    affinity: LocatorAffinity.fromValue(
+      (json['affinity'] as num?)?.toInt() ?? 0,
+    ),
+    exact: json['exact'] as String? ?? '',
+    prefix: json['prefix'] as String? ?? '',
+    suffix: json['suffix'] as String? ?? '',
+    resourceHref: json['resourceHref'] as String?,
+    epubCfi: json['epubCfi'] as String?,
+    needsRelocation: json['needsRelocation'] == true,
+    imageResource: json['imageResource'] as String?,
+    pdfY: (json['pdfY'] as num?)?.toDouble(),
+  );
 
   /// 同一个内容位置的判定口径：章节 + 块 + 偏移 + 倾向。
   ///
@@ -143,7 +151,8 @@ class Locator {
       chapterId == other.chapterId &&
       blockId == other.blockId &&
       utf16Offset == other.utf16Offset &&
-      affinity == other.affinity;
+      affinity == other.affinity &&
+      pdfY == other.pdfY;
 
   @override
   bool operator ==(Object other) =>
@@ -158,13 +167,13 @@ class Locator {
 
   @override
   int get hashCode => Object.hash(
-        bookId,
-        chapterId,
-        blockId,
-        utf16Offset,
-        affinity,
-        contentVersion,
-      );
+    bookId,
+    chapterId,
+    blockId,
+    utf16Offset,
+    affinity,
+    contentVersion,
+  );
 
   @override
   String toString() =>

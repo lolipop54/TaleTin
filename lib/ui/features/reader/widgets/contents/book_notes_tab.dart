@@ -1,4 +1,4 @@
-import 'package:taletin/platform/channels/system_toast.dart';
+import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'package:taletin/ui/core/widgets/gt_dialog_action.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -10,19 +10,34 @@ import '../../../../core/theme/reading_theme.dart';
 import '../../../../core/widgets/gt_icon.dart';
 import '../../../../core/widgets/state_views.dart';
 import '../../view_models/reader_session_view_model.dart';
+import '../../view_models/annotation_list_provider.dart';
 import '../../view_models/reader_view_model.dart';
 import 'note_tab.dart';
 import 'note_actions.dart';
 
 /// 只展示已保存的标注；草稿不计入列表，首批数据到达前不显示空态。
-class BookNotesTab extends ConsumerWidget {
+class BookNotesTab extends ConsumerStatefulWidget {
   const BookNotesTab({super.key, required this.bookId, required this.query});
 
   final String bookId;
   final String query;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<BookNotesTab> createState() => _BookNotesTabState();
+}
+
+class _BookNotesTabState extends ConsumerState<BookNotesTab> {
+  String get bookId => widget.bookId;
+  String get query => widget.query;
+  List<Annotation>? _visible;
+  @override
+  void didUpdateWidget(covariant BookNotesTab oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.bookId != bookId) _visible = null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final result = ref.watch(annotationsProvider(bookId));
     if (result.hasError) {
       return GtErrorView(
@@ -33,15 +48,10 @@ class BookNotesTab extends ConsumerWidget {
     final notes = result.value;
     if (notes == null) return const GtLoadingView(label: '正在读取笔记…');
     final keyword = query.trim().toLowerCase();
-    final visible = notes
-        .where(
-          (note) =>
-              keyword.isEmpty ||
-              '${note.quote}\n${note.body}\n${note.chapterTitle}'
-                  .toLowerCase()
-                  .contains(keyword),
-        )
-        .toList();
+    final prepared = ref.watch(noteListProvider((notes, query)));
+    if (prepared.hasValue) _visible = prepared.requireValue;
+    if (_visible == null) return const GtLoadingView(label: '正在读取笔记…');
+    final visible = _visible!;
     if (visible.isEmpty) {
       return GtEmptyView(
         icon: GtIcons.note,
@@ -121,9 +131,10 @@ Future<void> deleteNote(
   if (confirmed != true) return;
   try {
     await repository.deleteAnnotation(note.id);
-  } catch (_) {
+  } catch (appError, appStack) {
+    AppErrors.report(appError, appStack, operation: '删除笔记失败', notify: false);
     if (context.mounted) {
-      SystemToast.show('删除失败，请重试').ignore();
+      AppErrors.report(appError, appStack, operation: '删除笔记失败');
     }
   }
 }

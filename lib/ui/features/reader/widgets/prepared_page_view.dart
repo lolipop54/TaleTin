@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
 
-
 import 'page_canvas.dart';
 import 'prepared_page.dart';
 
 class PreparedPageTransfer extends InheritedWidget {
-  const PreparedPageTransfer({super.key, required this.page, required super.child});
+  const PreparedPageTransfer({
+    super.key,
+    required this.page,
+    required super.child,
+  });
   final PreparedPage? page;
   @override
   bool updateShouldNotify(PreparedPageTransfer old) => old.page != page;
@@ -39,17 +42,20 @@ class _PreparedPageViewState extends State<PreparedPageView> {
   }
 
   bool _sameContent(PageCanvas? a, PageCanvas b) =>
-      a?.layout == b.layout && a?.pageIndex == b.pageIndex;
+      a != null && a.layout.samePageAs(b.layout, a.pageIndex, b.pageIndex);
 
   void _prepare() {
     final page = widget.page;
-    final transfer = context.dependOnInheritedWidgetOfExactType<PreparedPageTransfer>()?.page;
+    final transfer = context
+        .dependOnInheritedWidgetOfExactType<PreparedPageTransfer>()
+        ?.page;
     final configuration = createLocalImageConfiguration(context);
     // 相邻页可能已经开始异步加载；动画材料稍后就绪时仍要立即接收，
     // 不能因“请求过同一页”跳过交接，继续显示旧页或空白。
-    final canReceive = _sameContent(transfer?.page, page) &&
-        !_sameContent(_ready?.page, page);
-    if (_sameContent(_requested, page) && configuration == _configuration &&
+    final canReceive =
+        _sameContent(transfer?.page, page) && !_sameContent(_ready?.page, page);
+    if (_sameContent(_requested, page) &&
+        configuration == _configuration &&
         !canReceive) {
       if (_sameContent(_ready?.page, page)) page.onReady?.call();
       return;
@@ -62,7 +68,12 @@ class _PreparedPageViewState extends State<PreparedPageView> {
       _ready?.dispose();
       _ready = null;
     }
-    final text = _sameContent(transfer?.page, page) ? transfer!.clone() : PreparedPage.textOnly(page);
+    // 动画中的失败占位不能作为静态页的有效图片继续复用；
+    // 提交位置已补齐资源时重新解码，准备期间继续保留旧页。
+    final text =
+        _sameContent(transfer?.page, page) && !transfer!.hasFailedImages
+        ? transfer.clone()
+        : PreparedPage.textOnly(page);
     if (text != null) {
       _ready?.dispose();
       _ready = text;

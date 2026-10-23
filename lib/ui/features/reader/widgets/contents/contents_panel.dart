@@ -12,6 +12,8 @@ import 'book_notes_tab.dart';
 import 'contents_pager.dart';
 import 'contents_scroll_area.dart';
 import 'toc_tab.dart';
+import 'pdf_toc_tab.dart';
+import '../../view_models/pdf_book_provider.dart';
 
 /// 目录、书签与笔记的综合面板装配入口。
 class PanelContents extends ConsumerStatefulWidget {
@@ -28,7 +30,8 @@ class _PanelContentsState extends ConsumerState<PanelContents> {
   final _searchController = TextEditingController();
   final _pagerKey = GlobalKey();
   late final _tabPosition = ValueNotifier<double>(
-    widget.state.contentsTab.toDouble(),
+    widget.state.contentsTab.clamp(0,
+      ref.read(pdfModeProvider(widget.bookId)) ? 1 : 2).toDouble(),
   );
 
   @override
@@ -43,10 +46,12 @@ class _PanelContentsState extends ConsumerState<PanelContents> {
     final state = widget.state;
     final vm = ref.read(readerProvider.notifier);
     final colors = context.gtColors;
-    const titles = ['目录', '书签', '笔记'];
+    final pdf = ref.watch(pdfModeProvider(widget.bookId));
+    final titles = ['目录', '书签', if (!pdf) '笔记'];
+    final tab = state.contentsTab.clamp(0, titles.length - 1);
 
     return ReaderSheet(
-      title: titles[state.contentsTab],
+      title: titles[tab],
       maxHeightFactor: 0.85,
       onClose: vm.closePanel,
       child: Column(
@@ -62,7 +67,7 @@ class _PanelContentsState extends ConsumerState<PanelContents> {
                   children: [
                     _tab(context, ref, 0, '目录'),
                     _tab(context, ref, 1, '书签'),
-                    _tab(context, ref, 2, '笔记'),
+                    if (!pdf) _tab(context, ref, 2, '笔记'),
                   ],
                 ),
                 Positioned(
@@ -79,8 +84,8 @@ class _PanelContentsState extends ConsumerState<PanelContents> {
                               children: [
                                 Positioned(
                                   left:
-                                      constraints.maxWidth / 3 * position +
-                                      (constraints.maxWidth / 3 - 64) / 2,
+                                      constraints.maxWidth / titles.length * position +
+                                      (constraints.maxWidth / titles.length - 64) / 2,
                                   width: 64,
                                   height: 3,
                                   child: ColoredBox(
@@ -97,7 +102,7 @@ class _PanelContentsState extends ConsumerState<PanelContents> {
               ],
             ),
           ),
-          Padding(
+          if (!pdf) Padding(
             padding: const EdgeInsets.fromLTRB(
               GtSpacing.s5,
               GtSpacing.s3,
@@ -149,16 +154,16 @@ class _PanelContentsState extends ConsumerState<PanelContents> {
             child: ContentsScrollArea(
               child: ContentsPager(
                 key: _pagerKey,
-                index: state.contentsTab,
+                index: tab,
                 onChanged: vm.setContentsTab,
                 onPositionChanged: (position) => _tabPosition.value = position,
                 children: [
-                  TocTab(bookId: widget.bookId, query: _searchController.text),
+                  pdf ? PdfTocTab(bookId: widget.bookId) : TocTab(bookId: widget.bookId, query: _searchController.text),
                   BookmarkTab(
                     bookId: widget.bookId,
                     query: _searchController.text,
                   ),
-                  BookNotesTab(
+                  if (!pdf) BookNotesTab(
                     bookId: widget.bookId,
                     query: _searchController.text,
                   ),
@@ -173,7 +178,8 @@ class _PanelContentsState extends ConsumerState<PanelContents> {
 
   Widget _tab(BuildContext context, WidgetRef ref, int index, String label) {
     final colors = context.gtColors;
-    final selected = widget.state.contentsTab == index;
+    final selected = widget.state.contentsTab.clamp(0,
+      ref.watch(pdfModeProvider(widget.bookId)) ? 1 : 2) == index;
     return Expanded(
       child: GtButton.raw(
         onPressed: () {

@@ -64,9 +64,7 @@ Book importPlaceholder(String id, ImportItem item) => Book(
   sourceHash: '',
   title: item.document.name.replaceFirst(RegExp(r'\.[^.]+$'), ''),
   author: '',
-  format: item.document.name.toLowerCase().endsWith('.epub')
-      ? BookFormat.epub
-      : BookFormat.txt,
+  format: BookFormat.fromCode(item.document.name.split('.').last.toLowerCase()) ?? BookFormat.txt,
   importedAt: DateTime(1970),
 );
 
@@ -189,6 +187,7 @@ class ShelfImportTile extends ConsumerWidget {
               children: [
                 BookCover(
                   bookId: book.id,
+                  format: book.format,
                   title: book.title,
                   author: '',
                   imageBytes: item.coverBytes,

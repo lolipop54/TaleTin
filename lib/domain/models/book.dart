@@ -3,11 +3,15 @@
 /// 数据库中的 `books` 行经 Mapper 映射为本类后再交给 ViewModel。
 library;
 
-/// 支持导入的书籍格式。MOBI 在阶段 6 接入。
+import 'book_cover_choice.dart';
+
+/// 支持导入的书籍格式。
 enum BookFormat {
   epub('epub', 'EPUB'),
   txt('txt', 'TXT'),
-  mobi('mobi', 'MOBI');
+  mobi('mobi', 'MOBI'),
+  azw3('azw3', 'AZW3'),
+  pdf('pdf', 'PDF');
 
   const BookFormat(this.code, this.label);
 
@@ -16,6 +20,11 @@ enum BookFormat {
 
   /// 界面展示名
   final String label;
+
+  bool get supportsOriginalLayout => this != BookFormat.txt;
+  bool get usesOriginalWebView =>
+      supportsOriginalLayout && this != BookFormat.pdf;
+  bool get isMobi => this == BookFormat.mobi || this == BookFormat.azw3;
 
   static BookFormat? fromCode(String code) {
     for (final f in values) {
@@ -59,6 +68,7 @@ class Book {
     this.deletedAt,
     this.sizeBytes = 0,
     this.coverPath,
+    this.coverChoice,
     this.coverWidth,
     this.coverHeight,
     this.textLength = 0,
@@ -76,7 +86,8 @@ class Book {
   /// 保留历史字段名，避免迁移时改写旧书的身份与阅读记录。
   final String sourceHash;
   String? get localSourcePath => sourceHash.startsWith('file:')
-      ? Uri.parse(sourceHash).toFilePath() : null;
+      ? Uri.parse(sourceHash).toFilePath()
+      : null;
   final String title;
   final String author;
   final BookFormat format;
@@ -95,6 +106,7 @@ class Book {
 
   /// 封面相对路径；解析未取到封面时为 null，界面用书名占位
   final String? coverPath;
+  final BookCoverChoice? coverChoice;
   final int? coverWidth;
   final int? coverHeight;
 
@@ -141,6 +153,7 @@ class Book {
     bool clearDeletedAt = false,
     int? sizeBytes,
     String? coverPath,
+    BookCoverChoice? coverChoice,
     int? coverWidth,
     int? coverHeight,
     int? textLength,
@@ -164,6 +177,7 @@ class Book {
       deletedAt: clearDeletedAt ? null : (deletedAt ?? this.deletedAt),
       sizeBytes: sizeBytes ?? this.sizeBytes,
       coverPath: coverPath ?? this.coverPath,
+      coverChoice: coverChoice ?? this.coverChoice,
       coverWidth: coverWidth ?? this.coverWidth,
       coverHeight: coverHeight ?? this.coverHeight,
       textLength: textLength ?? this.textLength,

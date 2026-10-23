@@ -4,12 +4,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../app/di/app_providers.dart';
-import '../../../../domain/models/tts_state.dart';
+import '../../../../core/diagnostics/listening_follow_diagnostics.dart';
 import '../../../../domain/models/locator.dart';
 import '../../../../domain/services/listening_service.dart';
 import '../view_models/listening_view_state.dart';
 import '../view_models/reader_session_view_model.dart';
 import '../view_models/reader_settings_view_model.dart';
+import '../view_models/visible_spread.dart';
 import '../view_models/reader_source_change.dart';
 
 /// 简化 EPUB/TXT 共用跟随入口。后台不做布局，回到前台读取最新快照。
@@ -28,6 +29,7 @@ class _ListeningFollowState extends ConsumerState<ListeningFollow> {
   bool _scheduled = false;
   Locator? _requested;
   Object? _layout;
+  final _diagnostics = ListeningFollowDiagnostics('standard');
 
   @override
   void initState() {
@@ -37,6 +39,13 @@ class _ListeningFollowState extends ConsumerState<ListeningFollow> {
     _lifecycle = AppLifecycleListener(
       onStateChange: (state) {
         _visible = state == AppLifecycleState.resumed;
+        if (_service.snapshot.bookId == widget.bookId) {
+          _diagnostics.lifecycle(state.name, {
+            'status': _service.snapshot.status.name,
+            'hasTarget': _service.snapshot.pageFollowLocator != null,
+            'scheduled': _scheduled,
+          });
+        }
         if (!_visible) {
           _service.setPageBoundaries(this, const []);
           ref
@@ -60,15 +69,17 @@ class _ListeningFollowState extends ConsumerState<ListeningFollow> {
   }
 
   void _follow() {
-    if (!_visible || ref.read(readerSourceChangeProvider(widget.bookId))) return;
+    if (!_visible || ref.read(readerSourceChangeProvider(widget.bookId))) {
+      return;
+    }
     final settings = ref.read(readerSettingsProvider(widget.bookId)).value;
     if (settings == null) return;
     final session = ref.read(readerSessionProvider(widget.bookId)).value;
     if (session == null) return;
     if (settings.settings.layoutMode.isOriginal && !session.scrolling) return;
     final layout = session.layout;
-    if (_layout != layout) {
-      _layout = layout;
+    if (_layout != layout?.identity) {
+      _layout = layout?.identity;
       _requested = null;
     }
     _service.setPageBoundaries(
@@ -78,22 +89,50 @@ class _ListeningFollowState extends ConsumerState<ListeningFollow> {
           : [for (final page in layout.pages) layout.beginLocatorOf(page)],
     );
     final state = _service.snapshot;
-    if (state.bookId != widget.bookId || !state.hasSession || !state.followReading) {
+    final target = state.bookId == widget.bookId
+        ? state.pageFollowLocator
+        : null;
+    _diagnostics.step('check', {
+      'status': state.status.name,
+      'hasTarget': target != null,
+      'chapter': session.chapterIndex,
+      'page': session.pageIndex,
+      'targetChapter': session.chapters.indexWhere(
+        (c) => c.id == target?.chapterId,
+      ),
+      'targetOffset': target?.utf16Offset,
+    });
+    if (target == null) {
       _requested = null;
       ref
           .read(readerSessionProvider(widget.bookId).notifier)
           .cancelSpeechFollow();
       return;
     }
-    final target = state.status == TtsStatus.paused
-        ? state.resumeLocator
-        : state.confirmedLocator;
-    if (target == null || _requested?.samePosition(target) == true) return;
+    if (_requested?.samePosition(target) == true) return;
     _requested = target;
+    if (settings.settings.spreadEnabled &&
+        spreadContains(
+          ref.read(visibleSpreadProvider(widget.bookId)),
+          target,
+        )) {
+      return;
+    }
     unawaited(
       ref
           .read(readerSessionProvider(widget.bookId).notifier)
           .followSpeech(target)
+          .then((_) {
+            if (!mounted) return;
+            final current = ref
+                .read(readerSessionProvider(widget.bookId))
+                .value;
+            _diagnostics.step('positioned', {
+              'visible': _visible,
+              'chapter': current?.chapterIndex,
+              'page': current?.pageIndex,
+            });
+          })
           .catchError((Object error, StackTrace stack) {
             if (mounted) {
               ref

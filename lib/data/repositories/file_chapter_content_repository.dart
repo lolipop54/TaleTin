@@ -14,6 +14,8 @@ import 'package:path/path.dart' as p;
 import '../../core/diagnostics/reader_work_trace.dart';
 
 import '../../domain/models/book_document.dart';
+import '../../domain/models/locator.dart';
+import '../../engine/normalization/source_position_matcher.dart';
 import '../../domain/repositories/chapter_content_repository.dart';
 import '../../domain/services/text_preparation.dart';
 import '../../engine/parsers/epub/epub_parser.dart';
@@ -22,14 +24,53 @@ import '../services/book_source_path.dart';
 import '../services/enrich_epub_content.dart';
 import '../services/toc_progress_cache.dart';
 import '../services/chapter_content_worker.dart';
+import '../services/chapter_manifest.dart';
+import '../services/publication_cache.dart';
+import '../../engine/parsers/pdf/pdf_file.dart';
+import '../../engine/parsers/pdf/pdf_page_pictures.dart';
 import '../../domain/services/toc_entry_index.dart';
+
+part '../services/pdf_chapter_reading.dart';
 
 Future<List<TocNode>> _recoverLegacyToc(
   String sourcePath,
   List<Chapter> chapters,
 ) => Isolate.run(() => EpubParser.resolveLegacyToc(sourcePath, chapters));
 
+// 独立入口只捕获路径与快照；不能把持有连接/在途任务的正文仓库发送出去。
+typedef _PositionWork = (String, String?, String, List<Chapter>, List<Locator>);
+Future<Map<String, Locator?>> _matchInBackground(_PositionWork input) =>
+    Isolate.run(() => _matchPositions(input));
+Future<Map<String, Locator?>> _matchPositions(_PositionWork input) async {
+  final (library, cache, bookId, chapters, anchors) = input;
+  final contents = FileChapterContentRepository(
+    libraryRoot: library,
+    cacheRoot: cache,
+  );
+  try {
+    final matcher = SourcePositionMatcher(anchors);
+    for (final chapter in chapters) {
+      final content = await contents.chapter(bookId, chapter, textOnly: true);
+      matcher.add(chapter.id, content.blocks);
+    }
+    return matcher.finish();
+  } finally {
+    await contents.close();
+  }
+}
+
 class FileChapterContentRepository implements ChapterContentRepository {
+  @override
+  Future<Map<String, Locator?>?> matchSourcePositions(
+    String bookId,
+    List<Chapter> chapters,
+    List<Locator> anchors,
+  ) => _read(
+    bookId,
+    () =>
+        _matchInBackground((libraryRoot, cacheRoot, bookId, chapters, anchors)),
+  );
+
   FileChapterContentRepository({
     required this.libraryRoot,
     this.cacheCapacity = 4,
@@ -42,8 +83,16 @@ class FileChapterContentRepository implements ChapterContentRepository {
   final String? cacheRoot;
   Future<ChapterContentWorker>? _worker;
   final _storageModes = <String, Future<bool>>{};
+  final _pdfBooks = <String>{};
+  final _pdfReaders = <String, Future<PdfFile>>{};
+  final _pdfClosings = <Future<void>>{};
+  final _manifests = <String, Future<ChapterManifest?>>{};
+  final _publicationResources = <String, (String, Set<String>)>{};
   final _pendingChapters = <String, Future<ChapterContent>>{};
   final _migrations = <String, Future<void>>{};
+  final _migrationCancellations = <String, void Function()>{};
+  final _usedBooks = <String>{};
+  Set<String> get usedBookIds => Set.unmodifiable(_usedBooks);
 
   Future<ChapterContentWorker> _contentWorker() =>
       _worker ??= ChapterContentWorker.open(
@@ -52,8 +101,30 @@ class FileChapterContentRepository implements ChapterContentRepository {
         preparation: textPreparation,
       );
 
+  /// 同一次开书的正文和目录共用清单；换书只保留最近四份，更新/恢复时一并作废。
+  Future<ChapterManifest?> _manifest(String directory) {
+    final pending = _manifests.remove(directory) ?? _readManifest(directory);
+    _manifests[directory] = pending;
+    while (_manifests.length > 4) {
+      _manifests.remove(_manifests.keys.first);
+    }
+    return pending;
+  }
+
+  Future<ChapterManifest?> _readManifest(String directory) async {
+    final relative = p.relative(directory, from: libraryRoot);
+    final parts = p.split(relative);
+    return (await _contentWorker()).manifest(
+      parts.first,
+      p.joinAll(parts.skip(1)),
+    );
+  }
+
   /// 仅供更新前补充旧定位证据。只读旧版本的正文/缓存，不读取已改变的源文件。
-  Future<ChapterContent?> cachedPreviousChapter(String bookId, Chapter chapter) async {
+  Future<ChapterContent?> cachedPreviousChapter(
+    String bookId,
+    Chapter chapter,
+  ) async {
     final memory = _chapters['$bookId/${chapter.id}'];
     if (memory != null) return memory;
     if (await _indexed(bookId, chapter)) {
@@ -61,16 +132,32 @@ class FileChapterContentRepository implements ChapterContentRepository {
     }
     final file = File(chapterAbsolutePath(bookId, chapter));
     if (!await file.exists()) return null;
-    return ChapterContent.fromJson((jsonDecode(await file.readAsString()) as Map).cast<String, Object?>());
+    return ChapterContent.fromJson(
+      (jsonDecode(await file.readAsString()) as Map).cast<String, Object?>(),
+    );
   }
 
   Future<bool> _indexed(String bookId, Chapter chapter) {
     final directory = p.dirname(chapterAbsolutePath(bookId, chapter));
     return _storageModes.putIfAbsent(directory, () async {
-      final file = File(p.join(directory, 'manifest.json'));
-      if (!await file.exists()) return false;
-      return (jsonDecode(await file.readAsString()) as Map)['sourceIndex'] !=
-          null;
+      final manifest = await _manifest(directory);
+      final index = manifest?.sourceIndex;
+      if (index == null) return false;
+      if (index.format == 'pdf') _pdfBooks.add(bookId);
+      if (index.format != 'txt') {
+        _publicationResources['$bookId/${p.basename(directory)}'] = (
+          PublicationCache.assets(
+            PublicationCache.effectiveRoot(libraryRoot, cacheRoot),
+            bookId,
+            index.sourceDigest,
+          ),
+          {
+            for (final entry in index.images.entries)
+              if (entry.value[0] >= 0) 'res/${entry.key}',
+          },
+        );
+      }
+      return true;
     });
   }
 
@@ -85,6 +172,7 @@ class FileChapterContentRepository implements ChapterContentRepository {
   bool _closed = false;
   String? _tocKey;
   List<TocNode>? _toc;
+  TocLocations? _tocLocations;
   final _pendingTocs = <String, Future<List<TocNode>>>{};
 
   @override
@@ -106,7 +194,9 @@ class FileChapterContentRepository implements ChapterContentRepository {
                       )
                     : _chapter(bookId, chapter))
                 .whenComplete(() {
-                  _pendingChapters.remove('$bookId/${chapter.contentPath}/${textOnly ? 'text' : 'body'}');
+                  _pendingChapters.remove(
+                    '$bookId/${chapter.contentPath}/${textOnly ? 'text' : 'body'}',
+                  );
                 }),
       ),
     ),
@@ -124,22 +214,32 @@ class FileChapterContentRepository implements ChapterContentRepository {
   Future<List<TocProgressEntry>?> readTocProgress(
     String bookId,
     String signature,
-  ) async => cacheRoot == null
-      ? null
-      : TocProgressCache(cacheRoot!).read(bookId, signature);
+  ) => _read(
+    bookId,
+    () async => cacheRoot == null
+        ? null
+        : TocProgressCache(cacheRoot!).read(bookId, signature),
+  );
   @override
   Future<void> writeTocProgress(
     String bookId,
     String signature,
     List<TocProgressEntry> entries,
   ) async {
-    if (cacheRoot != null) {
-      await TocProgressCache(cacheRoot!).write(bookId, signature, entries);
+    // 标题任务在调用前复查Reader的存活状态；这里再拒绝交接期间的新写入，
+    // 已经开始的写盘纳入同一等待，清理完成后不能迟到写回。
+    if (cacheRoot != null && !_closed && !_changing.contains(bookId)) {
+      await _read(
+        bookId,
+        () => TocProgressCache(cacheRoot!).write(bookId, signature, entries),
+      );
     }
   }
 
   Future<T> _read<T>(String bookId, Future<T> Function() action) async {
+    _usedBooks.add(bookId);
     while (_migrations.containsKey(bookId)) {
+      _migrationCancellations[bookId]?.call();
       await _migrations[bookId];
     }
     if (_closed) throw StateError('正文服务已关闭');
@@ -161,9 +261,11 @@ class FileChapterContentRepository implements ChapterContentRepository {
     try {
       await _migrations[bookId];
       await Future.wait(_pending[bookId]?.toList() ?? <Future<void>>[]);
+      await _closePdfReaders(bookId);
       invalidate(bookId);
       // 删除和重解析也回收该书的磁盘缓存，不能只关闭内存中的旧章节。
       await (await _contentWorker()).clearCache(bookId);
+      if (cacheRoot != null) await TocProgressCache(cacheRoot!).clear(bookId);
     } catch (_) {
       _changing.remove(bookId);
       rethrow;
@@ -179,6 +281,8 @@ class FileChapterContentRepository implements ChapterContentRepository {
     _closed = true;
     await Future.wait(_migrations.values.toList());
     await Future.wait(_pending.values.expand((tasks) => tasks).toList());
+    await _closePdfReaders(null);
+    await Future.wait(_pdfClosings.toList());
     invalidate();
     if (_worker != null) await (await _worker!).close();
     _worker = null;
@@ -186,6 +290,7 @@ class FileChapterContentRepository implements ChapterContentRepository {
 
   Future<ChapterContent> _chapter(String bookId, Chapter chapter) async {
     if (await _indexed(bookId, chapter)) {
+      if (_pdfBooks.contains(bookId)) return _pdfChapter(bookId, chapter);
       return (await _contentWorker()).chapter(bookId, chapter);
     }
     final key = '$bookId/${chapter.id}';
@@ -219,6 +324,9 @@ class FileChapterContentRepository implements ChapterContentRepository {
     bool textOnly = false,
   }) async {
     if (await _indexed(bookId, chapter)) {
+      if (!textOnly && _pdfBooks.contains(bookId)) {
+        return _pdfChapter(bookId, chapter);
+      }
       return (await _contentWorker()).chapter(
         bookId,
         chapter,
@@ -272,11 +380,19 @@ class FileChapterContentRepository implements ChapterContentRepository {
     var encoding = '';
     Map<String, dynamic>? manifest;
     var tocRevision = 0;
+    TocLocations? locations;
     if (await file.exists()) {
       try {
-        final decoded = jsonDecode(await file.readAsString());
-        if (decoded is Map) {
-          manifest = decoded.cast<String, dynamic>();
+        final snapshot = await _manifest(p.dirname(file.path));
+        final decoded = snapshot?.data;
+        if (decoded != null) {
+          manifest = decoded;
+          if (snapshot!.sourceIndex case final index?) {
+            locations = (
+              anchors: index.tocPositions,
+              headings: index.tocHeadings,
+            );
+          }
           tocRevision = (decoded['tocRevision'] as num?)?.toInt() ?? 0;
           encoding = decoded['encoding'] as String? ?? '';
           final rawToc = decoded['toc'];
@@ -339,6 +455,7 @@ class FileChapterContentRepository implements ChapterContentRepository {
               flush: true,
             );
             await next.rename(file.path);
+            _manifests.remove(p.dirname(file.path));
           }
         } on Object {
           // 原文件或修复保存失败时仍可用旧目录，下次读取可以继续尝试。
@@ -347,7 +464,14 @@ class FileChapterContentRepository implements ChapterContentRepository {
     }
     _tocKey = key;
     _toc = nodes;
+    _tocLocations = locations;
     return nodes;
+  }
+
+  @override
+  Future<TocLocations?> tocLocations(String bookId, int contentVersion) async {
+    await toc(bookId, contentVersion);
+    return _tocKey == '$bookId/$contentVersion' ? _tocLocations : null;
   }
 
   @override
@@ -355,7 +479,21 @@ class FileChapterContentRepository implements ChapterContentRepository {
     String bookId,
     int contentVersion,
     String resourcePath,
-  ) => p.join(libraryRoot, bookId, 'content', '$contentVersion', resourcePath);
+  ) {
+    final store = _publicationResources['$bookId/$contentVersion'];
+    if (store != null &&
+        resourcePath.startsWith('res/') &&
+        !store.$2.contains(resourcePath)) {
+      return p.join(store.$1, resourcePath.substring(4));
+    }
+    return p.join(
+      libraryRoot,
+      bookId,
+      'content',
+      '$contentVersion',
+      resourcePath,
+    );
+  }
 
   @override
   String chapterAbsolutePath(String bookId, Chapter chapter) =>
@@ -363,6 +501,19 @@ class FileChapterContentRepository implements ChapterContentRepository {
 
   @override
   void invalidate([String? bookId]) {
+    unawaited(_closePdfReaders(bookId));
+    if (bookId == null) {
+      _pdfBooks.clear();
+    } else {
+      _pdfBooks.remove(bookId);
+    }
+    _manifests.removeWhere(
+      (directory, _) =>
+          bookId == null || p.isWithin(p.join(libraryRoot, bookId), directory),
+    );
+    _publicationResources.removeWhere(
+      (key, _) => bookId == null || key.startsWith('$bookId/'),
+    );
     _storageModes.removeWhere(
       (directory, _) =>
           bookId == null || p.isWithin(p.join(libraryRoot, bookId), directory),
@@ -377,6 +528,7 @@ class FileChapterContentRepository implements ChapterContentRepository {
     }
     _tocKey = null;
     _toc = null;
+    _tocLocations = null;
   }
 
   /// 设置页复用既有「清理缓存」，正文任务排队执行，不与写入抢同一文件。
@@ -388,11 +540,15 @@ class FileChapterContentRepository implements ChapterContentRepository {
   Future<int> migrateContent(
     String bookId,
     int version,
-    Future<int> Function() action,
-  ) async {
+    Future<int> Function() action, {
+    void Function()? onReadRequested,
+  }) async {
     if (_closed || _changing.contains(bookId)) return 0;
     final finished = Completer<void>();
     _migrations[bookId] = finished.future;
+    if (onReadRequested != null) {
+      _migrationCancellations[bookId] = onReadRequested;
+    }
     try {
       await Future.wait(_pending[bookId]?.toList() ?? <Future<void>>[]);
       // 旧 TXT 的目录补齐依赖旧块；在删除旧 JSON 前完成并保存。
@@ -401,6 +557,7 @@ class FileChapterContentRepository implements ChapterContentRepository {
       invalidate(bookId);
       return bytes;
     } finally {
+      _migrationCancellations.remove(bookId);
       _migrations.remove(bookId);
       finished.complete();
     }

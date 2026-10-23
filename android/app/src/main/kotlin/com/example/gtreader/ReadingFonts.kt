@@ -22,7 +22,29 @@ object ReadingFonts {
         MethodChannel(messenger, "gtreader/reading_fonts",
             io.flutter.plugin.common.StandardMethodCodec.INSTANCE,
             messenger.makeBackgroundTaskQueue()).setMethodCallHandler { call, result ->
-            if (call.method !in listOf("list", "system", "selected")) result.notImplemented()
+            if (call.method == "environmentDigest") {
+                try { result.success(environmentDigest()) }
+                catch (error: Exception) { result.error("FONTS", error.message, null) }
+            }
+            else if (call.method == "assetDigest") {
+                try {
+                    val asset = call.argument<String>("asset")!!
+                    require(asset.startsWith("assets/fonts/preset/") && !asset.contains(".."))
+                    val digest = java.security.MessageDigest.getInstance("SHA-256")
+                    // Flutter 的 APK 资源名对中文做 URI 编码，与正式字体 AssetLoader 一致。
+                    val encodedAsset = android.net.Uri.encode(asset, "/")
+                    context.assets.open("flutter_assets/$encodedAsset").use { stream ->
+                        val buffer = ByteArray(32 * 1024)
+                        while (true) {
+                            val count = stream.read(buffer)
+                            if (count < 0) break
+                            digest.update(buffer, 0, count)
+                        }
+                    }
+                    result.success(digest.digest().joinToString("") { "%02x".format(it) })
+                } catch (error: Exception) { result.error("FONTS", error.message, null) }
+            }
+            else if (call.method !in listOf("list", "system", "selected")) result.notImplemented()
             else try {
                 result.success(if (call.method == "selected")
                     selected(context, call.argument<String>("family")!!)
@@ -32,13 +54,56 @@ object ReadingFonts {
         }
     }
 
+    /** 主字体另按真实字节校验；系统回退链也必须随系统/字体更新而失效。
+     * 只读分区由系统构建身份和完整字体清单识别，可更新字体另核对实际文件字节。
+     * 不把数百 MB 的只读系统字体每次搬到 Dart 开书路径里重新散列。
+     */
+    private fun environmentDigest(): String? {
+        if (Build.VERSION.SDK_INT < 31) return null
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        fun text(value: String) { digest.update(value.toByteArray(Charsets.UTF_8)); digest.update(0.toByte()) }
+        text(Build.FINGERPRINT)
+        val fonts = SystemFonts.getAvailableFonts().sortedBy {
+            "${it.file?.absolutePath}#${it.ttcIndex}#${it.style}#${it.axes?.contentToString()}#${it.localeList}"
+        }
+        val mutableFonts = linkedMapOf<String, Font>()
+        for (font in fonts) {
+            val file = font.file ?: return null
+            text("${file.absolutePath}|${file.length()}|${file.lastModified()}|${font.ttcIndex}|${font.style}|${font.axes?.contentToString()}|${font.localeList}")
+            if (!listOf("/system/", "/product/", "/vendor/", "/system_ext/", "/apex/").any { file.absolutePath.startsWith(it) }) mutableFonts.putIfAbsent(file.absolutePath, font)
+        }
+        val configs = listOf("/system/etc/fonts.xml", "/system/etc/font_fallback.xml", "/product/etc/fonts_customization.xml")
+        for ((path, font) in mutableFonts) {
+            text(path)
+            // 主题字体路径可能不可直接读取，公开 Font.buffer 仍是实际供排版使用的字节。
+            digest.update(font.buffer.duplicate())
+        }
+        for (file in configs.map(::File).filter { it.isFile }) {
+            text(file.absolutePath)
+            file.inputStream().use { stream ->
+                val buffer = ByteArray(32 * 1024)
+                while (true) {
+                    val count = stream.read(buffer)
+                    if (count < 0) break
+                    digest.update(buffer, 0, count)
+                }
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
     private fun selected(context: Context, family: String): List<Map<String, Any>> {
         if (Regex("gt-device-[0-9a-f]{24}").matches(family)) {
             // 字体选择时已提取过这个文件，重新打开应用只读这一份。
             val cached = File(context.cacheDir, "$family.ttf")
-            if (cached.isFile) return listOf(mapOf("id" to family,
-                "path" to cached.absolutePath, "name" to name(cached.readBytes(), family),
-                "aliases" to emptyList<String>()))
+            if (cached.isFile) {
+                val data = cached.readBytes()
+                return listOf(mapOf("id" to family,
+                    "path" to cached.absolutePath, "name" to name(data, family),
+                    "digest" to java.security.MessageDigest.getInstance("SHA-256")
+                        .digest(data).joinToString("") { "%02x".format(it) },
+                    "aliases" to emptyList<String>()))
+            }
             // Android 清掉缓存后，旧设置只保存摘要编号，需要重新查找原字体。
             return read(context, false).filter { it["id"] == family }
         }
@@ -73,12 +138,14 @@ object ReadingFonts {
             val key = "${source.absolutePath}#${font.ttcIndex}"
             val entry = found.getOrPut(key) {
                 val data = extract(font.buffer, font.ttcIndex)
-                val id = "gt-device-" + java.security.MessageDigest.getInstance("SHA-256")
-                    .digest(data).take(12).joinToString("") { "%02x".format(it) }
+                val digest = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(data).joinToString("") { "%02x".format(it) }
+                val id = "gt-device-" + digest.take(24)
                 val target = File(context.cacheDir, "$id.ttf")
                 if (!target.exists()) target.writeBytes(data)
                 mutableMapOf("id" to id, "name" to name(data, source.name),
-                    "path" to target.absolutePath, "aliases" to mutableListOf<String>())
+                    "path" to target.absolutePath, "digest" to digest,
+                    "aliases" to mutableListOf<String>())
             }
             @Suppress("UNCHECKED_CAST")
             if (alias != null) (entry["aliases"] as MutableList<String>).add(alias)

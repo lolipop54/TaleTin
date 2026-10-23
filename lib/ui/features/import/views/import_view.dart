@@ -184,7 +184,7 @@ class _PickCardState extends ConsumerState<_PickCard> {
         children: [
           Text('选择本地文件', style: GtText.pageTitle(colors.textPrimary)),
           const SizedBox(height: GtSpacing.s2),
-          Text('支持 EPUB · TXT / 可多选', style: GtText.body(colors.textMuted)),
+          Text('支持 EPUB · TXT · MOBI · AZW3 · PDF / 可多选', style: GtText.body(colors.textMuted)),
           const SizedBox(height: GtSpacing.s6),
           SizedBox(
             width: double.infinity,

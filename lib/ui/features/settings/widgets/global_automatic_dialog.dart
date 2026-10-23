@@ -48,8 +48,8 @@ class GlobalAutomaticDialog extends ConsumerWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 SettingsSlider(
-                  thumbRadius: GtSliderSize.thumbRadiusLarge,
-                  trackThickness: GtSliderSize.trackThicknessLarge,
+                  thumbRadius: GtSliderSize.thumbRadiusSmall,
+                  trackThickness: GtSliderSize.trackThicknessSmall,
                   label: '滚动速度（像素/秒）',
                   labelPosition: SliderLabelPosition.above,
                   value: settings.autoScrollSpeed,
@@ -61,8 +61,8 @@ class GlobalAutomaticDialog extends ConsumerWidget {
                 ),
                 const SizedBox(height: 12),
                 SettingsSlider(
-                  thumbRadius: GtSliderSize.thumbRadiusLarge,
-                  trackThickness: GtSliderSize.trackThicknessLarge,
+                  thumbRadius: GtSliderSize.thumbRadiusSmall,
+                  trackThickness: GtSliderSize.trackThicknessSmall,
                   label: '每页扫描耗时（秒）',
                   labelPosition: SliderLabelPosition.above,
                   value: settings.autoScanSeconds.toDouble(),

@@ -118,6 +118,7 @@ class _AchievementsPage extends StatelessWidget {
               const SizedBox(height: GtSpacing.s4),
               CalendarCard(
                 days: data.statistics.days,
+                dayIndex: data.summary(now).daysByDate,
                 today: now,
                 onDate: (date) => showReadingDay(context, data, now, date),
               ),

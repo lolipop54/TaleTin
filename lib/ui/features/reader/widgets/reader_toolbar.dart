@@ -18,10 +18,12 @@ class ReaderToolbar extends StatelessWidget {
     required this.theme,
     required this.onSelect,
     this.blocked,
+    this.showListening = true,
   });
   final ReadingTheme theme;
   final ValueChanged<ReaderPanel>? onSelect;
   final ReaderPanel? blocked;
+  final bool showListening;
   @override
   Widget build(BuildContext context) => Container(
     color: theme.background,
@@ -32,10 +34,10 @@ class ReaderToolbar extends StatelessWidget {
         Expanded(
           child: Row(
             children: [
-              for (final (index, item) in const [
+              for (final (index, item) in [
                 (ReaderPanel.contents, GtIcons.toc, '目录'),
                 (ReaderPanel.brightness, GtIcons.brightness, '亮度'),
-                (ReaderPanel.tts, GtIcons.headphones, '听书'),
+                if (showListening) (ReaderPanel.tts, GtIcons.headphones, '听书'),
                 (ReaderPanel.auto, GtIcons.autoRead, '自动阅读'),
                 (ReaderPanel.typography, GtIcons.settings, '设置'),
               ].indexed) ...[

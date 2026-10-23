@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../../core/theme/app_theme.dart';
 import 'search_menu_appearance.dart';
 import 'bookmark_ribbon.dart';
+import 'book_paper.dart';
 
 /// 信息属于各自书页。静态显示与折页缓存使用相同的位置和字形。
 class PageInformation {
@@ -22,6 +23,10 @@ class PageInformation {
     this.searchMenu,
     this.fontFamily,
     this.bookmarked = false,
+    this.bookEdges = false,
+    this.spreadSide,
+    this.spread = false,
+    this.paper,
   });
   final String chapter, book, progress, clock;
   final int? battery;
@@ -32,6 +37,34 @@ class PageInformation {
   final SearchMenuAppearance? searchMenu;
   final String? fontFamily;
   final bool bookmarked;
+  final bool bookEdges;
+
+  /// null为单页；双页只在左上显示章名、左下显示进度、右下显示时间电量。
+  final int? spreadSide;
+  final bool spread;
+  final Color? paper;
+
+  /// 翻动页图包含的信息行；分钟、电量、书签或字号变化不能复用旧图。
+  Object get paintingKey => (
+    chapter,
+    book,
+    progress,
+    clock,
+    battery,
+    inset,
+    bottomInset,
+    color,
+    scaler.scale(11),
+    scaler.scale(12),
+    visible,
+    fontFamily,
+    bookmarked,
+    searchMenu,
+    bookEdges,
+    spreadSide,
+    spread,
+    paper,
+  );
 
   TextPainter _text(String text, double fontSize, double width) => TextPainter(
     text: TextSpan(
@@ -62,7 +95,13 @@ class PageInformation {
     if (paintMenu) searchMenu?.paint(canvas, size);
     if (bookmarked) {
       canvas.save();
-      canvas.translate(size.width - bookmarkRibbonSize.width - bookmarkRibbonRight, 0);
+      canvas.translate(
+        size.width -
+            bookmarkRibbonSize.width -
+            bookmarkRibbonRight -
+            (bookEdges ? bookEdgeWidth : 0),
+        0,
+      );
       const BookmarkRibbonPainter().paint(canvas, bookmarkRibbonSize);
       canvas.restore();
     }
@@ -81,10 +120,26 @@ class PageInformation {
       p.dispose();
     }
 
-    label(chapter, 12, inset, 16, width);
+    if (spreadSide != 1) {
+      label(
+        chapter,
+        12,
+        inset,
+        16,
+        spread ? size.width / 2 - 2 * inset : width,
+      );
+    }
     final y = size.height - bottom;
-    label(progress, 11, inset, y, width / 3);
-    label(clock, 11, size.width / 2, y, width / 3, 0.5);
+    if (spreadSide != 1) label(progress, 11, inset, y, width / 3);
+    if (spreadSide == 0) return;
+    label(
+      clock,
+      11,
+      spreadSide == 1 || spread ? size.width - inset - 58 : size.width / 2,
+      y,
+      width / 3,
+      spreadSide == 1 || spread ? 1 : 0.5,
+    );
     if (battery == null) return;
     label('$battery%', 11, size.width - inset - 18, y, width / 3 - 18, 1);
     // 五格随真实电量变化，直接绘制，翻页期间不异步加载图标。
@@ -117,7 +172,11 @@ class PageInformation {
   /// 原书模式在独立 Shadow DOM 中显示，书籍 CSS 不会污染这些信息。
   Map<String, Object?> toHost(double start, double end) => {
     'bookmarkRibbon': bookmarkRibbonSvg,
-    'bookmarkRibbonRight': bookmarkRibbonRight,
+    'bookmarkRibbonRight':
+        bookmarkRibbonRight + (bookEdges ? bookEdgeWidth : 0),
+    'bookEdges': bookEdges,
+    'bookPaper': bookEdges && paper != null ? bookPaperSvg(paper!) : null,
+    'spread': spread,
     'chapter': chapter,
     'book': book,
     'clock': clock,
@@ -134,6 +193,7 @@ class PageInformation {
     'returnProgress': searchMenu?.returnProgress ?? false,
     'start': start,
     'end': end,
+    'progress': progress,
   };
 }
 

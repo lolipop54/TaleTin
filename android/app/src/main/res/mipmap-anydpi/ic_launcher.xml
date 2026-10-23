@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 旧系统／旧桌面也直接读取高清原图，不再把 48～192px 的密度图放大。
+     nodpi 避免加载阶段先按设备密度缩小；最终尺寸由桌面或系统启动屏决定。 -->
+<bitmap xmlns:android="http://schemas.android.com/apk/res/android"
+    android:src="@drawable/ic_launcher_art"
+    android:gravity="fill"
+    android:filter="true" />

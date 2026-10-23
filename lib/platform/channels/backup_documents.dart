@@ -1,4 +1,3 @@
-
 import 'package:flutter/services.dart';
 
 /// 用户主动选择的 SAF 文档；输入复用已有 AndroidDocumentPlatform 分块读取。
@@ -6,6 +5,9 @@ class BackupDocuments {
   static const _channel = MethodChannel('gtreader/backup_documents');
 
   Future<String?> pick() => _channel.invokeMethod<String>('pick');
+
+  /// 打开系统相册，只请求用户选中的一张图片。
+  Future<String?> pickImage() => _channel.invokeMethod<String>('pickImage');
   Future<String?> create(String name, String mime) =>
       _channel.invokeMethod<String>('create', {'name': name, 'mime': mime});
   Future<void> open(String uri) => _channel.invokeMethod('open', {'uri': uri});

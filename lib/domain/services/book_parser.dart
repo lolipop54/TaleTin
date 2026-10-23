@@ -1,6 +1,6 @@
 /// 解析器契约：探测真实格式、输出统一正文模型。
 ///
-/// 所有格式（EPUB / TXT / 后续 MOBI）都在这里统一，阅读器与业务层
+/// 所有格式（EPUB / TXT / MOBI / AZW3）都在这里统一，阅读器与业务层
 /// 不感知格式差异（设计文档 4.3）。
 library;
 
@@ -93,7 +93,7 @@ typedef ParseProgress = void Function(double? fraction);
 typedef ParseCover = void Function(Uint8List bytes);
 
 abstract class BookParserRegistry {
-  /// 真实格式探测；返回 null 表示不支持（含阶段 6 前的 MOBI）。
+  /// 真实格式探测；返回 null 表示不支持。
   BookFormat? probe(FileProbe probe);
 
   /// 解析为统一正文模型。

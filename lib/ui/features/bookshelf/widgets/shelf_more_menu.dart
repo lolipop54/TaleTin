@@ -1,7 +1,7 @@
+import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:forui/forui.dart';
-import 'package:taletin/platform/channels/system_toast.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/gt_tokens.dart';
@@ -49,9 +49,10 @@ class ShelfMoreMenu extends ConsumerWidget {
                   try {
                     await vm.setSort(sort);
                     if (context.mounted) await controller.hide();
-                  } catch (_) {
+                  } catch (appError, appStack) {
+                    AppErrors.report(appError, appStack, operation: '排序设置未保存', notify: false);
                     if (context.mounted) {
-                      SystemToast.show('排序设置未保存，请重试').ignore();
+                      AppErrors.report(appError, appStack, operation: '排序设置未保存');
                     }
                   }
                 },

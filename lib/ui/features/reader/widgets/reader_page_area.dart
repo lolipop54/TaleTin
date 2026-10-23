@@ -3,25 +3,6 @@ part of '../views/reader_view.dart';
 /// 长按后拖多远才算「要延伸选区」：手指抖动不算
 const double kSelectionDragSlop = 10;
 
-/// 正文区承载盒子：键盘弹出时也保持「没有键盘」时的高度。
-///
-/// 高度被固定后，页内绘制原点与分页参数都不随键盘变化，
-/// 正文和上下信息区不会被顶动；多出来的部分落到键盘/面板后面。
-class _ReaderCanvas extends StatelessWidget {
-  const _ReaderCanvas({required this.height, required this.child});
-
-  final double height;
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) => OverflowBox(
-    alignment: Alignment.topCenter,
-    minHeight: height,
-    maxHeight: height,
-    child: child,
-  );
-}
-
 /// 正文排版区：把可用尺寸与排版设置交给会话，然后画当前页。
 class _PageArea extends ConsumerStatefulWidget {
   const _PageArea({
@@ -44,22 +25,57 @@ class _PageArea extends ConsumerStatefulWidget {
 class _PageAreaState extends ConsumerState<_PageArea> {
   final _inputKey = GlobalKey();
   final _textCache = PageTextCache();
+  final _rasterCache = PageRasterCache();
+  bool _rasterBackward = false;
   ChapterLayout? _preparedLayout;
   int? _preparedPage;
-  bool get isReady => widget.session.isReady &&
-      identical(_preparedLayout, widget.session.layout) &&
+  final _pointerWorkOwner = Object(), _motionWorkOwner = Object();
+  Object? _windowKey;
+  Timer? _textPreparationTimer;
+  final _neighborMaterials = <PreparedPage>[];
+  final _presentationOwner = Object();
+  ReaderSessionNotifier? _presenter;
+  @override
+  void initState() {
+    super.initState();
+    if (ReaderDeliveryExperiments.incremental) {
+      final presenter = ref.read(readerSessionProvider(widget.bookId).notifier);
+      presenter.attachVisualPresenter(_presentationOwner);
+      _presenter = presenter;
+    }
+  }
+
+  bool get isReady =>
+      widget.session.isReady &&
+      (_preparedLayout?.samePageAs(
+            widget.session.layout,
+            _preparedPage ?? -1,
+          ) ??
+          false) &&
       _preparedPage == widget.session.pageIndex;
 
   @override
   void dispose() {
+    _presenter?.detachVisualPresenter(_presentationOwner);
+    _textPreparationTimer?.cancel();
+    LayoutWorkGate.release(_pointerWorkOwner);
+    LayoutWorkGate.release(_motionWorkOwner);
+    for (final page in _neighborMaterials) {
+      page.dispose();
+    }
     _textCache.dispose();
+    _rasterCache.dispose();
     super.dispose();
   }
+
   Future<void> volumeTurn(bool forward) async {
     await ref.read(automaticReadingProvider(widget.bookId).notifier).discard();
-    await ref.read(readerSessionProvider(widget.bookId).notifier).beginManualReading();
+    await ref
+        .read(readerSessionProvider(widget.bookId).notifier)
+        .beginManualReading();
     if (mounted) await PageTurnArea.turn(_inputKey, forward);
   }
+
   /// 上一次提交给引擎的参数签名，用于判断是否会触发重排
   String? _submitted;
 
@@ -76,11 +92,19 @@ class _PageAreaState extends ConsumerState<_PageArea> {
   @override
   void didUpdateWidget(_PageArea oldWidget) {
     super.didUpdateWidget(oldWidget);
+    final effect = widget.settings.settings.pageTurnEffect;
+    if (effect != PageTurnEffect.curl && effect != PageTurnEffect.cover) {
+      _rasterCache.clear();
+    }
     // 原书读取失败回退时，尺寸可能没变，但分页结果已经被切换清掉。
-    if (oldWidget.session.layout != null && widget.session.layout == null) _submitted = null;
+    if (oldWidget.session.layout != null && widget.session.layout == null) {
+      _submitted = null;
+    }
     // 页码/章节变了说明动画已经提交、新页上屏：可以把手柄画出来了
     if (oldWidget.session.pageIndex != widget.session.pageIndex ||
         oldWidget.session.chapterIndex != widget.session.chapterIndex) {
+      // 成功提交不经过取消手势回调，也必须释放这次动画的后台暂停标记。
+      if (_pageTurning) LayoutWorkGate.release(_motionWorkOwner);
       _pageTurning = false;
     }
   }
@@ -97,7 +121,10 @@ class _PageAreaState extends ConsumerState<_PageArea> {
     final settings = widget.settings.settings;
     return LayoutBuilder(
       builder: (context, constraints) {
-        final width = math.min(constraints.maxWidth, GtSize.readingMaxWidth);
+        final width = math.min(
+          constraints.maxWidth,
+          settings.landscape ? constraints.maxWidth : GtSize.readingMaxWidth,
+        );
         // 信息与正文同属一页，分页高度仍扣除信息区与原有留白。
         final info = readerInformation(
           context,
@@ -114,7 +141,13 @@ class _PageAreaState extends ConsumerState<_PageArea> {
         if (keyboard == 0) _stableHeight = constraints.maxHeight;
         final layoutHeight = _stableHeight ?? constraints.maxHeight;
         final contentSize = Size(
-          math.max(0, width - settings.horizontalPadding * 2),
+          math.max(
+            0,
+            width -
+                (settings.horizontalPadding +
+                        (settings.bookEdges ? bookEdgeWidth : 0)) *
+                    2,
+          ),
           math.max(
             0,
             layoutHeight -
@@ -131,99 +164,113 @@ class _PageAreaState extends ConsumerState<_PageArea> {
         _submitIfChanged(options);
         return _ReaderCanvas(
           height: layoutHeight,
-          child: Stack(
-            children: [
-              GestureDetector(
-                // 长按起选、拖动延伸（原型级选区，实现计划 S15）
-                behavior: HitTestBehavior.translucent,
-                onLongPressStart: (details) => _onLongPress(
-                  details.localPosition,
-                  constraints,
-                  options.contentSize,
-                ),
-                onLongPressMoveUpdate: (details) {
-                  // 长按时手指总有一点抖动：没超过阈值就不动选区，
-                  // 否则刚选中的句子会被截断到手指那一点（真机反馈过）
-                  if (details.offsetFromOrigin.distance < kSelectionDragSlop) {
-                    return;
-                  }
-                  _onLongPress(
+          child: Listener(
+            onPointerDown: (_) => LayoutWorkGate.hold(_pointerWorkOwner),
+            onPointerUp: (_) => LayoutWorkGate.release(_pointerWorkOwner),
+            onPointerCancel: (_) => LayoutWorkGate.release(_pointerWorkOwner),
+            child: Stack(
+              children: [
+                GestureDetector(
+                  // 长按起选、拖动延伸（原型级选区，实现计划 S15）
+                  behavior: HitTestBehavior.translucent,
+                  onLongPressStart: (details) => _onLongPress(
                     details.localPosition,
                     constraints,
                     options.contentSize,
-                  );
-                },
-                onLongPressEnd: (_) {},
-                child: _page(session, settings, Size(constraints.maxWidth, layoutHeight)),
-              ),
-              // 选区在的时候正文只收拖动（点按先收选区）：拖手柄不会顺手翻页，
-              // 点空白处收起选区，拖动照旧翻页——跨页选区的另一头靠它看
-              if (widget.state.selection != null)
-                Positioned.fill(
-                  child: SelectionGestureShield(
-                    onDismiss: () {
-                      ref.read(readerProvider.notifier).clearSelection();
-                    },
+                  ),
+                  onLongPressMoveUpdate: (details) {
+                    // 长按时手指总有一点抖动：没超过阈值就不动选区，
+                    // 否则刚选中的句子会被截断到手指那一点（真机反馈过）
+                    if (details.offsetFromOrigin.distance <
+                        kSelectionDragSlop) {
+                      return;
+                    }
+                    _onLongPress(
+                      details.localPosition,
+                      constraints,
+                      options.contentSize,
+                    );
+                  },
+                  onLongPressEnd: (_) {},
+                  child: _page(
+                    session,
+                    settings,
+                    Size(constraints.maxWidth, layoutHeight),
                   ),
                 ),
-              // 起止手柄：拖着改选区两端（实现计划 S1b）；
-              // 拖出左右页沿停 1 秒翻页——整段选区只有一对手柄，够另一头靠它
-              // 必须铺满整页：手柄按页面坐标定位，缩成 0 就会既画不出也点不到。
-              // 点已有高亮选出来的选区不画手柄：那段文字已经有底色，改范围只能
-              // 删掉再重选（用户口径）
-              if (widget.state.selection != null &&
-                  !widget.state.selectionFromMark &&
-                  !_pageTurning &&
-                  session.layout != null &&
-                  session.isReady)
-                Positioned.fill(
-                  child: SelectionHandles(
-                    paintIdleHandles: false,
-                    onDragChanged: (end) =>
-                        setState(() => _draggedSelectionEnd = end),
-                    bookId: widget.bookId,
-                    state: widget.state,
-                    layout: session.layout!,
-                    pageIndex: session.pageIndex,
-                    origin: Offset(
-                      (constraints.maxWidth - options.contentSize.width) / 2,
-                      (constraints.maxHeight -
-                              options.contentSize.height +
-                              info.top -
-                              info.bottom) /
-                          2,
+                // 选区在的时候正文只收拖动（点按先收选区）：拖手柄不会顺手翻页，
+                // 点空白处收起选区，拖动照旧翻页——跨页选区的另一头靠它看
+                if (widget.state.selection != null)
+                  Positioned.fill(
+                    child: SelectionGestureShield(
+                      onDismiss: () {
+                        ref.read(readerProvider.notifier).clearSelection();
+                      },
                     ),
-                    theme: widget.settings.theme,
                   ),
-                ),
-              // 选中文字后的操作菜单：贴着选区摆（S3）；翻页动画期间一起藏起来
-              if (widget.state.selection != null &&
-                  !_pageTurning && session.layout != null && session.isReady)
-                Positioned.fill(
-                  child: SelectionActions(
-                    bookId: widget.bookId,
-                    state: widget.state,
-                    rects: ref
-                        .read(readerEngineProvider)
-                        .selectionRects(
-                          session.layout!,
-                          session.pageIndex,
-                          widget.state.selection!.start,
-                          widget.state.selection!.end,
-                          chapterOrdinals: chapterOrdinalsOf(session.chapters),
-                        ),
-                    origin: Offset(
-                      (constraints.maxWidth - options.contentSize.width) / 2,
-                      (constraints.maxHeight -
-                              options.contentSize.height +
-                              info.top -
-                              info.bottom) /
-                          2,
+                // 起止手柄：拖着改选区两端（实现计划 S1b）；
+                // 拖出左右页沿停 1 秒翻页——整段选区只有一对手柄，够另一头靠它
+                // 必须铺满整页：手柄按页面坐标定位，缩成 0 就会既画不出也点不到。
+                // 点已有高亮选出来的选区不画手柄：那段文字已经有底色，改范围只能
+                // 删掉再重选（用户口径）
+                if (widget.state.selection != null &&
+                    !widget.state.selectionFromMark &&
+                    !_pageTurning &&
+                    session.layout != null &&
+                    session.isReady)
+                  Positioned.fill(
+                    child: SelectionHandles(
+                      paintIdleHandles: false,
+                      onDragChanged: (end) =>
+                          setState(() => _draggedSelectionEnd = end),
+                      bookId: widget.bookId,
+                      state: widget.state,
+                      layout: session.layout!,
+                      pageIndex: session.pageIndex,
+                      origin: Offset(
+                        (constraints.maxWidth - options.contentSize.width) / 2,
+                        (constraints.maxHeight -
+                                options.contentSize.height +
+                                info.top -
+                                info.bottom) /
+                            2,
+                      ),
+                      theme: widget.settings.theme,
                     ),
-                    pageSize: Size(constraints.maxWidth, layoutHeight),
                   ),
-                ),
-            ],
+                // 选中文字后的操作菜单：贴着选区摆（S3）；翻页动画期间一起藏起来
+                if (widget.state.selection != null &&
+                    !_pageTurning &&
+                    session.layout != null &&
+                    session.isReady)
+                  Positioned.fill(
+                    child: SelectionActions(
+                      bookId: widget.bookId,
+                      state: widget.state,
+                      rects: ref
+                          .read(readerEngineProvider)
+                          .selectionRects(
+                            session.layout!,
+                            session.pageIndex,
+                            widget.state.selection!.start,
+                            widget.state.selection!.end,
+                            chapterOrdinals: chapterOrdinalsOf(
+                              session.chapters,
+                            ),
+                          ),
+                      origin: Offset(
+                        (constraints.maxWidth - options.contentSize.width) / 2,
+                        (constraints.maxHeight -
+                                options.contentSize.height +
+                                info.top -
+                                info.bottom) /
+                            2,
+                      ),
+                      pageSize: Size(constraints.maxWidth, layoutHeight),
+                    ),
+                  ),
+              ],
+            ),
           ),
         );
       },
@@ -294,9 +341,14 @@ class _PageAreaState extends ConsumerState<_PageArea> {
       for (final annotation in annotations) {
         if (annotation.isBookmark || annotation.color == null) continue;
         final end = annotation.end ?? annotation.start;
-        final first = ordinals[annotation.start.chapterId], last = ordinals[end.chapterId];
+        final first = ordinals[annotation.start.chapterId],
+            last = ordinals[end.chapterId];
         final current = ordinals[source.chapterId];
-        if (first == null || last == null || current == null || current < first || current > last) {
+        if (first == null ||
+            last == null ||
+            current == null ||
+            current < first ||
+            current > last) {
           continue;
         }
         final rects = engine.selectionRects(
@@ -312,38 +364,57 @@ class _PageAreaState extends ConsumerState<_PageArea> {
       return result;
     }
 
-    List<Offset> handlesFor(ChapterLayout source, int index) {
+    List<CaretGeometry> handlesFor(ChapterLayout source, int index) {
       if (selection == null || widget.state.selectionFromMark) return const [];
       final engine = ref.read(readerEngineProvider);
       return [
         for (final end in [false, true])
           if (end != _draggedSelectionEnd)
-            if (engine.caretAt(
-                  source,
-                  index,
-                  end ? selection.end : selection.start,
-                  atEnd: end,
-                )
-                case final caret?)
-              Offset(caret.left, caret.bottom),
+            ?engine.caretAt(
+              source,
+              index,
+              end ? selection.end : selection.start,
+              atEnd: end,
+            ),
       ];
     }
 
     List<PageThoughtMarker> thoughtsFor(ChapterLayout source, int index) => [
       for (final mark in marksFor(source, index))
         if (mark.annotation.body.trim().isNotEmpty &&
-            ref.read(readerEngineProvider).caretAt(source, index,
-              mark.annotation.end!, atEnd: true) != null)
-          PageThoughtMarker(id: mark.annotation.id,
+            ref
+                    .read(readerEngineProvider)
+                    .caretAt(
+                      source,
+                      index,
+                      mark.annotation.end!,
+                      atEnd: true,
+                    ) !=
+                null)
+          PageThoughtMarker(
+            id: mark.annotation.id,
             rect: thoughtMarkerRect(mark.rects.last, source.contentSize.width),
-            color: readingLinkColor(widget.settings.theme)),
+            color: readingLinkColor(widget.settings.theme),
+          ),
     ];
 
     PageCanvas content(ChapterLayout source, int index) => PageCanvas(
-      onReady: source == layout && index == session.pageIndex ? () {
-        _preparedLayout = source;
-        _preparedPage = index;
-      } : null,
+      onReady: source.samePageAs(layout, index, session.pageIndex)
+          ? () {
+              if (!ReaderDeliveryExperiments.incremental) {
+                _preparedLayout = source;
+                _preparedPage = index;
+                return;
+              }
+              final reader = ref.read(readerSessionProvider(bookId).notifier);
+              final next = reader.peekNext(), previous = reader.peekPrevious();
+              _prepareWindow(source, index, [
+                if (next != null) content(next.layout, next.pageIndex),
+                if (previous != null)
+                  content(previous.layout, previous.pageIndex),
+              ], current: content(source, index));
+            }
+          : null,
       textCache: _textCache,
       information: readerInformation(
         context,
@@ -353,10 +424,19 @@ class _PageAreaState extends ConsumerState<_PageArea> {
         widget.settings.theme,
         session.chapters.indexWhere((c) => c.id == source.chapterId),
         source.progressOfPage(index),
-        bookmarked: ref.watch(bookmarksProvider(bookId)).value?.any((mark) =>
-          mark.locator.chapterId == source.chapterId &&
-          source.pageIndexOf(mark.locator) == index) ?? false,
-        showReturnProgress: source.chapterId == session.chapter.id && index == session.pageIndex,
+        bookmarked:
+            ref
+                .watch(bookmarksProvider(bookId))
+                .value
+                ?.any(
+                  (mark) =>
+                      mark.locator.chapterId == source.chapterId &&
+                      source.pageIndexOf(mark.locator) == index,
+                ) ??
+            false,
+        showReturnProgress:
+            source.chapterId == session.chapter.id &&
+            index == session.pageIndex,
       ),
       layout: source,
       pageIndex: index,
@@ -395,13 +475,18 @@ class _PageAreaState extends ConsumerState<_PageArea> {
       key: _inputKey,
       inputRevision: settings,
       effect: settings.pageTurnEffect,
-      onManualStart: () => unawaited(ref.read(automaticReadingProvider(bookId).notifier).discard()),
+      onManualStart: () => unawaited(
+        ref.read(automaticReadingProvider(bookId).notifier).discard(),
+      ),
       onTapIntercept: (point) async {
         final auto = ref.read(automaticReadingProvider(bookId).notifier);
         if (auto.consumePauseTap()) return true;
         final ratio = point.dx / pageSize.width;
-        if (auto.canResume && ratio >= GtReadingTapZones.previousEdge && ratio <= GtReadingTapZones.nextEdge) {
-          auto.centerTap(); return true;
+        if (auto.canResume &&
+            ratio >= GtReadingTapZones.previousEdge &&
+            ratio <= GtReadingTapZones.nextEdge) {
+          auto.centerTap();
+          return true;
         }
         await auto.discard();
         if (!mounted) return true;
@@ -419,11 +504,17 @@ class _PageAreaState extends ConsumerState<_PageArea> {
         for (final marker in canvas.thoughtMarkers) {
           if (!marker.rect.inflate(8).contains(localPoint)) continue;
           final note = annotations.firstWhere((a) => a.id == marker.id);
-          await ref.read(readerSessionProvider(bookId).notifier).beginManualReading();
+          await ref
+              .read(readerSessionProvider(bookId).notifier)
+              .beginManualReading();
           if (!mounted) return true;
           final box = context.findRenderObject()! as RenderBox;
-          await showThoughtPopover(context, body: note.body, theme: widget.settings.theme,
-            anchor: marker.rect.shift(box.localToGlobal(origin)));
+          await showThoughtPopover(
+            context,
+            body: note.body,
+            theme: widget.settings.theme,
+            anchor: marker.rect.shift(box.localToGlobal(origin)),
+          );
           return true;
         }
         // 点到已有的高亮/笔记：直接开它的操作菜单（改颜色、编辑想法、删除），
@@ -447,12 +538,26 @@ class _PageAreaState extends ConsumerState<_PageArea> {
           if (!mounted) return true;
           final imageSize = fragment.imageSize;
           final path = fragment.block.resourcePath;
-          if (!fragment.frameOnly && imageSize != null &&
+          if (!fragment.frameOnly &&
+              imageSize != null &&
               path != null &&
-              (Offset(fragment.block.tableId == null ? 0 : fragment.block.inset, fragment.y) & imageSize).contains(point - origin)) {
+              (Offset(
+                        fragment.block.tableId == null
+                            ? 0
+                            : fragment.block.inset,
+                        fragment.y,
+                      ) &
+                      imageSize)
+                  .contains(point - origin)) {
             final file = File(canvas.resolveResource(path));
-            if (await tryReaderImageGallery(context, ref, bookId, path,
-              chapterId: session.chapter.id, blockId: fragment.block.blockId)) {
+            if (await tryReaderImageGallery(
+              context,
+              ref,
+              bookId,
+              path,
+              chapterId: session.chapter.id,
+              blockId: fragment.block.blockId,
+            )) {
               return true;
             }
             if (!mounted) return true;
@@ -483,14 +588,18 @@ class _PageAreaState extends ConsumerState<_PageArea> {
           content(layout, session.pageIndex),
           content(target.layout, target.pageIndex),
           createLocalImageConfiguration(context),
+          rasterCache: _rasterCache,
         );
       },
       // 翻页动画期间暂停菜单与手柄触摸，手柄外观已在书页画布中。
       traceLabel: 'simplified',
-      onSettling: (_) {
+      onSettling: (direction) {
+        _rasterBackward = direction == PageTurnDirection.backward;
+        LayoutWorkGate.hold(_motionWorkOwner);
         if (!_pageTurning) setState(() => _pageTurning = true);
       },
       onGestureFinished: () {
+        LayoutWorkGate.release(_motionWorkOwner);
         if (_pageTurning) setState(() => _pageTurning = false);
       },
       turnId: '${layout.chapterId}#${session.pageIndex}',
@@ -529,32 +638,76 @@ class _PageAreaState extends ConsumerState<_PageArea> {
       },
     );
     final size = pageSize;
-    return AutomaticScanArea(bookId: bookId,
-      page: (bookId: bookId, contentVersion: version,
-        layout: (layout.options.layoutSignature, widget.settings.theme, annotations),
-        page: (layout.chapterId, session.pageIndex)),
-      ready: () => mounted && widget.session.isReady && !_pageTurning &&
-        identical(ref.read(readerSessionProvider(bookId)).value?.layout, layout) &&
-        LayoutOptions(settings: ref.read(readerSettingsProvider(bookId)).requireValue.settings,
-          contentSize: layout.contentSize, textScaler: layout.options.textScaler).layoutSignature == layout.options.layoutSignature,
+    return AutomaticScanArea(
+      bookId: bookId,
+      page: (
+        bookId: bookId,
+        contentVersion: version,
+        layout: (
+          layout.options.layoutSignature,
+          widget.settings.theme,
+          annotations,
+        ),
+        page: (layout.chapterId, session.pageIndex),
+      ),
+      ready: () =>
+          mounted &&
+          widget.session.isReady &&
+          !_pageTurning &&
+          layout.samePageAs(
+            ref.read(readerSessionProvider(bookId)).value?.layout,
+            session.pageIndex,
+          ) &&
+          LayoutOptions(
+                settings: ref
+                    .read(readerSettingsProvider(bookId))
+                    .requireValue
+                    .settings,
+                contentSize: layout.contentSize,
+                textScaler: layout.options.textScaler,
+              ).layoutSignature ==
+              layout.options.layoutSignature,
       bounds: Offset.zero & size,
-      paper: widget.settings.theme.background, line: widget.settings.theme.secondary,
+      paper: widget.settings.theme.background,
+      line: widget.settings.theme.secondary,
       child: manual,
       prepare: (_) async {
         final notifier = ref.read(readerSessionProvider(bookId).notifier);
         final target = await notifier.prepareAdjacent(true);
         if (!mounted) throw StateError('阅读页已关闭');
-        final targetContent = target == null ? null : await resolve.chapter(bookId,
-          session.chapters.firstWhere((c) => c.id == target.layout.chapterId));
+        final targetContent = target == null
+            ? null
+            : await resolve.chapter(
+                bookId,
+                session.chapters.firstWhere(
+                  (c) => c.id == target.layout.chapterId,
+                ),
+              );
         if (!mounted) throw StateError('阅读页已关闭');
-        final frames = await ScanFrames.load(content(layout, session.pageIndex),
+        final frames = await ScanFrames.load(
+          content(layout, session.pageIndex),
           target == null ? null : content(target.layout, target.pageIndex),
-          createLocalImageConfiguration(context), size, MediaQuery.devicePixelRatioOf(context));
-        return ScanPreparation(frames, target == null ? null : () => notifier.commitScanPage(
-          current: layout, currentPage: session.pageIndex, next: target.layout,
-          nextPage: target.pageIndex, content: targetContent!),
-          targetPage: target == null ? null : (target.layout.chapterId, target.pageIndex));
-      });
+          createLocalImageConfiguration(context),
+          size,
+          MediaQuery.devicePixelRatioOf(context),
+        );
+        return ScanPreparation(
+          frames,
+          target == null
+              ? null
+              : () => notifier.commitScanPage(
+                  current: layout,
+                  currentPage: session.pageIndex,
+                  next: target.layout,
+                  nextPage: target.pageIndex,
+                  content: targetContent!,
+                ),
+          targetPage: target == null
+              ? null
+              : (target.layout.chapterId, target.pageIndex),
+        );
+      },
+    );
   }
 
   /// 拖动点超出正文盒子上下沿时，算出要往前/往后跳几页（0 表示在盒子内）

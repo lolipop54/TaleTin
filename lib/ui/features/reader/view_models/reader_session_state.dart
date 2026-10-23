@@ -27,10 +27,12 @@ class ReaderSession {
     this.viewportSignature,
     this.originalAnchor,
     this.originalFraction = 0,
+    this.originalContentProgress = false,
     this.originalJump,
     this.scrolling = false,
     this.scrollAnchor,
     this.scrollJump,
+    this.pdfAtEnd = false,
   });
 
   final Book book;
@@ -40,6 +42,9 @@ class ReaderSession {
   final int chapterIndex;
 
   final bool scrolling;
+
+  /// 原页滚动已抵达实际底部；只影响显示百分比，定位仍保存窗口顶部锚点。
+  final bool pdfAtEnd;
   final Locator? scrollAnchor;
   final ({int token, Locator locator})? scrollJump;
 
@@ -59,6 +64,7 @@ class ReaderSession {
 
   /// 原书模式下的章内比例 0–1（上报值，用于切回简化模式前的换算与兜底）
   final double originalFraction;
+  final bool originalContentProgress;
 
   /// 原书模式下的一次「章内定位」请求（进度滑块、书签回到原文、目录定位）。
   ///
@@ -67,7 +73,8 @@ class ReaderSession {
   final ({int token, double fraction, String? anchorId, String? title})?
   originalJump;
 
-  bool get isReady => scrolling ? scrollAnchor != null
+  bool get isReady => scrolling
+      ? scrollAnchor != null
       : layout != null && layout!.pageCount > 0;
 
   /// 是否正在用原书排版（位置来自 WebView 上报）
@@ -102,20 +109,39 @@ class ReaderSession {
   }
 
   /// 章内进度 0–1（按内容位置，与排版无关）
-  double get chapterProgress =>
-      scrolling ? _scrollFraction : isOriginal ? originalFraction
-          : (layout?.progressOfPage(pageIndex) ?? 0);
+  double get chapterProgress => scrolling
+      ? _scrollFraction
+      : isOriginal
+      ? (originalContentProgress
+            ? _anchorFraction(originalAnchor)
+            : originalFraction)
+      : (layout?.progressOfPage(pageIndex) ?? 0);
 
-  double get _scrollFraction => content == null || scrollAnchor == null ? 0
-      : fractionOfLocator(content: content!, bookId: book.id,
-          contentVersion: book.contentVersion, chapterId: chapter.id,
-          locator: scrollAnchor!);
+  double _anchorFraction(Locator? anchor) => content == null || anchor == null
+      ? 0
+      : fractionOfLocator(
+          content: content!,
+          bookId: book.id,
+          contentVersion: book.contentVersion,
+          chapterId: chapter.id,
+          locator: anchor,
+        );
+
+  double get _scrollFraction => content == null || scrollAnchor == null
+      ? 0
+      : fractionOfLocator(
+          content: content!,
+          bookId: book.id,
+          contentVersion: book.contentVersion,
+          chapterId: chapter.id,
+          locator: scrollAnchor!,
+        );
 
   /// 全书进度 0–1：已完成章节的字数 + 本章已读位置（与排版无关）
   double get bookProgress {
     if (scrolling) return bookProgressAt(chapterIndex, _scrollFraction);
     if (isOriginal) {
-      return bookProgressAt(chapterIndex, originalFraction);
+      return bookProgressAt(chapterIndex, chapterProgress);
     }
     final current = layout;
     if (current == null) return 0;
@@ -177,6 +203,27 @@ class ReaderSession {
     return progress.bookProgressAt(chapters, book.textLength, index, fraction);
   }
 
+  /// PDF原页按当前页数显示进度，最后一页显示100%；内容坐标继续供跳转使用。
+  double readingProgressAt(int index, double fraction) {
+    if (book.format == BookFormat.pdf) {
+      if (scrolling && pdfAtEnd && index == chapterIndex) return 1;
+      if (!scrolling && (isOriginal || layout == null)) {
+        return (index + 1) / chapters.length;
+      }
+      if (!scrolling &&
+          index == chapterIndex &&
+          index == chapters.length - 1 &&
+          layout?.isComplete == true &&
+          pageIndex == pageCount - 1) {
+        return 1;
+      }
+    }
+    return bookProgressAt(index, fraction);
+  }
+
+  double get readingProgress =>
+      readingProgressAt(chapterIndex, chapterProgress);
+
   ReaderSession copyWith({
     int? chapterIndex,
     ChapterContent? content,
@@ -185,12 +232,14 @@ class ReaderSession {
     String? viewportSignature,
     Locator? originalAnchor,
     double? originalFraction,
+    bool? originalContentProgress,
     ({int token, double fraction, String? anchorId, String? title})?
     originalJump,
     bool clearOriginalPosition = false,
     bool? scrolling,
     Locator? scrollAnchor,
     ({int token, Locator locator})? scrollJump,
+    bool? pdfAtEnd,
   }) => ReaderSession(
     book: book,
     chapters: chapters,
@@ -198,6 +247,11 @@ class ReaderSession {
     scrolling: scrolling ?? this.scrolling,
     scrollAnchor: scrollAnchor ?? this.scrollAnchor,
     scrollJump: scrollJump ?? this.scrollJump,
+    pdfAtEnd:
+        pdfAtEnd ??
+        (chapterIndex != null || scrollJump != null || originalJump != null
+            ? false
+            : this.pdfAtEnd),
     content: content ?? this.content,
     layout: layout ?? this.layout,
     pageIndex: pageIndex ?? this.pageIndex,
@@ -208,6 +262,8 @@ class ReaderSession {
     originalFraction: clearOriginalPosition
         ? 0
         : (originalFraction ?? this.originalFraction),
+    originalContentProgress:
+        originalContentProgress ?? this.originalContentProgress,
     originalJump: originalJump ?? this.originalJump,
   );
 }

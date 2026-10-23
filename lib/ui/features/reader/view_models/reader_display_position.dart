@@ -24,7 +24,7 @@ mixin _ReaderDisplayPosition
   Future<void> switchReadingDisplay(ReadingLayoutMode mode, bool scrolling) async {
     final session = state.value;
     if (session == null) return;
-    if (session.book.format != BookFormat.epub) mode = ReadingLayoutMode.simplified;
+    if (!session.book.format.supportsOriginalLayout) mode = ReadingLayoutMode.simplified;
     final desired = (mode, scrolling);
     if ((_displayDesired ?? (_mode, session.scrolling)) == desired) return;
     _displayDesired = desired;
@@ -54,7 +54,8 @@ mixin _ReaderDisplayPosition
     }
     final index = session.chapters.indexWhere((c) => c.id == target.chapterId);
     final content = await ref.read(chapterContentRepositoryProvider)
-        .chapter(bookId, session.chapters[index]);
+        .chapter(bookId, session.chapters[index],
+          textOnly: session.book.format == BookFormat.pdf && mode.isOriginal);
     if (!ref.mounted || version != _displayVersion) return;
     // 新显示准备期间仍保留确认过的位置；分页结果不能沿用另一章的旧排版。
     state = AsyncData(ReaderSession(book: session.book, chapters: session.chapters,

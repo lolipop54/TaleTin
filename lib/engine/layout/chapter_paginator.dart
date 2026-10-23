@@ -32,13 +32,13 @@ class PageFragment {
   /// 整块放入（图片、分隔线、标题）：
   /// 文本块的行范围就是它的全部行，图片与分隔线没有行。
   PageFragment.whole(MeasuredBlock block, {required double y})
-      : this(
-          block: block,
-          lineFrom: 0,
-          lineTo: block.lines.length,
-          y: y,
-          height: block.height,
-        );
+    : this(
+        block: block,
+        lineFrom: 0,
+        lineTo: block.lines.length,
+        y: y,
+        height: block.height,
+      );
 
   final MeasuredBlock block;
 
@@ -111,12 +111,16 @@ class _PageBuilder {
   }
 
   PageSlice build(int index) => PageSlice(
-        index: index,
-        fragments: List.unmodifiable(fragments),
-        usedHeight: usedHeight,
-        start: _startAnchor(fragments.where((f) => !f.frameOnly).firstOrNull ?? fragments.first),
-        end: _endAnchor(fragments.where((f) => !f.frameOnly).lastOrNull ?? fragments.last),
-      );
+    index: index,
+    fragments: List.unmodifiable(fragments),
+    usedHeight: usedHeight,
+    start: _startAnchor(
+      fragments.where((f) => !f.frameOnly).firstOrNull ?? fragments.first,
+    ),
+    end: _endAnchor(
+      fragments.where((f) => !f.frameOnly).lastOrNull ?? fragments.last,
+    ),
+  );
 
   static PageAnchor _startAnchor(PageFragment fragment) {
     if (fragment.frameOnly || fragment.block.lines.isEmpty) {
@@ -147,48 +151,69 @@ class _PageBuilder {
   }
 }
 
+/// 可按需准备的测量序列。has() 只准备所查询位置，不提前测完整章。
+abstract interface class MeasuredBlockSource {
+  bool has(int index);
+  MeasuredBlock operator [](int index);
+}
+
+class _ListMeasuredBlocks implements MeasuredBlockSource {
+  _ListMeasuredBlocks(this.values);
+  final List<MeasuredBlock> values;
+  @override
+  bool has(int index) => index < values.length;
+  @override
+  MeasuredBlock operator [](int index) => values[index];
+}
+
 class ChapterPaginator {
   ChapterPaginator({required this.pageHeight, this.gapBefore});
 
   final double pageHeight;
 
   /// 块之间的段距；为空时用固定值（测试与纯算术场景）
-  final double Function(MeasuredBlock previous, MeasuredBlock current)? gapBefore;
+  final double Function(MeasuredBlock previous, MeasuredBlock current)?
+  gapBefore;
 
   /// 浮点容差：行高是小数，累加后允许略微「超」一页，避免因为 1e-9 丢一行
   static const double _epsilon = 0.1;
 
   static const double _fallbackGap = 16;
 
-  List<PageSlice> paginate(List<MeasuredBlock> blocks) {
-    final pages = <PageSlice>[];
+  List<PageSlice> paginate(List<MeasuredBlock> blocks) =>
+      steps(_ListMeasuredBlocks(blocks)).whereType<PageSlice>().toList();
+
+  /// 每次只推进一个可继续步骤；null 表示已有进展但当前页尚未封口。
+  /// 标题和图片组的后文依赖仍由原规则查询，只有 flush 的页可交付。
+  Iterable<PageSlice?> steps(MeasuredBlockSource blocks) sync* {
+    var pageCount = 0;
     var page = _PageBuilder();
 
-    void flush() {
-      if (page.isEmpty) return;
-      pages.add(page.build(pages.length));
+    PageSlice? flush() {
+      if (page.isEmpty) return null;
+      final result = page.build(pageCount++);
       page = _PageBuilder();
+      return result;
     }
 
     /// 需要 [needed] 高度；当前页放不下就换页。
     /// 空页不再换（否则会死循环），返回空页时的实际可用高度由调用方兜底。
-    void ensure(double needed) {
-      if (page.isEmpty) return;
-      if (page.usedHeight + needed <= pageHeight + _epsilon) return;
-      flush();
+    PageSlice? ensure(double needed) {
+      if (page.isEmpty) return null;
+      if (page.usedHeight + needed <= pageHeight + _epsilon) return null;
+      return flush();
     }
 
     /// 块在页内的顶部偏移：页首不加段距
-    double offsetIn(double gap) =>
-        page.isEmpty ? 0.0 : page.usedHeight + gap;
+    double offsetIn(double gap) => page.isEmpty ? 0.0 : page.usedHeight + gap;
 
-    for (var i = 0; i < blocks.length; i++) {
+    for (var i = 0; blocks.has(i); i++) {
       final block = blocks[i];
       final gap = _gapBetween(blocks, i);
 
       if (block.tableId != null) {
         final group = <MeasuredBlock>[block];
-        while (i + 1 < blocks.length && blocks[i + 1].tableId == block.tableId) {
+        while (blocks.has(i + 1) && blocks[i + 1].tableId == block.tableId) {
           group.add(blocks[++i]);
         }
         var from = 0.0;
@@ -197,12 +222,18 @@ class ChapterPaginator {
           final y = offsetIn(from == 0 ? gap : 0);
           var to = tableCut(group, from, pageHeight - y);
           if (to <= from) {
-            if (page.isNotEmpty) { flush(); continue; }
+            if (page.isNotEmpty) {
+              yield flush();
+              continue;
+            }
             to = math.min(height, from + group.first.tableUnit);
           }
-          for (final fragment in tableFragments(group, from, to, y)) { page.add(fragment); }
+          for (final fragment in tableFragments(group, from, to, y)) {
+            page.add(fragment);
+          }
           from = to;
-          if (from < height - _epsilon) flush();
+          if (from < height - _epsilon) yield flush();
+          yield null;
         }
         continue;
       }
@@ -212,8 +243,9 @@ class ChapterPaginator {
         final group = block.kind == BlockKind.image
             ? _imageGroupHeight(blocks, i, gap)
             : block.height;
-        ensure(gap + group);
+        yield ensure(gap + group);
         page.add(PageFragment.whole(block, y: offsetIn(gap)));
+        yield null;
         continue;
       }
 
@@ -221,8 +253,9 @@ class ChapterPaginator {
         // 防孤悬：标题与下一块首行同页；标题本身高过一页时退化为按行切
         final keep = block.height + _firstLineOfNext(blocks, i, gap);
         if (keep <= pageHeight) {
-          ensure(gap + keep);
+          yield ensure(gap + keep);
           page.add(PageFragment.whole(block, y: offsetIn(gap)));
+          yield null;
           continue;
         }
       }
@@ -238,7 +271,7 @@ class ChapterPaginator {
             // 单行都比一页高（超小窗口）：强制放一行，保证一定推进
             picked = 1;
           } else {
-            flush();
+            yield flush();
             continue;
           }
         }
@@ -246,25 +279,27 @@ class ChapterPaginator {
         for (var line = lineIndex; line < lineIndex + picked; line++) {
           height += block.lines[line].height;
         }
-        page.add(PageFragment(
-          block: block,
-          lineFrom: lineIndex,
-          lineTo: lineIndex + picked,
-          y: offset,
-          height: height,
-        ));
+        page.add(
+          PageFragment(
+            block: block,
+            lineFrom: lineIndex,
+            lineTo: lineIndex + picked,
+            y: offset,
+            height: height,
+          ),
+        );
         lineIndex += picked;
         // 续页片段不带段距：gap 只在块的第一片上生效
-        if (lineIndex < block.lines.length) flush();
+        if (lineIndex < block.lines.length) yield flush();
+        yield null;
       }
     }
 
-    if (page.isNotEmpty) pages.add(page.build(pages.length));
-    return pages;
+    if (page.isNotEmpty) yield flush();
   }
 
   /// 第 [index] 块之前的段距；页首的块不加（页首本来就靠边）
-  double _gapBetween(List<MeasuredBlock> blocks, int index) {
+  double _gapBetween(MeasuredBlockSource blocks, int index) {
     if (index <= 0) return 0;
     final custom = gapBefore;
     if (custom == null) return _fallbackGap;
@@ -272,9 +307,9 @@ class ChapterPaginator {
   }
 
   /// 「图片 + 段距 + 标题」整组高度；标题再带上自己的下一块首行。
-  double _imageGroupHeight(List<MeasuredBlock> blocks, int index, double gap) {
+  double _imageGroupHeight(MeasuredBlockSource blocks, int index, double gap) {
     final block = blocks[index];
-    if (index + 1 >= blocks.length) return block.height;
+    if (!blocks.has(index + 1)) return block.height;
     final next = blocks[index + 1];
     if (next.kind != BlockKind.heading) return block.height;
     final nextGap = _gapBetween(blocks, index + 1);
@@ -285,12 +320,8 @@ class ChapterPaginator {
   }
 
   /// 标题后的「下一块首行」高度（含段距），用于防孤悬判定。
-  double _firstLineOfNext(
-    List<MeasuredBlock> blocks,
-    int index,
-    double gap,
-  ) {
-    if (index + 1 >= blocks.length) return 0;
+  double _firstLineOfNext(MeasuredBlockSource blocks, int index, double gap) {
+    if (!blocks.has(index + 1)) return 0;
     final next = blocks[index + 1];
     final nextGap = _gapBetween(blocks, index + 1);
     if (next.lines.isNotEmpty) return nextGap + next.lines.first.height;

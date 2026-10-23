@@ -1,3 +1,4 @@
+import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -20,7 +21,7 @@ Future<void> showBookGroupSheet(
 ) async {
   final groups = await ref.read(bookGroupsProvider.future);
   if (!context.mounted) return;
-  final moved = await showModalBottomSheet<bool>(
+  await showModalBottomSheet<bool>(
     context: context,
     useRootNavigator: true,
     isScrollControlled: true,
@@ -42,9 +43,6 @@ Future<void> showBookGroupSheet(
       },
     ),
   );
-  if (moved == true && context.mounted) {
-    ref.read(bookshelfProvider.notifier).clearSelection();
-  }
 }
 
 /// 打开时使用完整快照；保存顺序失败才恢复原顺序，不刷新成空列表。
@@ -82,7 +80,8 @@ class _BookGroupSheetState extends State<BookGroupSheet> {
         id,
       );
       if (mounted) Navigator.pop(context, true);
-    } catch (_) {
+    } catch (appError, appStack) {
+      AppErrors.report(appError, appStack, operation: '移动书籍失败');
       if (mounted) {
         setState(() {
           busy = false;
@@ -104,7 +103,8 @@ class _BookGroupSheetState extends State<BookGroupSheet> {
     try {
       await widget.repository.reorder(groups.map((g) => g.id).toList());
       if (mounted) setState(() => busy = false);
-    } catch (_) {
+    } catch (appError, appStack) {
+      AppErrors.report(appError, appStack, operation: '分组排序未保存');
       if (mounted) {
         setState(() {
           groups = previous;
@@ -157,7 +157,8 @@ class _BookGroupSheetState extends State<BookGroupSheet> {
         busy = false;
       });
       widget.onDeleted?.call(id);
-    } catch (_) {
+    } catch (appError, appStack) {
+      AppErrors.report(appError, appStack, operation: '删除分组失败');
       if (mounted) {
         setState(() {
           busy = false;

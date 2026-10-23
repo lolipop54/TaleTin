@@ -18,8 +18,10 @@ mixin _ReaderTocNavigation
   /// 页首可能是标题前的图片或正文，不能要求它等于目录标题。
   void completeOriginalTocPresentation(int? token, int chapter) {
     final pending = _tocPresentation;
-    if (pending != null && pending.token == token &&
-        pending.chapter == chapter && !pending.done.isCompleted) {
+    if (pending != null &&
+        pending.token == token &&
+        pending.chapter == chapter &&
+        !pending.done.isCompleted) {
       pending.done.complete();
     }
   }
@@ -34,15 +36,14 @@ mixin _ReaderTocNavigation
     String? anchorId,
     bool rememberReturn = true,
   }) => rememberReturn
-      ? ref
-            .read(readerProgressReturnProvider(bookId).notifier)
-            .jump(
-              () async { await _goToChapterFromToc(
-                chapterId,
-                title: title,
-                anchorId: anchorId,
-              ); await waitForTocPosition(); },
-            )
+      ? ref.read(readerProgressReturnProvider(bookId).notifier).jump(() async {
+          await _goToChapterFromToc(
+            chapterId,
+            title: title,
+            anchorId: anchorId,
+          );
+          await waitForTocPosition();
+        })
       : _goToChapterFromToc(chapterId, title: title, anchorId: anchorId);
 
   Future<void> _goToChapterFromToc(
@@ -50,14 +51,23 @@ mixin _ReaderTocNavigation
     String? title,
     String? anchorId,
   }) async {
+    cancelProgressNavigation();
     await beginManualReading();
     _clearRestoredPosition();
     final session = state.value;
     if (session == null || (!_mode.isOriginal && !session.isReady)) return;
     final index = session.chapters.indexWhere((c) => c.id == chapterId);
     if (index < 0) return;
+    if (session.book.format == BookFormat.pdf) {
+      final content = await ref.read(chapterContentRepositoryProvider)
+        .chapter(bookId, session.chapters[index], textOnly: true);
+      final y = anchorId?.startsWith('pdf-y:') == true
+        ? double.tryParse(anchorId!.substring(6)) ?? 0 : 0.0;
+      await goToLocator(content.pdfPage!.anchorAt(content, bookId, chapterId, y));
+      return;
+    }
     if ((session.scrolling || !_mode.isOriginal) &&
-        session.book.format == BookFormat.epub &&
+        session.book.format.supportsOriginalLayout &&
         anchorId?.isNotEmpty == true) {
       final target = await scrollLinkAnchor(index, anchorId!);
       if (target != null) {
@@ -69,9 +79,14 @@ mixin _ReaderTocNavigation
     final hasTitle = landingTitle?.isNotEmpty == true;
     if (_mode.isOriginal && !session.scrolling) {
       final previous = _tocPresentation;
-      if (previous != null && !previous.done.isCompleted) previous.done.complete();
-      _tocPresentation = (token: ++_tocPresentationToken,
-          chapter: index, done: Completer<void>());
+      if (previous != null && !previous.done.isCompleted) {
+        previous.done.complete();
+      }
+      _tocPresentation = (
+        token: ++_tocPresentationToken,
+        chapter: index,
+        done: Completer<void>(),
+      );
       final linkAnchor = anchorId?.isNotEmpty == true ? anchorId : null;
       // 带 #fragment 的目录链接按锚点定位，标题只在这个锚点损坏时兜底；
       // 不带片段的链接表示章节文件首页，不能拿目录名去正文里搜索同名标题。

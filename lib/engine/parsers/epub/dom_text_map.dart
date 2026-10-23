@@ -104,21 +104,42 @@ class DomTextMap {
   int? blockOffsetOf(Text node, int sourceOffset) {
     final segment = _byNode[node];
     if (segment == null) return null;
-    final clamped = sourceOffset.clamp(0, segment.rawLength);
-    final raw = removeInsertedHyphens(
-      node.text.substring(0, clamped),
-      segment.displayBreaks.where((i) => i < clamped).toList(),
+    return mappedTextOffset(
+      node.text,
+      sourceOffset,
+      blockOffset: segment.blockOffset,
+      hiddenLeading: segment.hiddenLeading,
+      emittedLength: segment.emittedLength,
+      absorbedLeading: segment.absorbedLeading,
+      displayBreaks: segment.displayBreaks,
     );
-    var emitted = collapseWhitespace(raw).length;
-    if (segment.absorbedLeading && emitted > 0) emitted -= 1;
-    emitted -= segment.hiddenLeading;
-    if (emitted < 0) emitted = 0;
-    if (emitted > segment.emittedLength) emitted = segment.emittedLength;
-    return segment.blockOffset + emitted;
   }
 
   @override
   String toString() => 'DomTextMap(${segments.length}个片段)';
+}
+
+/// 持久位置表和现场DOM共用同一空白/显示断字换算，不能各自实现一套偏移。
+int mappedTextOffset(
+  String text,
+  int sourceOffset, {
+  required int blockOffset,
+  required int hiddenLeading,
+  required int emittedLength,
+  required bool absorbedLeading,
+  required List<int> displayBreaks,
+}) {
+  final clamped = sourceOffset.clamp(0, text.length);
+  final raw = removeInsertedHyphens(
+    text.substring(0, clamped),
+    displayBreaks.where((i) => i < clamped).toList(),
+  );
+  var emitted = collapseWhitespace(raw).length;
+  if (absorbedLeading && emitted > 0) emitted -= 1;
+  emitted -= hiddenLeading;
+  if (emitted < 0) emitted = 0;
+  if (emitted > emittedLength) emitted = emittedLength;
+  return blockOffset + emitted;
 }
 
 /// 逐块累积对照表；块的产出顺序就是正文顺序。

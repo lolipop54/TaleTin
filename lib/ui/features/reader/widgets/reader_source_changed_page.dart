@@ -1,9 +1,11 @@
+import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../../app/di/statistics_providers.dart';
 import '../../../../app/di/source_book_providers.dart';
+import '../../../../core/diagnostics/reader_work_trace.dart';
 import '../../../core/widgets/book_loading.dart';
 import '../../../core/widgets/gt_button.dart';
 import '../../bookshelf/view_models/prepare_shelf_return.dart';
@@ -61,7 +63,8 @@ class _SourceChangedState extends ConsumerState<ReaderSourceChangedPage> {
       await ref.read(readerSessionProvider(id).future);
       await ref.read(progressTitlesProvider(id).future);
       if (mounted) ref.read(readerSourceChangeProvider(id).notifier).complete();
-    } catch (error) {
+    } catch (error, appStack) {
+      AppErrors.report(error, appStack, operation: '重新解析书籍失败');
       if (mounted) setState(() => _error = error);
     } finally {
       if (mounted) setState(() => _running = false);
@@ -71,19 +74,37 @@ class _SourceChangedState extends ConsumerState<ReaderSourceChangedPage> {
   Future<void> _exit() async {
     if (_leaving) return;
     setState(() => _leaving = true);
-    // 切换选项已提交时仍等保存完成；不把错误页当作新阅读位置写回。
-    await ref
-        .read(readerSettingsProvider(widget.bookId).notifier)
-        .pendingWrites;
-    await ref.read(automaticReadingProvider(widget.bookId).notifier).pause();
-    await ref.read(readerSessionProvider(widget.bookId).notifier).persist();
-    await ref.read(readingStatisticsServiceProvider).leaveVisual();
-    if (!mounted) return;
-    await prepareShelfReturn(ref);
-    if (!mounted) return;
-    setState(() => _canPop = true);
-    await WidgetsBinding.instance.endOfFrame;
-    if (mounted) context.pop();
+    await traceReaderWork('reader.exit.source_changed', () async {
+      // 切换选项已提交时仍等保存完成；不把错误页当作新阅读位置写回。
+      await traceReaderWork(
+        'reader.exit.source.settings',
+        () => ref
+            .read(readerSettingsProvider(widget.bookId).notifier)
+            .pendingWrites,
+      );
+      await traceReaderWork(
+        'reader.exit.source.auto_pause',
+        () =>
+            ref.read(automaticReadingProvider(widget.bookId).notifier).pause(),
+      );
+      await traceReaderWork(
+        'reader.exit.source.position',
+        () => ref.read(readerSessionProvider(widget.bookId).notifier).persist(),
+      );
+      await traceReaderWork(
+        'reader.exit.source.statistics',
+        () => ref.read(readingStatisticsServiceProvider).leaveVisual(),
+      );
+      if (!mounted) return;
+      await prepareShelfReturn(ref);
+      if (!mounted) return;
+      setState(() => _canPop = true);
+      await traceReaderWork(
+        'reader.exit.source.frame',
+        () => WidgetsBinding.instance.endOfFrame,
+      );
+      if (mounted) context.pop();
+    });
   }
 
   @override

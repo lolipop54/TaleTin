@@ -23,22 +23,96 @@ extension _OriginalNeighborSlots on _OriginalReaderAreaState {
   /// 只在当前章已落稳且没有前台工作时补齐两侧；用户指定的目标章可以插队。
   void _syncNeighbors({int? requiredChapter}) {
     final current = widget.session.chapterIndex;
+    if (ReaderDeliveryExperiments.originalNavigation &&
+        _parallelTarget != null &&
+        _parallelTarget!.chapter != current) {
+      return;
+    }
     if (_landing && requiredChapter == null) return;
     final count = widget.session.chapters.length;
     final wanted = requiredChapter ?? _preload.requestedChapter;
+    if (wanted != null &&
+        (!ReaderDeliveryExperiments.originalNavigation || wanted != current) &&
+        _hosts[wanted]?.hasReadableWindow == true &&
+        _hosts[wanted]?.pageCount == null) {
+      unawaited(_prepareNeighborBoundary(wanted));
+    }
     var prevTarget = current > 0 ? current - 1 : null;
     var nextTarget = current + 1 < count ? current + 1 : null;
     if (_preload.blocked) {
       // 保留已加载的来路，不因暂缓远端而拆掉已有文档。
-      if (_prev.ordinal != prevTarget && wanted != prevTarget) prevTarget = null;
-      if (_next.ordinal != nextTarget && wanted != nextTarget) nextTarget = null;
+      if (_prev.ordinal != prevTarget && wanted != prevTarget) {
+        prevTarget = null;
+      }
+      if (_next.ordinal != nextTarget && wanted != nextTarget) {
+        nextTarget = null;
+      }
     }
     if (_prev.ordinal == prevTarget && _next.ordinal == nextTarget) return;
-    traceTurn('neighbor schedule current=$current prev=$prevTarget next=$nextTarget foreground=${_preload.blocked} requested=$wanted');
+    traceTurn(
+      'neighbor schedule current=$current prev=$prevTarget next=$nextTarget foreground=${_preload.blocked} requested=$wanted',
+    );
     _mount(_prev, prevTarget);
     _mount(_next, nextTarget);
     _pruneHosts();
     if (mounted) _updateState(() {});
+  }
+
+  /// 保留的旧资源可能只有局部索引。用户确实需要它的首/末页时前台补齐，
+  /// 不能等被输入暂停的后台索引，也不能将最后已知页当作章末。
+  Future<bool> _prepareNeighborBoundary(int chapter) {
+    final host = _hosts[chapter];
+    if (host == null || !host.hasReadableWindow) return Future.value(false);
+    // 远跳目标已成为当前章时，不能再把它按“下一章首页”归零。
+    if (ReaderDeliveryExperiments.originalNavigation &&
+        chapter == widget.session.chapterIndex) {
+      return Future.value(false);
+    }
+    final current = widget.session.chapterIndex, navigation = _navigation;
+    final key = (host, current, navigation);
+    return _neighborBoundaryFlights.putIfAbsent(
+      key,
+      () => () async {
+        try {
+          await host.preparation;
+          if (ReaderDeliveryExperiments.originalNavigation &&
+              (!mounted ||
+                  navigation != _navigation ||
+                  current != widget.session.chapterIndex ||
+                  _hosts[chapter] != host)) {
+            return false;
+          }
+          await host.goToFraction(chapter < current ? 1 : 0);
+          await host.presented();
+          final slot = _slotMounted(chapter);
+          if (!mounted ||
+              navigation != _navigation ||
+              current != widget.session.chapterIndex ||
+              _hosts[chapter] != host ||
+              slot == null) {
+            return false;
+          }
+          _updateState(() {
+            slot.ready = true;
+            slot.settledFraction = chapter < current ? 1 : 0;
+          });
+          final waiting = _pageReady.remove(chapter);
+          if (waiting != null && !waiting.isCompleted) waiting.complete(true);
+          return true;
+        } on Object catch (error) {
+          if (mounted && navigation == _navigation && _hosts[chapter] == host) {
+            final waiting = _pageReady.remove(chapter);
+            if (waiting != null && !waiting.isCompleted) {
+              waiting.complete(false);
+            }
+          }
+          traceTurn(
+            'neighbor boundary failed chapter=$chapter type=${error.runtimeType}',
+          );
+          return false;
+        }
+      }().whenComplete(() => _neighborBoundaryFlights.remove(key)),
+    );
   }
 
   void _resumeBackground() {
@@ -55,7 +129,9 @@ extension _OriginalNeighborSlots on _OriginalReaderAreaState {
   /// 换掉的章节释放文档与命令入口；固定 iframe 留给新章节使用。
   void _mount(_NeighborSlot slot, int? target) {
     if (slot.ordinal == target) return;
-    traceTurn('neighbor mount old=${slot.ordinal} target=$target current=${widget.session.chapterIndex} deferred=$_deferredNeighborOrdinal');
+    traceTurn(
+      'neighbor mount old=${slot.ordinal} target=$target current=${widget.session.chapterIndex} deferred=$_deferredNeighborOrdinal',
+    );
     gtDebugLog(
       '[gt] ${slot.label}改为第 ${target == null ? '（无）' : target + 1} 章：'
       '当前第 ${widget.session.chapterIndex + 1} 章第 ${_page + 1}/$_pageCount 页',
@@ -75,7 +151,11 @@ extension _OriginalNeighborSlots on _OriginalReaderAreaState {
     final next = _next.ordinal;
     _hosts.removeWhere(
       (ordinal, _) =>
-          ordinal != current && ordinal != previous && ordinal != next,
+          ordinal != current &&
+          ordinal != previous &&
+          ordinal != next &&
+          (!ReaderDeliveryExperiments.originalNavigation ||
+              ordinal != _parallelTarget?.chapter),
     );
   }
 
@@ -97,7 +177,9 @@ extension _OriginalNeighborSlots on _OriginalReaderAreaState {
     _lastCurrent = current;
     if (previous == null || previous == current) return;
     if (_parallelTarget?.chapter == current) _parallelTarget = null;
-    traceTurn('handover from=$previous to=$current prev=${_prev.ordinal}/${_prev.ready} next=${_next.ordinal}/${_next.ready}');
+    traceTurn(
+      'handover from=$previous to=$current prev=${_prev.ordinal}/${_prev.ready} next=${_next.ordinal}/${_next.ready}',
+    );
     // 自己提交的跨章翻页保留目标截图；外部跳转才废弃整个手势。
     if (_curlHandover?.chapter != current) {
       _finishCurlHandover(false);
@@ -124,9 +206,12 @@ extension _OriginalNeighborSlots on _OriginalReaderAreaState {
     // 顺序跨章保留来路；远端只登记待补，真正交接结束后再开始加载。
     _preload.hold('landing');
     _deferredNeighborOrdinal = handedOver
-        ? (current > previous ? current + 1 : current - 1) : null;
+        ? (current > previous ? current + 1 : current - 1)
+        : null;
     final deferred = _deferredNeighborOrdinal;
-    traceTurn('chapter handover target=$current readyHit=$handedReady deferred=$deferred');
+    traceTurn(
+      'chapter handover target=$current readyHit=$handedReady deferred=$deferred',
+    );
 
     // 两侧重新对齐：刚离开的那一章正好是「往回拖」要看到的那一页
     // （章末往前拖时它在最后一页、章首往回拖时它在第一页），而且它刚刚还在屏幕上，

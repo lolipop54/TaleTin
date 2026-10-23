@@ -3,13 +3,15 @@ import 'dart:typed_data';
 
 import '../../domain/models/backup_manifest.dart';
 import '../database/app_database.dart';
+import '../repositories/book_cover_repository.dart';
 import 'backup_source_index.dart';
 
 /// 在暂存库上迁移与检查；正式库在用户确认前始终不打开也不替换。
 Future<int> validateBackupDatabase(
   Directory root,
-  BackupManifest manifest,
-) async {
+  BackupManifest manifest, {
+  bool verifySourceRecipes = true,
+}) async {
   final file = File('${root.path}/database/reader.sqlite');
   final handle = await file.open();
   try {
@@ -37,8 +39,23 @@ Future<int> validateBackupDatabase(
       throw const FormatException('备份包含未完成的导入任务');
     }
     final paths = manifest.files.map((e) => e.path).toSet();
+    for (final choice in (await DriftBookCoverRepository.loadDefaults(
+      db,
+    )).values) {
+      if (choice.imagePath case final path?) {
+        if (!path.startsWith('global-covers/') ||
+            !paths.contains('library/$path')) {
+          throw const FormatException('备份缺少全局自定义封面图片');
+        }
+      }
+    }
     var count = 0;
-    for (final book in await db.select(db.books).get()) {
+    final books = await db.select(db.books).get();
+    final covers = await DriftBookCoverRepository.load(
+      db,
+      books.map((b) => b.id),
+    );
+    for (final book in books) {
       if (book.id.contains('/') ||
           !BackupEntry.isSafePath('library/${book.id}/source')) {
         throw const FormatException('书籍编号包含非法路径');
@@ -50,7 +67,14 @@ Future<int> validateBackupDatabase(
         throw const FormatException('封面路径越界');
       }
       if (book.status != 'removed') count++;
-      if (book.status == 'preparing' && !paths.contains('library/${book.id}/source.${book.format}')) {
+      final cover = covers[book.id];
+      if (cover?.imagePath case final path?) {
+        if (!paths.contains('library/${book.id}/$path')) {
+          throw const FormatException('备份缺少自定义封面图片');
+        }
+      }
+      if (book.status == 'preparing' &&
+          !paths.contains('library/${book.id}/source.${book.format}')) {
         throw FormatException('备份缺少《${book.title}》的待准备源文件');
       }
       if (book.status == 'active' &&
@@ -65,7 +89,12 @@ Future<int> validateBackupDatabase(
       throw const FormatException('书籍数量与备份清单不一致');
     }
     // 先核对数据库路径，再使用这些路径读取来源索引。
-    final indexedBooks = await validateBackupSourceIndexes(root, manifest, db);
+    final indexedBooks = await validateBackupSourceIndexes(
+      root,
+      manifest,
+      db,
+      verifySourceRecipes: verifySourceRecipes,
+    );
     for (final chapter
         in await db
             .customSelect(

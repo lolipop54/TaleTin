@@ -1,8 +1,10 @@
+import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../app/di/app_providers.dart';
 import '../../../../domain/models/reading_settings.dart';
 import '../../../../platform/channels/reading_window.dart';
+import '../../../../core/diagnostics/reader_work_trace.dart';
 import 'reader_session_view_model.dart';
 import 'reader_settings_view_model.dart';
 import 'reader_view_model.dart';
@@ -71,7 +73,14 @@ class AutomaticReadingNotifier extends Notifier<AutomaticReadingState> {
   }
 
   /// 手动滚动也要取停下来的真实位置，不能只取上次节流回报。
-  Future<void> flushPosition() async { await _stopping; await _backend?.stop(); }
+  Future<void> flushPosition() async {
+    await traceReaderWork('reader.exit.auto.previous_stop', () async {
+      await _stopping;
+    }, {'pending': _stopping != null});
+    await traceReaderWork('reader.exit.auto.backend_stop', () async {
+      await _backend?.stop();
+    }, {'backend': _backend != null});
+  }
 
   @override
   AutomaticReadingState build() {
@@ -172,7 +181,8 @@ class AutomaticReadingNotifier extends Notifier<AutomaticReadingState> {
       _hasSession = true;
       state = AutomaticReadingState(running: true, advancing: _moving);
       await _window.keepAwake(_awakeOwner, settings.autoKeepAwake);
-    } on Object catch (error) {
+    } on Object catch (error, appStack) {
+      AppErrors.report(error, appStack, operation: '启动自动阅读失败');
       if (ref.mounted && version == _version) {
         await backend?.stop();
         await _window.keepAwake(_awakeOwner, false);

@@ -2,6 +2,9 @@ import 'dart:convert';
 import 'dart:developer' show Timeline;
 import 'dart:isolate';
 
+import 'reader_exit_diagnostics.dart';
+import 'reader_turn_diagnostics.dart';
+
 const readerWorkTraceEnabled = bool.fromEnvironment('GT_TRACE_READER_PERF');
 int _sequence = 0;
 
@@ -39,7 +42,10 @@ Future<T> traceReaderWork<T>(
   Future<T> Function() action, [
   Map<String, Object?> details = const {},
 ]) async {
-  if (!readerWorkTraceEnabled) return action();
+  if (!readerWorkTraceEnabled && !ReaderExitDiagnostics.covers(scope) &&
+      ReaderTurnDiagnostics.active == null) {
+    return action();
+  }
   final trace = ReaderWorkTrace.start(scope, details);
   try {
     final result = await action();
@@ -57,17 +63,25 @@ class ReaderWorkTrace {
   ReaderWorkTrace._(this.scope, this.details)
     : id = '${Isolate.current.hashCode}:${++_sequence}',
       _clock = Stopwatch()..start() {
+    _exit = ReaderExitDiagnostics.covers(scope)
+        ? ReaderExitDiagnostics(scope, details: details)
+        : null;
     _emit('begin');
   }
 
   static ReaderWorkTrace? start(
     String scope, [
     Map<String, Object?> details = const {},
-  ]) => readerWorkTraceEnabled ? ReaderWorkTrace._(scope, {...details}) : null;
+  ]) => readerWorkTraceEnabled || ReaderExitDiagnostics.covers(scope) ||
+        ReaderTurnDiagnostics.active != null
+      ? ReaderWorkTrace._(scope, {...details})
+      : null;
 
   final String scope, id;
   final Map<String, Object?> details;
   final Stopwatch _clock;
+  final _turn = ReaderTurnDiagnostics.active;
+  late final ReaderExitDiagnostics? _exit;
   final _stages = <String, int>{};
   var _mark = 0;
   var _finished = false;
@@ -81,11 +95,20 @@ class ReaderWorkTrace {
   void finish({String status = 'ok'}) {
     if (_finished) return;
     _finished = true;
+    _exit?.finish(status);
     mark('remaining');
     _emit('end', status: status);
   }
 
   void _emit(String event, {String? status}) {
+    _turn?.event('work.$scope.$event', [
+      _clock.elapsedMicroseconds,
+      ?status,
+      for (final entry in details.entries)
+        if (entry.value is num || entry.value is bool) [entry.key, entry.value],
+      for (final entry in _stages.entries) [entry.key, entry.value],
+    ]);
+    if (!readerWorkTraceEnabled) return;
     // 输出原始事件时间，不能用 logcat 接收／节流刷新时间计算翻页延迟。
     // ignore: avoid_print
     print(

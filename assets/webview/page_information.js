@@ -4,6 +4,17 @@
   var data = null, host, track, style, rows = new Map(), signature = '';
   var rendered = null, returnPage = null;
   var bookmarkPoints = [], bookmarkMap = null;
+  var titles = [];
+
+  function titleAt(progress) {
+    var title = titles.length ? titles[0].title : data.chapter;
+    titles.forEach(function(entry, i) {
+      var epsilon = i ? Math.max(0, Math.min(.0005,
+        (entry.progress - titles[i - 1].progress) / 2)) : 0;
+      if (entry.progress <= progress + epsilon) title = entry.title;
+    });
+    return title;
+  }
   // 页码只在排版或书签变化时计算；翻页与拖动不遍历正文。
   function bookmarkPages() {
     if (bookmarkMap !== null) return bookmarkMap;
@@ -17,8 +28,8 @@
         item.point.path.forEach(function(i) {element = element.childNodes[i];});
         rect = element.getBoundingClientRect();
       } else rect = window.__gtTts.rect(item.point);
-      if (rect) bookmarkMap[item.id] = Math.max(0, Math.min(internal.state.pages - 1,
-        Math.floor((internal.layout.toContentX(rect.left) + 1) / internal.state.width)));
+      if (rect) bookmarkMap[item.id] = Math.max(0,
+        Math.floor((internal.layout.toContentX(rect.left) + 1) / internal.state.width));
       // 复用书签条带本来就要计算的矩形，不新增正文测量或改变定位。
       if (window.__gtTraceBookmark) internal.post('bookmarkTrace', {
         stage: 'bookmark-page', id: item.id, point: item.point,
@@ -50,8 +61,8 @@
     ensure();
     var marks = bookmarkPages();
     if (data && data.searchMenu && returnPage === null) returnPage = state.page;
-    host.style.setProperty('visibility', data && (data.visible || data.searchMenu || Object.keys(marks).length) && data.paintInHost !== false && state.started ? 'visible' : 'hidden', 'important');
-    if (!data || !state.width) return;
+    host.style.setProperty('visibility', data && (data.visible || data.bookEdges || data.searchMenu || Object.keys(marks).length) && data.paintInHost !== false && state.started ? 'visible' : 'hidden', 'important');
+    if (!data || !state.width || !state.started) return;
     var key = JSON.stringify([data, state.width, state.pages, marks]);
     if (key !== signature) {
       rows.forEach(function(row) { row.remove(); }); rows.clear(); signature = key;
@@ -60,7 +71,7 @@
       'header{top:16px;gap:12px;font-size:' + data.headerSize + 'px}header span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
       'header span{flex:1;min-width:0}' +
       'footer{bottom:' + (data.bottomInset + 12) + 'px;font-size:' + data.footerSize + 'px}footer .clock{position:absolute;left:50%;transform:translateX(-50%)}' +
-      '.battery{display:flex;align-items:center;gap:4px}svg{width:14px;height:14px}';
+      '.battery{display:flex;align-items:center;gap:4px}.battery svg{width:14px;height:14px}';
     }
     // 翻页前后共用同一组相邻节点，过渡中不移动旧节点的逻辑页位置。
     var first = Math.max(0, state.page - 1), last = Math.min(state.pages - 1, state.page + 1);
@@ -69,13 +80,24 @@
       if (rows.has(page)) continue;
       var row = document.createElement('section'); row.className = 'page';
       row.style.left = (page * state.width) + 'px'; row.style.width = state.width + 'px';
+      if (data.bookPaper) {
+        var paper = document.createElement('div');
+        paper.style.cssText = 'position:absolute;inset:0;overflow:hidden';
+        paper.innerHTML = data.bookPaper;
+        row.appendChild(paper);
+      }
       var header = document.createElement('header'), footer = document.createElement('footer');
       function text(parent, value, className) {
         var span = document.createElement('span'); span.textContent = value;
         if (className) span.className = className; parent.appendChild(span); return span;
       }
-      text(header, data.chapter);
-      text(footer, ((data.start + (data.end - data.start) * page / state.pages) * 100).toFixed(2) + '%');
+      var fraction = data.contentProgress && window.__gtHost.content
+        ? window.__gtHost.content.fractionForPage(page) : page / state.pages;
+      var progress = fraction === null ? null : data.start + (data.end - data.start) * fraction;
+      text(header, data.contentProgress && progress !== null ? titleAt(progress) : data.chapter);
+      // 空白栏没有新的正文点，沿用已经确认的信息，不用未知页数换算。
+      text(footer, fraction === null ? data.progress :
+        ((data.start + (data.end - data.start) * fraction) * 100).toFixed(2) + '%');
       text(footer, data.clock, 'clock');
       if (data.battery !== null) {
         var battery = text(footer, data.battery + '%', 'battery');
@@ -109,6 +131,7 @@
     }
   }
   window.__gtInformation = {
+    setTitles: function(value) { titles = value || []; rendered = null; signature = ''; },
     currentPoint: function() {
       var anchor = window.__gtHost.dom.captureAnchor();
       if (!anchor || anchor.node.nodeType !== 3) {
@@ -136,8 +159,10 @@
     configure: function(value) {
       var old = this.insets();
       if (!value || !value.searchMenu || !data || !data.searchMenu || value.searchMenu !== data.searchMenu) returnPage = null;
-      data = value; rendered = null; return old !== this.insets();
+      var oldSpread = this.spread();
+      data = value; rendered = null; return old !== this.insets() || oldSpread !== this.spread();
     },
+    spread: function() { return !!(data && data.spread); },
     top: function() { return 24 + (data ? data.top : 0); },
     insets: function() { return 48 + (data ? data.top + data.bottom : 0); },
     move: function(state, dx, animate, duration) {

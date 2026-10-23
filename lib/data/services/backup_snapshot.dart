@@ -45,14 +45,35 @@ class BackupSnapshotService {
       final missing = <String>[];
       final linked = <String>{};
       var total = 0;
+      var storageVersion = 1;
       for (final book in await database.select(database.books).get()) {
+        if (book.status != 'removed' &&
+            {'mobi', 'azw3'}.contains(book.format)) {
+          final manifest = File(
+            p.join(
+              root.path,
+              'library',
+              book.id,
+              'content',
+              '${book.contentVersion}',
+              'manifest.json',
+            ),
+          );
+          if (await manifest.exists() &&
+              ((jsonDecode(await manifest.readAsString()) as Map)['sourceIndex']
+                      as Map?)?['version'] ==
+                  2) {
+            storageVersion = 2;
+          }
+        }
         if (book.status == 'removed' || !book.sourceHash.startsWith('file:')) {
           continue;
         }
         linked.add(book.id);
         final path = Uri.parse(book.sourceHash).toFilePath();
         final file = File(path);
-        if ((book.status == 'active' || book.status == 'preparing') && await file.exists()) {
+        if ((book.status == 'active' || book.status == 'preparing') &&
+            await file.exists()) {
           external[path] = 'library/${book.id}/source.${book.format}';
           total += await file.length();
         } else {
@@ -162,13 +183,18 @@ class BackupSnapshotService {
         createdAt: DateTime.now().toUtc(),
         bookCount: bookCount,
         files: entries,
+        storageVersion: storageVersion,
       );
       // 创建与恢复共用校验规则，不能导出一个自己无法恢复的备份。
       BackupManifest.fromJson(
         manifest.toJson(),
         supportedDatabaseVersion: database.schemaVersion,
       );
-      await validateBackupDatabase(target, manifest);
+      await validateBackupDatabase(
+        target,
+        manifest,
+        verifySourceRecipes: false,
+      );
       final manifestFile = File(p.join(target.path, 'manifest.json.next'));
       await manifestFile.writeAsString(
         jsonEncode(manifest.toJson()),

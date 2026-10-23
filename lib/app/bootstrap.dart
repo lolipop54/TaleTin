@@ -7,11 +7,15 @@ import 'package:taletin/ui/core/widgets/gt_button.dart';
 
 import 'dart:async';
 import 'dart:io';
+import 'package:flutter/services.dart';
+import '../platform/channels/reading_window.dart';
 
 import '../platform/channels/original_webview_warmup.dart';
 import '../ui/features/reader/widgets/original_font_assets.dart';
 
 import 'restorable_app.dart';
+import 'export_error_log.dart';
+import '../core/diagnostics/app_errors.dart';
 
 import 'package:flutter/material.dart';
 import 'package:drift/drift.dart' show BooleanExpressionOperators;
@@ -203,6 +207,7 @@ Future<BootstrapResult> prepareApp({
     final libraryRoot = (await storage.libraryRoot()).path;
     final positions = ReadingPositionCoordinator(
       DriftReadingPositionRepository(database),
+      onError: (error, stack) => AppErrors.report(error, stack, operation: '保存阅读位置失败'),
     );
     final automaticTasks = _automaticTasks;
     if (listeningHandler.service == null) {
@@ -238,7 +243,7 @@ Future<BootstrapResult> prepareApp({
 
     statistics = ReadingStatisticsService(
       DriftReadingStatisticsRepository(database),
-      onError: (error) => debugPrint('阅读统计保存失败，将重试：$error'),
+      onError: (error, stack) => AppErrors.report(error, stack, operation: '保存阅读统计失败'),
     );
     await statistics.initialize();
     statistics.setIdleMinutes(
@@ -253,6 +258,11 @@ Future<BootstrapResult> prepareApp({
       libraryRoot: libraryRoot,
       workRoot: p.join(cacheDir.path, 'import'),
       preparation: contents.textPreparation!,
+      activeBooks: () => {
+        ...originals.activeBookIds,
+        if (listeningHandler.service?.snapshot.hasSession == true)
+          listeningHandler.service!.snapshot.bookId,
+      },
     );
     // 不纳入 15 秒启动等待；UI 可先显示书架，正文服务协调单书迁移与读取。
     unawaited(
@@ -322,18 +332,32 @@ class _StartupGateState extends State<StartupGate> {
   late Future<BootstrapResult> _future = _start();
 
   Future<BootstrapResult> _start() async {
+    try {
     final result = await bootstrapApp().timeout(kStartupTimeout);
+    // 保存的全局方向在首帧放行前应用，冷启动不先显示竖屏书架再旋转。
+    await SystemChrome.setPreferredOrientations(
+      ReadingWindow.orientations(result.globalPreferences.typography.landscape),
+    );
     if (Platform.isAndroid) {
-      final epub = await (result.database.select(result.database.books)
-            ..where((book) =>
-                book.format.equals('epub') & book.status.isNotValue('removed'))
-            ..limit(1)).getSingleOrNull();
+      final epub =
+          await (result.database.select(result.database.books)
+                ..where(
+                  (book) =>
+                      book.format.equals('epub') &
+                      book.status.isNotValue('removed'),
+                )
+                ..limit(1))
+              .getSingleOrNull();
       if (epub != null) {
         // 系统启动画面仍在，先完成唯一预备实例，再允许书架第一帧出现。
         await OriginalWebViewWarmup.prepareFirstView(originalWebViewSettings());
       }
     }
     return result;
+    } catch (error, stack) {
+      AppErrors.report(error, stack, operation: '启动准备失败');
+      rethrow;
+    }
   }
 
   @override
@@ -419,6 +443,8 @@ class _StartupErrorApp extends StatelessWidget {
                 ),
                 const SizedBox(height: 20),
                 GtButton.filled(onPressed: onRetry, child: const Text('重试')),
+                const SizedBox(height: 12),
+                GtButton.tonal(onPressed: exportErrorLog, child: const Text('导出错误日志')),
               ],
             ),
           ),

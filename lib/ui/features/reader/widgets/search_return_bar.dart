@@ -7,6 +7,8 @@ import '../view_models/reader_progress_return.dart';
 import '../view_models/book_search_controller.dart';
 import '../view_models/reader_view_model.dart';
 import '../view_models/reader_settings_view_model.dart';
+import '../view_models/pdf_viewport.dart';
+import '../view_models/pdf_book_provider.dart';
 import '../../../core/theme/gt_tokens.dart';
 import '../../../core/theme/reading_theme.dart';
 import 'search_menu_appearance.dart';
@@ -54,10 +56,12 @@ class SearchReturnBar extends ConsumerWidget {
     required this.bookId,
     required this.theme,
     this.paintMenu = true,
+    this.edgeToEdge = false,
   });
   final String bookId;
   final ReadingTheme theme;
   final bool paintMenu;
+  final bool edgeToEdge;
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final menu = ref.watch(searchMenuAppearanceProvider(bookId));
@@ -71,7 +75,13 @@ class SearchReturnBar extends ConsumerWidget {
       () => vm.step(1),
       menu.returnProgress ? progress.dismiss : vm.dismiss,
     ];
-    return SafeArea(
+    final pdf = ref.watch(pdfModeProvider(bookId));
+    final view = ref.watch(pdfViewportProvider(bookId));
+    return ListenableBuilder(listenable: view, builder: (_, child) =>
+      pdf && view.menuVisible ? const SizedBox.shrink() : child!,
+      child: SafeArea(
+      left: !edgeToEdge,
+      right: !edgeToEdge,
       maintainBottomViewPadding: true,
       child: LayoutBuilder(
         builder: (context, constraints) {
@@ -109,7 +119,7 @@ class SearchReturnBar extends ConsumerWidget {
           );
         },
       ),
-    );
+    ));
   }
 }
 

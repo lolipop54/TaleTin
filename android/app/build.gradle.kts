@@ -107,6 +107,9 @@ flutter {
     source = "../.."
 }
 
+// 固定当前引擎的单类补丁；只有原书滚动会显式开启新的绘制调度。
+apply(from = "../texture_draw_patch/patch.gradle")
+
 // 在 Android 合并资产后生成独立副本，不修改 pubspec 或 Flutter 的共享产物。
 // 使用同一个 dart-define 控制界面与 APK；切回默认构建时字体自动恢复打包。
 abstract class FilterReadingFontAssets : DefaultTask() {
@@ -202,7 +205,7 @@ val verifyReleaseApk = tasks.register("verifyReleaseApk") {
             val abis = splitAbi?.let { listOf(it) } ?: releaseAbis
             ZipFile(apk).use { zip ->
                 val missing = abis.flatMap { abi ->
-                    listOf("libapp.so", "libflutter.so", "libsqlite3.so", "libgt_reader_native.so")
+                    listOf("libapp.so", "libflutter.so", "libsqlite3.so", "libgt_reader_native.so", "libtaletin_mobi.so")
                         .map { "lib/$abi/$it" }
                 }.filter { path -> (zip.getEntry(path)?.size ?: 0L) <= 0L }
                 check(missing.isEmpty()) {

@@ -8,17 +8,21 @@ mixin _ScrollSelectionDrag on ConsumerState<ScrollSelectionLayer> {
   Future<void>? _pendingMove;
   Future<void>? _pendingEdge;
   int _dragVersion = 0;
+  double _dragHeight = 0;
 
-  Widget _handle(Offset anchor, bool end, Size viewport) => Positioned(
+  Widget _handle(Offset anchor, bool end, double lineHeight) => Positioned(
     // 跨屏后另一端可能消失，用固定 key 保留正在拖动的手势对象。
     key: ValueKey(('scroll-handle', end)),
-    left: (anchor.dx - 22).clamp(0, viewport.width - 44),
-    top: anchor.dy.clamp(0, viewport.height - 44), width: 44, height: 44,
+    // 不为容纳触摸框挪动可见手柄，细线必须始终贴住文字边界。
+    left: anchor.dx - kHandleTouchSize / 2,
+    top: anchor.dy - kHandleAnchorOffset,
+    width: kHandleTouchSize, height: kHandleTouchSize,
     child: GestureDetector(key: ValueKey(end ? kHandleEndKey : kHandleStartKey),
       behavior: HitTestBehavior.opaque,
       onPanStart: (_) {
         ++_dragVersion;
         _dragAtEnd = end; _dragPoint = anchor;
+        _dragHeight = lineHeight;
         setState(() {});
       },
       onPanUpdate: (event) {
@@ -28,7 +32,8 @@ mixin _ScrollSelectionDrag on ConsumerState<ScrollSelectionLayer> {
       },
       onPanEnd: (_) => unawaited(_commitDrag()), onPanCancel: _finishDrag,
       child: CustomPaint(painter: SelectionHandlePainter(
-        color: readingLinkColor(widget.theme), atEnd: end))));
+        color: readingLinkColor(widget.theme),
+        lineHeight: _dragPoint != null && _dragAtEnd == end ? _dragHeight : lineHeight))));
 
   Future<void> _moveEndpoint() {
     if (_moving) return _pendingMove ?? Future.value();

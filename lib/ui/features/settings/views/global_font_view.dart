@@ -1,4 +1,4 @@
-import 'package:taletin/platform/channels/system_toast.dart';
+import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'package:taletin/ui/core/widgets/gt_switch.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -36,9 +36,10 @@ class GlobalFontView extends ConsumerWidget {
                   .change(
                     (current) => current.copyWith(fontOnlyInReader: value),
                   );
-            } catch (_) {
+            } catch (appError, appStack) {
+              AppErrors.report(appError, appStack, operation: '全局字体未保存', notify: false);
               if (context.mounted) {
-                SystemToast.show('设置未保存，请重试').ignore();
+                AppErrors.report(appError, appStack, operation: '全局字体未保存');
               }
             }
           },

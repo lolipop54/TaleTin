@@ -1,3 +1,4 @@
+import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
 
@@ -47,7 +48,8 @@ class _NewBookGroupDialogState extends State<_NewBookGroupDialog> {
           error = e.message;
         });
       }
-    } catch (_) {
+    } catch (appError, appStack) {
+      AppErrors.report(appError, appStack, operation: '保存分组失败');
       if (mounted) {
         setState(() {
           saving = false;

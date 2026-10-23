@@ -85,7 +85,7 @@ class ScrollChapter {
       content,
       chapterTitle,
     );
-    if (!contentTitle && chapterTitle.trim().isNotEmpty) {
+    if (content.pdfPage == null && !contentTitle && chapterTitle.trim().isNotEmpty) {
       final title = measurer.measureChapterTitle(chapterTitle);
       add(
         ScrollCell(

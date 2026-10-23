@@ -9,8 +9,8 @@ import 'package:drift/drift.dart';
 
 /// 书籍表（设计文档 7.1）。
 ///
-/// `sourceHash` 唯一：按原始文件 SHA-256 去重；墓碑删除（status=removed）
-/// 的行保留，重新导入同哈希文件时复用原 bookId 重新激活。
+/// `sourceHash` 名称沿用历史，当前保存唯一来源URI；新删除不保留书籍行。
+/// 历史status=removed行仍可读取，用户重新导入该来源时清理后创建新身份。
 @DataClassName('BookRow')
 class Books extends Table {
   TextColumn get id => text()();
@@ -21,7 +21,7 @@ class Books extends Table {
 
   TextColumn get author => text().withDefault(const Constant(''))();
 
-  /// epub / txt / mobi
+  /// epub / txt / mobi / azw3
   TextColumn get format => text()();
 
   /// 手动分组；null 为「未分组」

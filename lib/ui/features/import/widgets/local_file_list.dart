@@ -90,7 +90,9 @@ class LocalFileList extends StatelessWidget {
                                   horizontal: GtSpacing.s1,
                                 ),
                                 decoration: BoxDecoration(
-                                  color: entry.extension == 'epub'
+                                  color: entry.extension == 'pdf'
+                                      ? GtPalette.danger
+                                      : entry.extension == 'epub'
                                       ? colors.success
                                       : colors.actionPrimary,
                                   borderRadius: BorderRadius.circular(

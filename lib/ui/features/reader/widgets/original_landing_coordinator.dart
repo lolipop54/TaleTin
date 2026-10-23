@@ -115,13 +115,16 @@ extension _OriginalLandingCoordinator on _OriginalReaderAreaState {
     final notifier = ref.read(readerSessionProvider(widget.bookId).notifier);
     final tocToken = notifier.originalTocPresentationToken;
     traceBookmark('landing-begin', {
-      'chapter': widget.session.chapterIndex, 'navigation': navigation,
-      'jumpToken': _lastJumpToken, 'fraction': fraction,
+      'chapter': widget.session.chapterIndex,
+      'navigation': navigation,
+      'jumpToken': _lastJumpToken,
+      'fraction': fraction,
       'exact': bookmarkTraceLocator(exact),
       'hasText': text?.isNotEmpty == true,
       'hasTitle': title?.isNotEmpty == true,
       'hasAnchorId': anchorId?.isNotEmpty == true,
-      'page': _page, 'pages': _pageCount,
+      'page': _page,
+      'pages': _pageCount,
       'fontSize': widget.settings.fontSize,
       'lineHeight': widget.settings.lineHeight,
       'paragraphGapEm': widget.settings.paragraphGapEm,
@@ -189,12 +192,18 @@ extension _OriginalLandingCoordinator on _OriginalReaderAreaState {
     if (annotation != null) {
       await _pushHighlights(ref.read(readerHighlightsProvider(widget.bookId)));
     }
+    if (ReaderDeliveryExperiments.originalWindow) {
+      await _prepareLandingNeighbors(host);
+      if (!mounted || navigation != _navigation || host != _host) return;
+    }
     await host.presented();
     traceBookmark('landing-presented', {
-      'chapter': widget.session.chapterIndex, 'navigation': navigation,
+      'chapter': widget.session.chapterIndex,
+      'navigation': navigation,
       'currentNavigation': _navigation,
       'sameHost': host == _host,
-      'page': _landingPosition?.page, 'pages': _landingPosition?.pageCount,
+      'page': _landingPosition?.page,
+      'pages': _landingPosition?.pageCount,
       'fraction': _landingPosition?.fraction,
       'bookmarkPages': host.bookmarkPages,
     });
@@ -218,6 +227,7 @@ extension _OriginalLandingCoordinator on _OriginalReaderAreaState {
     });
     if (target == null && position != null) {
       await _handleEvent(position, isNeighbor: false);
+      notifier.reportOriginalContentArrival(exact);
     }
     if (!mounted || navigation != _navigation || host != _host) return;
     _preload.release('landing');
@@ -232,6 +242,32 @@ extension _OriginalLandingCoordinator on _OriginalReaderAreaState {
     _scheduleSpeech();
     if (_curlHandover?.chapter == widget.session.chapterIndex) {
       _finishCurlHandover(true);
+    }
+  }
+
+  /// 首屏的直接邻页若在另一资源，也必须准备好，不能把等待移给第一次翻页。
+  Future<void> _prepareLandingNeighbors(OriginalHostController host) async {
+    final current = widget.session.chapterIndex;
+    final page = await host.page;
+    final targets = [
+      if (page == 0 && current > 0) current - 1,
+      if (host.pageCount != null &&
+          page == host.pageCount! - 1 &&
+          current + 1 < widget.session.chapters.length)
+        current + 1,
+    ];
+    for (final chapter in targets) {
+      if (!mounted || host != _host || current != widget.session.chapterIndex) {
+        return;
+      }
+      _preload.requestChapter(chapter);
+      _syncNeighbors(requiredChapter: chapter);
+      final slot = _slotMounted(chapter);
+      if (slot?.ready == true) continue;
+      final ready = _pageReady.putIfAbsent(chapter, () => Completer<bool>());
+      if (!await ready.future.timeout(const Duration(seconds: 10))) {
+        throw StateError('相邻章尚未就绪');
+      }
     }
   }
 

@@ -1,3 +1,4 @@
+import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'dart:async';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
@@ -8,6 +9,7 @@ import '../domain/repositories/app_theme_repository.dart';
 import '../ui/features/import/view_models/import_view_model.dart';
 import '../ui/features/settings/view_models/global_reading_settings.dart';
 import 'app.dart';
+import 'app_error_hooks.dart';
 import 'bootstrap.dart';
 import 'di/app_providers.dart';
 import 'di/app_font_providers.dart';
@@ -37,7 +39,7 @@ class _RestorableAppState extends State<RestorableApp> {
   String? _overlayFontFamily;
   late final AppLifecycleListener _lifecycle;
 
-  ProviderContainer _makeContainer(BootstrapResult result) => ProviderContainer(overrides: [
+  ProviderContainer _makeContainer(BootstrapResult result) => ProviderContainer(observers: const [AppErrorObserver()], overrides: [
     ...runtimeOverrides(result), restoreLibraryProvider.overrideWithValue(_restore),
   ]);
 
@@ -101,7 +103,8 @@ class _RestorableAppState extends State<RestorableApp> {
       setState(() { _container = _candidate; _candidate = null; _visible = true; _message = result.message; });
       // 等新书架真正绘制一帧后，才撤去原画面。
       await WidgetsBinding.instance.endOfFrame;
-    } catch (error) {
+    } catch (error, appStack) {
+      AppErrors.report(error, appStack, operation: '恢复书库失败');
       if (_container == null) {
         _candidate?.dispose(); _candidate = null;
         _fatal = '恢复未能完成，数据与恢复记录已保留。请重新打开应用重试：$error';

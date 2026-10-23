@@ -5,6 +5,8 @@ import 'package:flutter_riverpod/misc.dart' show Override;
 
 import '../data/services/backup_snapshot.dart';
 import '../data/services/file_import_storage.dart';
+import '../data/services/file_layout_checkpoint_store.dart';
+import '../platform/channels/reading_fonts.dart';
 import 'bootstrap.dart';
 import 'di/achievement_providers.dart';
 import 'di/app_providers.dart';
@@ -36,6 +38,12 @@ List<Override> runtimeOverrides(BootstrapResult result) => [
   readingPositionCoordinatorProvider.overrideWithValue(result.positions),
   libraryRootPathProvider.overrideWithValue(result.libraryRoot),
   cacheRootPathProvider.overrideWithValue(result.cacheRoot),
+  layoutCheckpointStoreProvider.overrideWithValue(
+    FileLayoutCheckpointStore(
+      '${result.cacheRoot}/layout_checkpoints',
+      fontFingerprint: ReadingFonts.layoutFingerprint,
+    ),
+  ),
   globalReadingPreferencesProvider.overrideWithValue(result.globalPreferences),
   listeningAudioHandlerProvider.overrideWithValue(result.listeningHandler),
   prepareListeningContentProvider.overrideWithValue(

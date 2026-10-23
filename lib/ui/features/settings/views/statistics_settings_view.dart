@@ -1,3 +1,4 @@
+import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'package:taletin/platform/channels/system_toast.dart';
 import 'package:taletin/ui/core/widgets/gt_switch.dart';
 import 'package:taletin/ui/core/widgets/gt_app_bar.dart';
@@ -119,9 +120,10 @@ class _StatisticsSettingsState extends ConsumerState<StatisticsSettingsView> {
       if (mounted) {
         SystemToast.show('阅读统计已重置').ignore();
       }
-    } catch (_) {
+    } catch (appError, appStack) {
+      AppErrors.report(appError, appStack, operation: '重置统计失败', notify: false);
       if (mounted) {
-        SystemToast.show('重置未完成，请重试').ignore();
+        AppErrors.report(appError, appStack, operation: '重置统计失败');
       }
     } finally {
       if (mounted) setState(() => resetting = false);

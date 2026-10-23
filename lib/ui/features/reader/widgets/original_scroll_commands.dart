@@ -91,14 +91,9 @@ mixin _OriginalScrollCommands on ConsumerState<OriginalScrollArea> {
         );
         if (moved?.value == true) return;
       }
-      final metas = await Future.wait([
-        for (
-          var i = math.max(0, index - 1);
-          i <= math.min(widget.session.chapters.length - 1, index + 1);
-          i++
-        )
-          _meta(i),
-      ]);
+      // 先准备目标章。宿主量出真实高度后，只在上下屏幕余量不足时请求邻章；
+      // 短章仍在显示前补齐，长章不为固定“三章”重复生成整章正文和DOM映射。
+      final metas = [await _meta(index)];
       if (!mounted || request != _request) return;
       _appliedJump = jump?.token;
       final point = anchor == null ? null : _point(index, anchor);

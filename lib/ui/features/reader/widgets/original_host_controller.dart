@@ -1,14 +1,27 @@
+import 'dart:async';
 import 'dart:convert';
+
+import 'package:taletin/core/diagnostics/app_errors.dart';
+
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show MethodChannel, OptionalMethodChannel;
+import 'package:flutter/scheduler.dart';
+import 'package:flutter/services.dart'
+    show MethodChannel, OptionalMethodChannel;
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+
 import '../../../../core/diagnostics/opening_experiments.dart';
+import '../../../../core/diagnostics/reader_delivery_experiments.dart';
+import '../../../../core/diagnostics/reader_turn_diagnostics.dart';
 import 'turn_trace.dart';
 import 'original_tap_target.dart';
 export 'original_tap_target.dart';
+
+part 'original_host_startup.dart';
+part 'original_selection_geometry.dart';
+part 'original_drag_delivery.dart';
 
 /// 原书模式的诊断日志：只在 debug 构建输出。
 ///
@@ -19,98 +32,46 @@ void gtDebugLog(String message) {
   }
 }
 
-/// 原书选区几何：宿主页视口宽、正文区范围与选区矩形（都在宿主页视口坐标里）。
-///
-/// [content] 是正文区（不含上下信息行）在视口里的纵向范围：页首/页末判定、
-/// 「手指推出正文区」都用它，免得把信息行当成正文的一部分。
-class OriginalSelectionGeometry {
-  const OriginalSelectionGeometry({
-    required this.width,
-    required this.content,
-    required this.textTop,
-    required this.textBottom,
-    required this.rects,
-    this.pageFrom,
-    this.pageTo,
-    this.continuation,
-    this.previousContinuation,
-  });
-
-  /// 宿主页视口宽（CSS 像素）
-  final double width;
-
-  /// 正文区（不含上下信息行）的纵向范围；横向范围对多栏正文没有意义
-  final Rect content;
-
-  /// 本页第一行文字的上沿与最后一行文字的下沿（视口坐标）
-  final double textTop;
-  final double textBottom;
-
-  /// 选区矩形（视口坐标）、它在排版的第几页（相对当前页，诊断用）
-  /// 以及它是否落在当前页上（判定用，不看页序）
-  final List<({int page, bool onPage, Rect rect})> rects;
-
-  /// 本页那一段选区的首/末文字在 DOM 上的位置（把范围夹在本页内用它）
-  final Map<String, Object?>? pageFrom;
-  final Map<String, Object?>? pageTo;
-
-  /// 页末终点在下一页首字旁的可拖动落点，不扩选正文。
-  final Offset? continuation;
-
-  /// 页首起点在上一页末字旁的可拖动落点，不扩选正文。
-  final Offset? previousContinuation;
-
-  /// 同章翻页只平移横坐标，先用已准备的几何接上新页，再由网页复核。
-  OriginalSelectionGeometry shifted(int pages) {
-    final delta = Offset(-pages * width, 0);
-    return OriginalSelectionGeometry(
-      width: width,
-      content: content,
-      textTop: textTop,
-      textBottom: textBottom,
-      continuation: continuation == null ? null : continuation! + delta,
-      previousContinuation: previousContinuation == null
-          ? null
-          : previousContinuation! + delta,
-      rects: [
-        for (final item in rects)
-          (
-            page: item.page - pages,
-            onPage:
-                item.rect.right + delta.dx > 1 &&
-                item.rect.left + delta.dx < width - 1,
-            rect: item.rect.shift(delta),
-          ),
-      ],
-    );
-  }
-}
-
 /// 向原书宿主页下发命令、查询页序，并串行处理拖动位置。
 class OriginalHostController {
-  OriginalHostController.fromWebView(this._webView);
+  OriginalHostController.fromWebView(this._webView, {bool paginated = false})
+    : _pagedTexturePending = paginated;
+
+  // 仅物理分页宿主启用一次；iframe 控制器和连续滚动不从此处切换调度。
+  bool _pagedTexturePending = false;
 
   /// 每次章节加载创建独立控制器，截图缓存继续按控制器身份区分文档。
-  OriginalHostController.forFrame(this._webView, {
+  OriginalHostController.forFrame(
+    this._webView, {
     required Future<dynamic> Function(String) evaluate,
+    Future<dynamic> Function(String)? evaluateAsync,
     required Future<void> Function() rendered,
     required Future<void> Function() presented,
+    Future<void> Function()? turnPresented,
     required Future<ui.Image> Function() capture,
     required Future<void> Function(int) holdPage,
     required Future<void> Function(bool) releasePage,
     Future<void> Function(int?)? preparePage,
-  }) : _frameEvaluate = evaluate, _frameRendered = rendered,
-       _framePresented = presented, _frameCapture = capture,
-       _frameHoldPage = holdPage, _frameReleasePage = releasePage,
+  }) : _frameEvaluate = evaluate,
+       _frameEvaluateAsync = evaluateAsync,
+       _frameRendered = rendered,
+       _framePresented = presented,
+       _frameTurnPresented = turnPresented,
+       _frameCapture = capture,
+       _frameHoldPage = holdPage,
+       _frameReleasePage = releasePage,
        _framePreparePage = preparePage;
 
   Future<dynamic> Function(String)? _frameEvaluate;
+  Future<dynamic> Function(String)? _frameEvaluateAsync;
   Future<void> Function()? _frameRendered;
   Future<void> Function()? _framePresented;
+  Future<void> Function()? _frameTurnPresented;
   Future<ui.Image> Function()? _frameCapture;
   Future<void> Function(int)? _frameHoldPage;
   Future<void> Function(bool)? _frameReleasePage;
   Future<void> Function(int?)? _framePreparePage;
+
   /// 宿主页根据已加载图片的像素量决定；小图片章节保持原来的完整解码。
   bool deferredImagePixels = false;
 
@@ -120,19 +81,35 @@ class OriginalHostController {
       await _framePreparePage?.call(page);
     }
   }
+
   int? _heldPage;
   Map<String, int> bookmarkPages = {};
   Future<Map<String, dynamic>?> currentBookmarkPoint() async {
-    final value = await _evaluate(source: 'JSON.stringify(__gtInformation.currentPoint())');
-    return value is String ? (jsonDecode(value) as Map?)?.cast<String, dynamic>() : null;
-  }
-  Future<void> setBookmarks(List<Map<String, Object?>> points) async {
-    final value = await _evaluate(source: '__gtInformation.setBookmarks(${jsonEncode(points)}); JSON.stringify(__gtInformation.bookmarkPages())');
-    if (value is String) {
-      bookmarkPages = (jsonDecode(value) as Map).map((id, page) => MapEntry(id as String, (page as num).toInt()));
-    }
+    final value = await _evaluate(
+      source: 'JSON.stringify(__gtInformation.currentPoint())',
+    );
+    return value is String
+        ? (jsonDecode(value) as Map?)?.cast<String, dynamic>()
+        : null;
   }
 
+  Future<void> setBookmarks(List<Map<String, Object?>> points) async {
+    if (_startupCommands != null) {
+      _startupCommands!.add(
+        '__gtInformation.setBookmarks(${jsonEncode(points)})',
+      );
+      return; // 正确页码随首次 paginated 返回，不查询尚未分栏的 DOM。
+    }
+    final value = await _evaluate(
+      source:
+          '__gtInformation.setBookmarks(${jsonEncode(points)}); JSON.stringify(__gtInformation.bookmarkPages())',
+    );
+    if (value is String) {
+      bookmarkPages = (jsonDecode(value) as Map).map(
+        (id, page) => MapEntry(id as String, (page as num).toInt()),
+      );
+    }
+  }
 
   /// 目标页已完成绘制，并由本次翻页持有；提交无需再切回旧页。
   bool get hasHeldPage => _heldPage != null;
@@ -157,8 +134,20 @@ class OriginalHostController {
   }
 
   Future<dynamic> _evaluate({required String source}) async =>
-      _frameEvaluate != null ? _frameEvaluate!(source) :
-      _webView?.evaluateJavascript(source: source);
+      _frameEvaluate != null
+      ? _frameEvaluate!(source)
+      : _webView?.evaluateJavascript(source: source);
+
+  Future<dynamic> _evaluateAsync(String expression) async {
+    if (!ReaderDeliveryExperiments.originalWindow || pageCount != null) {
+      return _evaluate(source: expression);
+    }
+    if (_frameEvaluateAsync != null) return _frameEvaluateAsync!(expression);
+    if (_frameEvaluate != null) return _frameEvaluate!(expression);
+    return (await _webView?.callAsyncJavaScript(
+      functionBody: 'return await ($expression);',
+    ))?.value;
+  }
 
   @visibleForTesting
   OriginalHostController.forTesting({
@@ -173,10 +162,28 @@ class OriginalHostController {
   Future<bool> Function(String)? _testCheckCommand;
   double? _pendingDrag;
   Future<void>? _dragFlight;
+  Completer<void>? _dragIdle;
+  int? _dragFrameCallback;
+  Duration? _lastDragFrame;
+  bool _dragEnding = false;
+  ReaderTurnTrace? _turnDiagnosticTrace;
   int _dragInputs = 0, _dragCalls = 0, _dragTotalUs = 0, _dragMaxUs = 0;
 
   /// 就绪属于文档本身，不属于左/右预载槽；搬槽时不能丢失。
   int? pageCount;
+  int knownPageCount = 0;
+  bool get hasReadableWindow => pageCount != null || knownPageCount > 0;
+
+  /// 首次 start 前准备的精确正文点；不消耗会话中的落页确认目标。
+  Map<String, Object?>? initialDomPoint;
+  List<String>? _startupCommands;
+  bool contentMapReady = false;
+  Future<void> setContentTitles(List<Map<String, Object>> titles) =>
+      _call('__gt.setContentTitles(${jsonEncode(titles)})');
+  Future<void> setContentMap(Map<String, Object> value) async {
+    await _call('__gt.setContentMap(${jsonEncode(value)})');
+    contentMapReady = true;
+  }
 
   /// 当前设置、字体与标注的在途准备；只由章节容器更新。
   Future<void> preparation = Future.value();
@@ -190,9 +197,7 @@ class OriginalHostController {
   }
 
   Future<int?> adjacentPage(int delta) async =>
-      (await _evaluate(
-        source: '__gt.adjacentPage($delta)',
-      ) as num?)?.toInt();
+      (await _evaluateAsync('__gt.adjacentPage($delta)') as num?)?.toInt();
 
   Future<int> get page async {
     final value = jsonDecode((await state())!);
@@ -200,8 +205,18 @@ class OriginalHostController {
   }
 
   Future<double> fractionForPage(int page) async {
+    if (contentMapReady) {
+      final content = await _evaluate(
+        source: '__gt.pageContentFraction($page)',
+      );
+      if (content is num) return content.toDouble();
+    }
     // 页数由本次排版就绪事件维护，重排时会清空。顺序翻页的信息行无需再查一次网页。
-    final count = pageCount ?? (jsonDecode((await state())!)['pages'] as num).toInt();
+    // 空白栏没有正文坐标，只有完整页数才能安全地走旧比例兼容。
+    // 不能把 knownPageCount 的下界用作最终分母。
+    if (pageCount == null) await _evaluateAsync('__gt.completeIndex()');
+    final count =
+        pageCount ?? (jsonDecode((await state())!)['pages'] as num).toInt();
     return page / count;
   }
 
@@ -219,9 +234,14 @@ class OriginalHostController {
   /// 等待浏览器完成样式和合成，再通过 WebView 原生接口取得整页图像。
   Future<void> rendered() async {
     if (_frameRendered != null) return _frameRendered!();
-    await traceTurnStep('web=${_webView?.getViewId()} rendered', () => _webView?.callAsyncJavaScript(
-      functionBody: 'await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));',
-    ) ?? Future.value());
+    await traceTurnStep(
+      'web=${_webView?.getViewId()} rendered',
+      () =>
+          _webView?.callAsyncJavaScript(
+            functionBody: 'await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));',
+          ) ??
+          Future.value(),
+    );
   }
 
   /// 跨文档复用时还要等待 Android 平台视图提交目标画面，不能只等网页帧。
@@ -232,13 +252,27 @@ class OriginalHostController {
       return rendered();
     }
     const channel = MethodChannel('gtreader/page_capture');
-    await traceTurnStep('web=${_webView.getViewId()} presented', () => channel.invokeMethod<void>('presented', {
-      'viewId': _webView.getViewId(),
-      'trace': turnTraceEnabled,
-      'traceInput': turnFrameTraceEnabled,
-    }));
+    await traceTurnStep(
+      'web=${_webView.getViewId()} presented',
+      () => channel.invokeMethod<void>('presented', {
+        'viewId': _webView.getViewId(),
+        'trace': turnTraceEnabled,
+        'traceInput': turnFrameTraceEnabled,
+      }),
+    );
     gtDebugLog('[gt] 平台绘制完成 ${_webView.getViewId()}');
+    if (_pagedTexturePending) {
+      _pagedTexturePending = false;
+      // 首次完整窗口绘制之后再开启。后续 presented 仍执行上面的原生
+      // visual-state / OnDraw 确认，不能用离屏回调替代目标页交接。
+      await const OptionalMethodChannel('gtreader/original_scroll_draw')
+          .invokeMethod<bool>('enablePaged', {'viewId': _webView.getViewId()});
+    }
   }
+
+  /// 已结束的普通翻页可以合并网页帧等待；开书、重排和截图仍走原确认。
+  Future<void> pageTurnPresented() =>
+      _frameTurnPresented?.call() ?? presented();
 
   Future<ui.Image> capture() async {
     if (_frameCapture != null) return _frameCapture!();
@@ -256,11 +290,14 @@ class OriginalHostController {
     }
     if (defaultTargetPlatform == TargetPlatform.android) {
       const channel = MethodChannel('gtreader/page_capture');
-      final data = (await traceTurnStep('web=${_webView?.getViewId()} capture-channel', () => channel.invokeMapMethod<String, Object>('capture', {
-        'viewId': _webView!.getViewId(),
-        'trace': turnTraceEnabled,
-        'traceInput': turnFrameTraceEnabled,
-      })))!;
+      final data = (await traceTurnStep(
+        'web=${_webView?.getViewId()} capture-channel',
+        () => channel.invokeMapMethod<String, Object>('capture', {
+          'viewId': _webView!.getViewId(),
+          'trace': turnTraceEnabled,
+          'traceInput': turnFrameTraceEnabled,
+        }),
+      ))!;
       final buffer = await ui.ImmutableBuffer.fromUint8List(
         data['pixels'] as Uint8List,
       );
@@ -275,7 +312,9 @@ class OriginalHostController {
         final codec = await descriptor.instantiateCodec();
         try {
           final image = (await codec.getNextFrame()).image;
-          traceTurn('capture decoded web=${_webView?.getViewId()} totalUs=${watch.elapsedMicroseconds} size=${image.width}x${image.height}');
+          traceTurn(
+            'capture decoded web=${_webView?.getViewId()} totalUs=${watch.elapsedMicroseconds} size=${image.width}x${image.height}',
+          );
           if (trace) {
             debugPrint('CURL_CAPTURE raw=${watch.elapsedMilliseconds}ms');
           }
@@ -307,24 +346,27 @@ class OriginalHostController {
   }
 
   Future<OriginalTapTarget> tapTarget(Offset point) async {
-    final value = await traceTurnStep('tap web-hit-test', () => _evaluate(
-      source: '__gt.tapTarget(${point.dx}, ${point.dy})'));
-    return OriginalTapTarget(jsonDecode(value as String) as Map<String, dynamic>);
+    final value = await traceTurnStep(
+      'tap web-hit-test',
+      () => _evaluate(source: '__gt.tapTarget(${point.dx}, ${point.dy})'),
+    );
+    return OriginalTapTarget(
+      jsonDecode(value as String) as Map<String, dynamic>,
+    );
   }
 
   Future<bool> activateLink(Offset point, {String? knownLink}) async {
-    final value = knownLink ?? await _evaluate(
-      source: '__gt.linkAt(${point.dx}, ${point.dy})',
-    );
+    final value =
+        knownLink ??
+        await _evaluate(source: '__gt.linkAt(${point.dx}, ${point.dy})');
     if (value is! String || value.isEmpty) return false;
     await _call('__gt.openLink(${jsonEncode(value)})');
     return true;
   }
 
   Future<String?> imageAt(Offset point) async =>
-      await _evaluate(
-        source: '__gt.imageAt(${point.dx}, ${point.dy})',
-      ) as String?;
+      await _evaluate(source: '__gt.imageAt(${point.dx}, ${point.dy})')
+          as String?;
 
   /// 视口坐标的一点 → DOM 文本点（`{path, offset, width}`）；这一点没有文字时返回 null。
   ///
@@ -394,7 +436,31 @@ class OriginalHostController {
       final contentHeight = (decoded['contentHeight'] as num?)?.toDouble() ?? 0;
       final continuation = decoded['continuation'];
       final previous = decoded['previousContinuation'];
+      Offset? anchor(String name) {
+        final value = decoded[name];
+        return value is Map
+            ? Offset(
+                (value['left'] as num).toDouble(),
+                (value['bottom'] as num).toDouble(),
+              )
+            : null;
+      }
+
       return OriginalSelectionGeometry(
+        leading: anchor('leading'),
+        trailing: anchor('trailing'),
+        leadingHeight:
+            ((decoded['leading'] as Map?)?['height'] as num?)?.toDouble() ?? 0,
+        trailingHeight:
+            ((decoded['trailing'] as Map?)?['height'] as num?)?.toDouble() ?? 0,
+        continuationHeight: continuation is Map
+            ? ((continuation['bottom'] as num) - (continuation['top'] as num))
+                  .toDouble()
+            : 0,
+        previousContinuationHeight: previous is Map
+            ? ((previous['bottom'] as num) - (previous['top'] as num))
+                  .toDouble()
+            : 0,
         previousContinuation: previous is Map
             ? Offset(
                 (previous['left'] as num).toDouble(),
@@ -468,11 +534,21 @@ class OriginalHostController {
   /// 只返回当前页实际画出的想法尾缀，用同一份坐标绘制与命中。
   Future<List<({String id, Rect rect})>> thoughtMarkers() async {
     final value = await _evaluate(
-      source: 'window.__gt ? __gt.thoughtMarkers() : "[]"');
+      source: 'window.__gt ? __gt.thoughtMarkers() : "[]"',
+    );
     final rows = jsonDecode(value as String? ?? '[]') as List;
-    return [for (final row in rows) (id: row['id'] as String,
-      rect: Rect.fromLTWH((row['left'] as num).toDouble(), (row['top'] as num).toDouble(),
-        (row['width'] as num).toDouble(), (row['height'] as num).toDouble()))];
+    return [
+      for (final row in rows)
+        (
+          id: row['id'] as String,
+          rect: Rect.fromLTWH(
+            (row['left'] as num).toDouble(),
+            (row['top'] as num).toDouble(),
+            (row['width'] as num).toDouble(),
+            (row['height'] as num).toDouble(),
+          ),
+        ),
+    ];
   }
 
   /// 下一页；到章末时宿主页会上报 `boundary`，由上层决定换章。
@@ -497,12 +573,15 @@ class OriginalHostController {
   Future<void> clearTtsRange(int version) =>
       _call('__gt.clearTtsRange($version)');
 
-  Future<List<Map<String, dynamic>>> ttsBoundaries(
+  Future<List<Map<String, dynamic>>?> ttsBoundaries(
     List<Map<String, Object>> nodes,
   ) async {
     final value = await _evaluate(
       source: 'JSON.stringify(__gt.ttsBoundaries(${jsonEncode(nodes)}))',
     );
+    // 单双页切换会换掉 iframe；旧文档的查询按约定返回 null。
+    // 与合法的空边界列表分开，调用方不能把取消查询当作已准备完成。
+    if (value == null) return null;
     return (jsonDecode(value as String) as List)
         .map((e) => (e as Map).cast<String, dynamic>())
         .toList();
@@ -549,13 +628,13 @@ class OriginalHostController {
     }
     try {
       // 包成有返回值的表达式；if 语句会返回 undefined，导致落点误判。
-      final result = await _evaluate(
-        source:
-            '(function () { if (window.__gt) { return $script; }'
-            ' return false; })()',
+      final result = await _evaluateAsync(
+        '(function () { if (window.__gt) { return $script; }'
+        ' return false; })()',
       );
       return result == true || '$result' == 'true';
-    } on Object catch (error) {
+    } on Object catch (error, stack) {
+      AppErrors.report(error, stack, operation: '原书定位指令失败');
       gtDebugLog('[gt] 下发失败：$script → $error');
       return false;
     }
@@ -581,58 +660,25 @@ class OriginalHostController {
     String? fontFamily,
     int? fontWeight,
     Map<String, String>? colors,
+    Map<String, Object?>? initialInformation,
   }) => _call(
-    '__gt.applyStyle(${jsonEncode({'fontSizePx': ?fontSizePx, 'lineHeight': ?lineHeight, 'paragraphGapEm': ?paragraphGapEm, 'marginPx': ?marginPx, 'indent': ?indent, 'fontFamily': ?fontFamily, 'fontWeight': ?fontWeight, 'colors': ?colors})})',
+    '__gt.${initialInformation == null ? 'applyStyle' : 'configure'}(${jsonEncode({'fontSizePx': ?fontSizePx, 'lineHeight': ?lineHeight, 'paragraphGapEm': ?paragraphGapEm, 'marginPx': ?marginPx, 'indent': ?indent, 'fontFamily': ?fontFamily, 'fontWeight': ?fontWeight, 'colors': ?colors})}${initialInformation == null ? '' : ', ${jsonEncode(initialInformation)}'})',
   );
 
   /// 点击：分区由 Flutter 算好，一次调用里判断链接并执行相应动作。
-  Future<void> tap(double x, double y, String zone, {int animationDurationMs = 200}) =>
-      _call('__gt.tap(${x.round()}, ${y.round()}, "$zone", $animationDurationMs)');
-
-  /// 拖动中让页面跟手平移；桥忙时只保留最新位置。
-  Future<void> drag(double dx) {
-    if (readerPerformanceEnabled) _dragInputs++;
-    _pendingDrag = dx;
-    return _dragFlight ??= _drainDrag();
-  }
-
-  Future<void> _drainDrag() async {
-    try {
-      while (_pendingDrag != null) {
-        final dx = _pendingDrag!;
-        _pendingDrag = null;
-        final watch = readerPerformanceEnabled ? (Stopwatch()..start()) : null;
-        await _call('__gt.drag(${dx.round()})');
-        if (watch != null) {
-          final us = watch.elapsedMicroseconds;
-          _dragCalls++;
-          _dragTotalUs += us;
-          if (us > _dragMaxUs) _dragMaxUs = us;
-        }
-      }
-    } finally {
-      _dragFlight = null;
-    }
-  }
-
-  /// 执行手势层决定的页差（-1／0／1）；旧拖动不能覆盖补完动画。
-  Future<void> settle(int pageDelta) async {
-    _pendingDrag = null;
-    await _dragFlight;
-    if (readerPerformanceEnabled && _dragInputs > 0) {
-      readerPerf('original.slide.dragBridge', _dragTotalUs,
-          {'inputs': _dragInputs, 'calls': _dragCalls, 'maxUs': _dragMaxUs});
-      _dragInputs = _dragCalls = _dragTotalUs = _dragMaxUs = 0;
-    }
-    await _call('__gt.settle($pageDelta)');
-  }
+  Future<void> tap(
+    double x,
+    double y,
+    String zone, {
+    int animationDurationMs = 200,
+  }) => _call(
+    '__gt.tap(${x.round()}, ${y.round()}, "$zone", $animationDurationMs)',
+  );
 
   /// 真实边界：`end` 章末、`start` 章首、空串表示都不是。
   Future<String?> atEdge() async {
     try {
-      final value = await _evaluate(
-        source: "window.__gt ? __gt.atEdge() : ''",
-      );
+      final value = await _evaluate(source: "window.__gt ? __gt.atEdge() : ''");
       return value is String ? value : null;
     } on Object {
       return null;
@@ -664,15 +710,42 @@ class OriginalHostController {
   }
 
   Future<void> _call(String script) async {
+    if (_queueStartup(script)) return;
     if (_testCommand != null) return _testCommand!(script);
+    final diagnostic = _turnDiagnosticTrace;
+    final sequence = diagnostic != null && diagnostic.endUs == null
+        ? diagnostic.commandBegin(script.split('(').first, hostToken: identityHashCode(this)) : 0;
     try {
+      final observed = sequence == 0 ? script
+          : '(window.gtReaderTurnDiagnostics ? '
+            'window.gtReaderTurnDiagnostics.run(${jsonEncode(diagnostic!.id)},'
+            // 分页动画由Flutter页图完成，不用诊断rAF驱动静止的底层网页。
+            '$sequence,function(){return ($script);},false) : ($script))';
       // 换章瞬间命令可能打到还没跑起 host.js 的新文档上。
-      await traceTurnStep('web=${_webView?.getViewId()} command=${script.split('(').first}', () => _evaluate(
-        source: 'if (window.__gt) { $script; }',
-      ));
-    } on Object catch (error) {
-      traceTurn('command ignored web=${_webView?.getViewId()} type=${error.runtimeType}');
+      await traceTurnStep(
+        'web=${_webView?.getViewId()} command=${script.split('(').first}',
+        () => _evaluateAsync(
+          'window.__gt ? (${_diagnosticCommand(observed)}) : null',
+        ),
+      );
+    } on Object catch (error, stack) {
+      AppErrors.report(error, stack, operation: '原书页面指令失败');
+      diagnostic?.event('command.error', [error.runtimeType.toString()]);
+      traceTurn(
+        'command ignored web=${_webView?.getViewId()} type=${error.runtimeType}',
+      );
       // WebView 已销毁或脚本报错：翻页失败不应把界面带崩。
+    } finally {
+      if (sequence != 0) diagnostic!.commandEnd(sequence);
     }
+  }
+
+  // 诊断只量网页函数执行，不把平台往返或等待浏览器调度算成该函数CPU。
+  String _diagnosticCommand(String script) {
+    if (!turnTraceEnabled) return script;
+    final command = jsonEncode(script.split('(').first);
+    return '(function(){var start=performance.now();try{return ($script);}'
+        'finally{window.__gtHost.post("turnTrace",{stage:"startup-command",'
+        'command:$command,ms:performance.now(),elapsedMs:performance.now()-start});}})()';
   }
 }

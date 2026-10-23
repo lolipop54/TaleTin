@@ -1,3 +1,4 @@
+import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -46,7 +47,8 @@ class _SourceBookOpeningState extends ConsumerState<SourceBookOpening> {
       );
       BookOpeningTrace.mark(widget.bookId, 'source_prepared');
       if (mounted) setState(() => _ready = true);
-    } catch (error) {
+    } catch (error, appStack) {
+      AppErrors.report(error, appStack, operation: '打开书籍失败');
       BookOpeningTrace.finish(widget.bookId, status: 'prepare_failed');
       if (mounted) setState(() => _error = error);
     }

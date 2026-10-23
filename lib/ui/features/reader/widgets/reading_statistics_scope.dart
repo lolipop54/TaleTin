@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'turn_trace.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -46,7 +47,10 @@ class _StatisticsScopeState extends ConsumerState<ReadingStatisticsScope> {
       if (!_keys) return;
       _turning = true;
       try { await widget.onVolumeTurn?.call(call.arguments == true); }
-      catch (_) { if (mounted) ref.read(readerProvider.notifier).showNotice('翻页失败，请重试'); }
+      catch (error, stack) {
+        AppErrors.report(error, stack, operation: '音量键翻页失败', notify: mounted);
+        if (mounted) ref.read(readerProvider.notifier).showNotice('翻页失败，请重试');
+      }
       finally { _turning = false; }
     });
     foreground = WidgetsBinding.instance.lifecycleState == null ||

@@ -53,8 +53,11 @@ Future<void> backfillSourceLocations(
       contentVersion: old.contentVersion,
       chapterId: old.chapterId,
     ).at(block, at, affinity: old.affinity);
-    return jsonEncode(
-      old
+    return jsonEncode({
+      // 位置 JSON 还携带视觉/听书来源及进度口径。这里只补坐标证据，
+      // 不能通过 Locator.toJson 把这些扩展字段一并丢掉。
+      ...value,
+      ...old
           .copyWith(
             exact: found.exact,
             prefix: found.prefix,
@@ -62,7 +65,7 @@ Future<void> backfillSourceLocations(
             imageResource: found.imageResource,
           )
           .toJson(),
-    );
+    });
   }
 
   // 逐项比较当前值，编辑器恰好写入新选区时不覆盖它；正文和编辑时间不动。

@@ -31,7 +31,11 @@ class AutomaticReadingSpeed extends StatelessWidget {
       trackThickness: GtSliderSize.trackThicknessLarge,
       compact: true,
       backgroundColor: ReaderSheet.backgroundOf(context),
-      label: scrolling ? '滚动速度' : '每页扫描耗时',
+      label: scrolling
+          ? '滚动速度'
+          : settings.spreadEnabled
+          ? '每页阅读时长'
+          : '每页扫描耗时',
       labelStyle: GtText.body(context.gtColors.textPrimary)
           .copyWith(fontSize: 14),
       value: scrolling

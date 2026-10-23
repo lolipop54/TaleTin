@@ -2,7 +2,10 @@
 mod dom;
 mod hash;
 mod html;
+mod html_anchors;
 mod inflate;
+mod mobi_html;
+mod mobi_html_batch;
 mod original;
 mod original_hyphen;
 mod original_serialize;
@@ -55,6 +58,47 @@ fn result(bytes: Vec<u8>, owner: &mut Vec<u8>, output: *mut GtScanResult) {
                 length: owner.len(),
             },
         );
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gt_mobi_html_open(
+    input: *const u8,
+    length: usize,
+) -> *mut mobi_html::MobiHtml {
+    Box::into_raw(Box::new(mobi_html::MobiHtml::new(unsafe {
+        slice::from_raw_parts(input, length)
+    })))
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gt_mobi_html_refs(
+    handle: *mut mobi_html::MobiHtml,
+    output: *mut GtScanResult,
+) {
+    let html = unsafe { &mut *handle };
+    result(
+        serde_json::to_vec(&html.refs()).unwrap(),
+        &mut html.output,
+        output,
+    );
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gt_mobi_html_finish(
+    handle: *mut mobi_html::MobiHtml,
+    input: *const u8,
+    length: usize,
+    output: *mut GtScanResult,
+) {
+    let html = unsafe { &mut *handle };
+    let bytes = html.finish(unsafe { slice::from_raw_parts(input, length) });
+    result(bytes, &mut html.output, output);
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gt_mobi_html_close(handle: *mut mobi_html::MobiHtml) {
+    if !handle.is_null() {
+        unsafe {
+            drop(Box::from_raw(handle));
+        }
     }
 }
 
@@ -208,7 +252,8 @@ pub unsafe extern "C" fn gt_html_bytes(
     optimized: u32,
 ) -> *mut html::Html {
     Box::into_raw(Box::new(html_from_bytes(
-        unsafe { slice::from_raw_parts(input, length) }, optimized != 0,
+        unsafe { slice::from_raw_parts(input, length) },
+        optimized != 0,
     )))
 }
 // Keep single-chapter and full-book statistics decoding exactly the same.
@@ -251,6 +296,13 @@ pub unsafe extern "C" fn gt_html_close(handle: *mut html::Html) {
             drop(Box::from_raw(handle));
         }
     }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gt_html_anchor_positions(handle: *mut html::Html,
+    input: *const u8, length: usize, output: *mut GtScanResult) {
+    let metadata = serde_json::from_slice(unsafe { slice::from_raw_parts(input, length) }).unwrap();
+    let html = unsafe { &mut *handle };
+    result(serde_json::to_vec(&html.anchor_positions(metadata)).unwrap(), &mut html.output, output);
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gt_html_batch_open(input: *const u8, length: usize) -> *mut Batch {

@@ -1,4 +1,4 @@
-import 'package:taletin/platform/channels/system_toast.dart';
+import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'package:taletin/ui/core/widgets/gt_app_bar.dart';
 import 'package:taletin/ui/core/widgets/gt_list_button.dart';
 import 'package:flutter/material.dart';
@@ -60,9 +60,10 @@ Future<void> openSettingsPage<T>(
               ),
       ),
     );
-  } catch (_) {
+  } catch (appError, appStack) {
+    AppErrors.report(appError, appStack, operation: '设置页面准备失败', notify: false);
     if (context.mounted) {
-      SystemToast.show('设置页面准备失败，请重试').ignore();
+      AppErrors.report(appError, appStack, operation: '设置页面准备失败');
     }
   } finally {
     subscription?.close();
@@ -143,9 +144,10 @@ class _SettingsChoicesState<T> extends ConsumerState<SettingsChoices<T>> {
     setState(() => _saving = true);
     try {
       await widget.save(ref, option);
-    } catch (_) {
+    } catch (appError, appStack) {
+      AppErrors.report(appError, appStack, operation: '设置未保存，请重试', notify: false);
       if (mounted) {
-        SystemToast.show('设置未保存，请重试').ignore();
+        AppErrors.report(appError, appStack, operation: '设置未保存，请重试');
       }
     } finally {
       if (mounted) setState(() => _saving = false);

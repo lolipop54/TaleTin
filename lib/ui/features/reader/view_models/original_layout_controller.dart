@@ -11,13 +11,14 @@
 library;
 
 import 'dart:async';
+
+
 import 'dart:typed_data';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../app/di/app_providers.dart';
 import '../../../../data/services/epub_source_repository.dart';
-import '../../../../domain/models/book.dart';
 import '../../../../domain/models/locator.dart';
 import '../../../../domain/models/book_document.dart';
 import '../../../../engine/parsers/epub/locator_dom_point.dart';
@@ -41,8 +42,20 @@ class HostReady extends OriginalHostEvent {
 
 /// 分栏完成（页数可用）：换章后首次可读的信号
 class HostPaginated extends OriginalHostEvent {
-  const HostPaginated({required super.chapterIndex, required this.pageCount});
+  const HostPaginated({
+    required super.chapterIndex,
+    required this.pageCount,
+    this.indexComplete = true,
+  });
 
+  /// 未完成索引时仅表示已确认存在的页范围；最终页数见 indexComplete。
+  final int pageCount;
+  final bool indexComplete;
+}
+
+/// 只读索引完成；不能作第二次落页或截图失效事件处理。
+class HostIndexReady extends OriginalHostEvent {
+  const HostIndexReady({required super.chapterIndex, required this.pageCount});
   final int pageCount;
 }
 
@@ -54,6 +67,9 @@ class HostRelocate extends OriginalHostEvent {
     required this.pageCount,
     required this.fraction,
     required this.firstText,
+    this.point,
+    this.indexComplete = true,
+    this.contentFraction,
   });
 
   final int page;
@@ -64,6 +80,9 @@ class HostRelocate extends OriginalHostEvent {
 
   /// 页首文字（换算回 `Locator` 的主要依据）
   final String firstText;
+  final Map<String, Object?>? point;
+  final bool indexComplete;
+  final double? contentFraction;
 }
 
 /// 翻到第几页了（翻页动画一开始就报，不等完整的位置上报）。
@@ -120,7 +139,11 @@ OriginalHostEvent? parseHostEvent(
 }) {
   int intOf(String key) {
     final value = raw[key];
-    return value is num ? value.toInt() : 0;
+    return value is num
+        ? value.toInt()
+        : key == 'pages'
+        ? (raw['knownPages'] as num?)?.toInt() ?? 0
+        : 0;
   }
 
   double doubleOf(String key) {
@@ -140,6 +163,12 @@ OriginalHostEvent? parseHostEvent(
       return HostPaginated(
         chapterIndex: chapterIndex,
         pageCount: intOf('pages'),
+        indexComplete: raw['indexComplete'] != false,
+      );
+    case 'indexReady':
+      return HostIndexReady(
+        chapterIndex: chapterIndex,
+        pageCount: intOf('pages'),
       );
     case 'relocate':
       return HostRelocate(
@@ -148,6 +177,9 @@ OriginalHostEvent? parseHostEvent(
         pageCount: intOf('pages'),
         fraction: doubleOf('fraction'),
         firstText: stringOf('firstText'),
+        point: (raw['point'] as Map?)?.cast<String, Object?>(),
+        indexComplete: raw['indexComplete'] != false,
+        contentFraction: (raw['contentFraction'] as num?)?.toDouble(),
       );
     case 'page':
       return HostPageTurn(
@@ -208,8 +240,14 @@ class OriginalLayoutController {
     return _pendingDomMaps.putIfAbsent(
       key,
       // chapter.href 相对 OPF；图片资源使用归档根目录路径，不能漏掉 OEBPS 等前缀。
-      () => _preparePositionMap(key, index, source.chapterEntryPath(index), content, locator)
-          .whenComplete(() {
+      () =>
+          _preparePositionMap(
+            key,
+            index,
+            source.chapterEntryPath(index),
+            content,
+            locator,
+          ).whenComplete(() {
             _pendingDomMaps.remove(key);
           }),
     );
@@ -224,10 +262,8 @@ class OriginalLayoutController {
   ) async {
     try {
       _mapPreparation[key] = '读取净化章节';
-      final html = await source.chapterDocument(index);
-      if (html == null) throw StateError('无法读取听书位置对应的原书');
       _mapPreparation[key] = '后台解析位置映射';
-      final result = await parseLocatorDomMap(html, href, content, locator);
+      final result = await source.preparePositions(index, href, content, locator);
       // 只缓存完成的映射；异步任务失败或服务更换后不能把未完成任务当作可用结果。
       _domMaps[key] = result;
       while (_domMaps.length > 3) {
@@ -321,8 +357,8 @@ final originalLayoutProvider = FutureProvider.autoDispose
       if (book == null || chapters == null || chapters.isEmpty) {
         throw const ReaderFailure('正文还没准备好，稍后再试');
       }
-      if (book.format != BookFormat.epub) {
-        throw const ReaderFailure('只有 EPUB 能按原书样式排版');
+      if (!book.format.usesOriginalWebView) {
+        throw const ReaderFailure('TXT 不支持原书样式排版');
       }
       final source = await ref
           .watch(epubSourceRepositoryProvider)

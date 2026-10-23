@@ -1,3 +1,4 @@
+import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -17,7 +18,7 @@ Future<void> jumpToBookNote(
 ) async {
   final vm = ref.read(readerProvider.notifier);
   final session = ref.read(readerSessionProvider(bookId).notifier);
-  final hold = session.layoutMode.isOriginal
+  final hold = session.usesOriginalWebView
       ? ref.read(originalLayoutProvider(bookId)).value?.holdPageDuringJump
       : null;
   Future<void> jump() async {
@@ -32,7 +33,8 @@ Future<void> jumpToBookNote(
   try {
     // 原书的临时截图要先撤下，再淡出正文旧图，否则会露出同一张旧页。
     await ref.read(readerProgressReturnProvider(bookId).notifier).jump(jump);
-  } catch (error) {
+  } catch (error, appStack) {
+    AppErrors.report(error, appStack, operation: '定位笔记失败');
     vm.showNotice(
       error is AnnotationLocationFailure ? error.message : '定位失败，请重试',
     );

@@ -30,7 +30,7 @@ class OriginalSelectionMap {
   final ChapterContent content;
 
   /// 生成 Locator 的换算器（与原书对照表同一份）
-  LocatorMapper get mapper => map.map.mapper;
+  LocatorMapper get mapper => map.mapper;
 
   /// DOM 点 → 正文位置；认不出这个点（图片、空白、框架节点）时返回 null。
   Locator? locatorAt(DomPoint point) {

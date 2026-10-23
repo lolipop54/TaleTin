@@ -1,6 +1,6 @@
+import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:taletin/platform/channels/system_toast.dart';
 
 import '../../../../app/di/achievement_providers.dart';
 import '../../../../app/router/main_pages_ready.dart';
@@ -85,9 +85,10 @@ class _AchievementRewardHostState extends ConsumerState<AchievementRewardHost> {
           ),
         );
       }
-    } catch (_) {
+    } catch (appError, appStack) {
+      AppErrors.report(appError, appStack, operation: '成就展示记录未保存', notify: false);
       if (mounted) {
-        SystemToast.show('奖励展示状态未保存，请稍后重试').ignore();
+        AppErrors.report(appError, appStack, operation: '成就展示记录未保存');
       }
     } finally {
       busy = false;

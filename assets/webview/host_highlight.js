@@ -134,10 +134,13 @@
     root.style.cssText = 'position:absolute;pointer-events:none;' +
       'left:' + x + 'px;top:' + rect.bottom + 'px;width:0;height:0';
     var line = document.createElement('div');
-    line.style.cssText = 'position:absolute;left:-1px;top:0;width:2px;height:16px;background:' + color;
+    var height = rect.bottom - rect.top;
+    // 与 Flutter 一致：圆心在文字底边下2px，半径5px，上缘压住高亮3px。
+    line.style.cssText = 'position:absolute;left:-0.75px;top:' + (-height) +
+      'px;width:1.5px;height:' + (height + 2) + 'px;background:' + color;
     var circle = document.createElement('div');
-    circle.style.cssText = 'position:absolute;box-sizing:border-box;left:-8.75px;top:13.25px;' +
-      'width:17.5px;height:17.5px;border-radius:50%;border:1.5px solid white;background:' + color;
+    circle.style.cssText = 'position:absolute;box-sizing:border-box;left:-5px;top:-3px;' +
+      'width:10px;height:10px;border-radius:50%;border:1px solid white;background:' + color;
     root.appendChild(line);
     root.appendChild(circle);
     root.style.visibility = dragEnd === atEnd ? 'hidden' : 'visible';
@@ -182,19 +185,16 @@
         rects = caret ? caret.rects : [];
       }
       if (!item.id && item.handleColor && rects.length) {
-        // Range 跨栏时按页、行排序，与 Dart 端手柄触摸坐标保持一致。
-        var ordered = rects.slice().sort(function (a, b) {
-          var pageA = Math.floor((a.left + offset + 1) / state.width);
-          var pageB = Math.floor((b.left + offset + 1) / state.width);
-          return pageA - pageB || a.top - b.top || a.left - b.left;
-        });
-        handle(ordered[0], false, offset, item.handleColor, item.reversed === true);
-        handle(ordered[ordered.length - 1], true, offset, item.handleColor, item.reversed !== true);
-        var previous = internal.selection.continuationAnchor(item.from, ordered[0], true);
+        // 与 Flutter 触摸层一样取首末字，不从底色横带推断端点。
+        var endpoints = internal.selection.rangeEndpoints(item.from, item.to);
+        if (!endpoints || !endpoints.leading || !endpoints.trailing) continue;
+        handle(endpoints.leading, false, offset, item.handleColor, item.reversed === true);
+        handle(endpoints.trailing, true, offset, item.handleColor, item.reversed !== true);
+        var previous = internal.selection.continuationAnchor(item.from, endpoints.leading, true);
         if (previous) {
           handle(previous, false, offset, item.handleColor, item.reversed === true);
         }
-        var continuation = internal.selection.continuationAnchor(item.to, ordered[ordered.length - 1]);
+        var continuation = internal.selection.continuationAnchor(item.to, endpoints.trailing);
         if (continuation) {
           handle(continuation, false, offset, item.handleColor, item.reversed !== true);
         }
@@ -214,12 +214,12 @@
   }
 
   /// 下发高亮列表：版本旧的（例如换章前发出的）直接丢掉
-  function set(value) {
+  function set(value, deferRender) {
     settle();
     if (!value || value.version < version) return false;
     version = value.version;
     items = value.items || [];
-    render();
+    if (!deferRender) render();
     return true;
   }
 

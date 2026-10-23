@@ -1,3 +1,4 @@
+import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -76,7 +77,8 @@ Future<void> showReaderFontSheet(
       ),
       bookId: bookId,
     );
-  } catch (_) {
+  } catch (appError, appStack) {
+    AppErrors.report(appError, appStack, operation: '打开字体列表失败');
     vm.showNotice('字体列表未能打开，请重试');
   } finally {
     lease.close();

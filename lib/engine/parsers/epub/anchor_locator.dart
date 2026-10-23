@@ -89,6 +89,7 @@ class ChapterAnchorMap {
 
   final Map<String, ContentBlock> _blocksById = {};
   Map<Node, int>? _indexOf;
+  Map<String, Element>? _anchorById, _anchorByName;
 
   /// [fragment]（目录里的 `#` 后面那段）在这一章里的标准化位置。
   ///
@@ -128,15 +129,24 @@ class ChapterAnchorMap {
   Element? _findAnchorElement(String fragment) {
     // html 包的 getElementById 实际使用 CSS 选择器；合法的 id 中也可能有
     // 百分号、冒号或点号。按属性原值比较，不能把书内 id 当选择器解释。
-    final elements = document.querySelectorAll('[id],a[name]');
-    Element? find(String value) {
-      Element? named;
-      for (final element in elements) {
-        if (element.id == value) return element;
-        if (element.attributes['name'] == value) named ??= element;
+    if (_anchorById == null) {
+      // A collection can contain thousands of TOC targets. Index the static
+      // parsed document once instead of running a CSS query for each target.
+      // Preserve the old selector: any [id], plus a[name]; id always wins and
+      // duplicate values keep their first element in document order.
+      final ids = <String, Element>{}, names = <String, Element>{};
+      for (final element in documentOrder.whereType<Element>()) {
+        final hasId = element.attributes.containsKey('id');
+        if (hasId) ids.putIfAbsent(element.id, () => element);
+        final name = element.attributes['name'];
+        if (name != null && (hasId || element.localName == 'a')) {
+          names.putIfAbsent(name, () => element);
+        }
       }
-      return named;
+      _anchorById = ids;
+      _anchorByName = names;
     }
+    Element? find(String value) => _anchorById![value] ?? _anchorByName![value];
 
     final raw = find(fragment);
     if (raw != null) return raw;

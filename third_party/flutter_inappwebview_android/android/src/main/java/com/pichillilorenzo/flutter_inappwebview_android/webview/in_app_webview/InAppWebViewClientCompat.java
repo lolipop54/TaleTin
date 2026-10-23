@@ -658,6 +658,13 @@ public class InAppWebViewClientCompat extends WebViewClientCompat {
   public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequestExt request) {
     final InAppWebView webView = (InAppWebView) view;
 
+    com.pichillilorenzo.flutter_inappwebview_android.types.LocalResourceInterceptor.Handler local =
+        com.pichillilorenzo.flutter_inappwebview_android.types.LocalResourceInterceptor.handler;
+    if (local != null) {
+      WebResourceResponse response = local.intercept(webView.id, request);
+      if (response != null) return response;
+    }
+
     if (webView.webViewAssetLoaderExt != null && webView.webViewAssetLoaderExt.loader != null) {
       try {
         final Uri uri = Uri.parse(request.getUrl());

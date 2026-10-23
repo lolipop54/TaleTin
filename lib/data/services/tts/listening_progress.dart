@@ -19,10 +19,15 @@ class ListeningProgress {
     final chapters = await books.chaptersOf(book.id);
     final index = chapters.indexWhere((c) => c.id == locator.chapterId);
     if (index < 0) throw StateError('听书章节已不存在');
-    final content = await contents.chapter(book.id, chapters[index]);
+    final content = await contents.chapter(
+      book.id,
+      chapters[index],
+      textOnly: true,
+    );
     return ReadingPosition(
       locator: locator,
       source: ReadingPositionSource.listening,
+      progressBasis: ReadingProgressBasis.content,
       progress: bookProgressAt(
         chapters,
         book.textLength,

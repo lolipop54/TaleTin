@@ -1,3 +1,4 @@
+import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../app/di/app_providers.dart';
@@ -47,7 +48,7 @@ class ListeningPanelCommands {
         // 新开始和手动阅读后再开始都取可见页首。原书的续读/切换锚点
         // 可能位于页中，不能拿它或文字比例代替实际分页后的第一个字。
         var anchor = reader.listeningStartAnchor;
-        if (reader.layoutMode.isOriginal && !session.scrolling) {
+        if (reader.usesOriginalWebView && !session.scrolling) {
           final prepare = ref
               .read(originalLayoutProvider(bookId))
               .value
@@ -59,7 +60,8 @@ class ListeningPanelCommands {
         if (anchor != null) {
           await service.start(bookId, anchor, sentenceStart: false);
         }
-      } catch (error) {
+      } catch (error, appStack) {
+        AppErrors.report(error, appStack, operation: '听书操作失败');
         if (ref.mounted) ref.read(readerProvider.notifier).showNotice('$error');
       }
     }
@@ -71,7 +73,8 @@ class ListeningPanelCommands {
   Future<void> sleep(SleepPolicy policy) async {
     try {
       await ref.read(listeningServiceProvider).setSleepPolicy(policy);
-    } catch (error) {
+    } catch (error, appStack) {
+      AppErrors.report(error, appStack, operation: '听书操作失败');
       if (ref.mounted) ref.read(readerProvider.notifier).showNotice('$error');
     }
   }

@@ -35,6 +35,9 @@ class DriftReadingPositionRepository implements ReadingPositionRepository {
     if (locator.chapterId.isEmpty || locator.blockId.isEmpty) return null;
     return ReadingPosition(
       locator: locator,
+      progressBasis: decoded['progressBasis'] == 'content'
+          ? ReadingProgressBasis.content
+          : ReadingProgressBasis.legacyVisual,
       source: decoded['source'] == 'listening'
           ? ReadingPositionSource.listening
           : ReadingPositionSource.visual,
@@ -52,6 +55,7 @@ class DriftReadingPositionRepository implements ReadingPositionRepository {
             locatorJson: jsonEncode({
               ...position.locator.toJson(),
               'source': position.source.name,
+              'progressBasis': position.progressBasis.name,
             }),
             progress: Value(position.progress.clamp(0.0, 1.0)),
             updatedAt: DateTime.now().toUtc(),

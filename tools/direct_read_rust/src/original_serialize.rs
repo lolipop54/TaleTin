@@ -57,7 +57,7 @@ pub fn serialize(dom: &Dom, hyphenated: bool) -> Vec<u8> {
         if name.is_empty() && node.id != 0 {
             if matches!(
                 parent.as_str(),
-                "style" | "script" | "xmp" | "iframe" | "noembed" | "noframes" | "plaintext"
+                "style" | "script" | "xmp" | "iframe" | "noembed" | "noframes" | "noscript" | "plaintext"
             ) {
                 out.push_str(&node.text.borrow());
             } else {

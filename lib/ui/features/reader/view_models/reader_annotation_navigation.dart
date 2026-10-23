@@ -29,7 +29,7 @@ mixin _ReaderAnnotationNavigation
   /// 原书分页的文字比例不等于版面比例，书签沿用标注的精确DOM落点与绘制确认。
   /// 只创建本次跳转目标，不改写书签或给书签补造选区终点。
   Future<void> goToBookmark(Bookmark bookmark) {
-    if (!_mode.isOriginal || state.value?.scrolling == true) {
+    if (!_mode.isOriginal || state.value?.scrolling == true || state.value?.book.format == BookFormat.pdf) {
       return goToLocator(bookmark.locator);
     }
     return _annotationTask ??= _goToBookmark(bookmark)
@@ -61,6 +61,10 @@ mixin _ReaderAnnotationNavigation
   }
 
   Future<void> _goToAnnotation(Annotation note, bool persistRelocation) async {
+    if (state.value?.book.format == BookFormat.pdf && _mode.isOriginal) {
+      await goToLocator(note.start);
+      return;
+    }
     if (_annotationDone != null) return;
     // 搜索只复用准确落点流程，临时范围即使重新核对也绝不能写成笔记。
     final located = persistRelocation
@@ -71,6 +75,7 @@ mixin _ReaderAnnotationNavigation
   }
 
   Future<void> _openLocatedAnnotation(Annotation located) async {
+    cancelProgressNavigation();
     await beginManualReading();
     final session = state.value;
     if (session == null) return;

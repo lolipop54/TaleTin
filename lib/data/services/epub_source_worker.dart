@@ -5,6 +5,8 @@ import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
+
 import 'package:path/path.dart' as p;
 import 'package:direct_read_rust/direct_read_rust.dart';
 import 'package:direct_read_rust/original_html.dart';
@@ -19,8 +21,11 @@ import '../../engine/normalization/text_decoding.dart';
 import '../../engine/parsers/epub/epub_archive.dart';
 import '../../engine/parsers/epub/epub_sanitizer.dart';
 import '../../engine/parsers/epub/epub_source_reader.dart';
+import '../../engine/parsers/epub/xhtml_blocks.dart';
 import 'book_source_path.dart';
 import 'indexed_chapter_reader.dart';
+import 'indexed_publication.dart';
+import 'publication_cache.dart';
 
 /// 一本原书共用一个后台 isolate。归档句柄和 DOM 都不进入界面线程，
 /// 图片、字体及完整 HTML 用可转移字节返回；章节间继续复用归档和词典。
@@ -39,6 +44,7 @@ class EpubSourceWorker {
     required String bookId,
     required int contentVersion,
     required List<Chapter> chapters,
+    bool cacheDocuments = true,
     required Uint8List? dictionary,
   }) async {
     final worker = EpubSourceWorker();
@@ -58,6 +64,8 @@ class EpubSourceWorker {
           dictionary: dictionary,
           features: ProcessingFeatures.mask,
           originalMode: OriginalProcessing.mode,
+          cacheEpoch: PublicationCache.processEpoch,
+          cacheDocuments: cacheDocuments,
         ),
         onExit: worker._responses.sendPort,
         onError: worker._responses.sendPort,
@@ -102,7 +110,7 @@ class EpubSourceWorker {
     _exited.complete();
   }
 
-  Future<Object?> _request(String operation, [String? entry]) async {
+  Future<Object?> _request(String operation, [Object? entry]) async {
     if (_ended) return Future.error(StateError('原书后台任务已关闭'));
     final id = ++_nextId;
     final result = Completer<Object?>();
@@ -130,6 +138,24 @@ class EpubSourceWorker {
   Future<String?> document(String entry) async =>
       await _request('document', entry) as String?;
 
+  Future<Map<String, double?>?> tocPositions(
+    String entry,
+    List<String> fragments,
+  ) async => (await _request('toc_positions', (entry, fragments)) as Map?)
+      ?.cast<String, double?>();
+
+  /// Small import metadata crosses the isolate once, instead of one round-trip
+  /// per chapter. The worker verifies the source before returning it.
+  Future<Map<String, Map<String, double?>>> tocIndex() async =>
+      (await _request('toc_index') as Map).cast<String, Map<String, double?>>();
+
+  Future<Map<String, Map<String, double>>> tocHeadingIndex() async =>
+      (await _request('toc_headings') as Map)
+          .cast<String, Map<String, double>>();
+
+  Future<Map<String, dynamic>?> proof() async =>
+      await _request('proof') as Map<String, dynamic>?;
+
   // 预取只需要后台落盘，不把暂时不会显示的完整章节再传回界面线程。
   Future<void> prefetch(String entry) async {
     await _request('prefetch', entry);
@@ -156,6 +182,8 @@ typedef _Start = ({
   Uint8List? dictionary,
   int features,
   int originalMode,
+  String cacheEpoch,
+  bool cacheDocuments,
 });
 
 Future<void> _run(_Start start) async {
@@ -174,11 +202,30 @@ Future<void> _run(_Start start) async {
     if (manifest.existsSync() &&
         (jsonDecode(manifest.readAsStringSync()) as Map)['sourceIndex'] !=
             null) {
-      sourceCheck = IndexedChapterReader.open(bookDirectory, contentDirectory);
+      sourceCheck = IndexedChapterReader.open(
+        bookDirectory,
+        contentDirectory,
+        cacheRoot: start.cacheRoot,
+        cacheEpoch: start.cacheEpoch,
+      );
       await sourceCheck.verifySource();
     }
+    final mobi =
+        sourceCheck?.index.format == 'mobi' ||
+        sourceCheck?.index.format == 'azw3';
     reader = EpubSourceReader.open(
-      bookSourcePath(p.join(start.libraryRoot, start.bookId), 'epub'),
+      mobi
+          ? p.join(contentDirectory, 'publication')
+          : bookSourcePath(p.join(start.libraryRoot, start.bookId), 'epub'),
+      directory: mobi,
+      digests: sourceCheck?.index.publication ?? const {},
+      entryArchive: sourceCheck?.index.directMobi == true
+          ? openIndexedPublication(
+              sourceCheck!.source.path,
+              contentDirectory,
+              sourceCheck.index,
+            )
+          : null,
     );
     final mismatch = reader.mismatchWith(start.chapters);
     if (mismatch != null) {
@@ -187,13 +234,25 @@ Future<void> _run(_Start start) async {
         '原书文件与章节索引不一致：$mismatch',
       );
     }
-    final store = _Resources(reader, start, sourceCheck?.index.sourceDigest);
+    final store = _Resources(
+      reader,
+      start,
+      sourceCheck?.index.sourceDigest,
+      sourceCheck?.cache,
+      {
+        for (final image
+            in sourceCheck?.index.images.entries ??
+                const <MapEntry<String, List<int>>>[])
+          if (image.value[0] >= 0) image.key,
+      },
+    );
     start.reply.send((0, (commands.sendPort, store.entries), null, null));
     // 不同资源的磁盘 I/O 可并行；同步解压和 DOM 处理只占用本 isolate。
     // 同一条目由 _Resources 合并，close 由主线程等全部应答后才发送。
     commands.listen((dynamic message) async {
-      final (id, operation, entry, sentUs) =
-          message as (int, String, String?, int);
+      final (id, operation, argument, sentUs) =
+          message as (int, String, Object?, int);
+      final entry = argument is String ? argument : null;
       final trace = operation == 'reset'
           ? null
           : ReaderWorkTrace.start('original.worker', {
@@ -206,10 +265,40 @@ Future<void> _run(_Start start) async {
         // 已打开的原书会话也核对来源；命中网页/资源缓存不能绕过变更检测。
         if (operation == 'resource' ||
             operation == 'document' ||
-            operation == 'prefetch') {
+            operation == 'toc_positions' ||
+            operation == 'toc_index' ||
+            operation == 'toc_headings' ||
+            operation == 'prefetch' ||
+            operation == 'proof') {
           await sourceCheck?.verifySource();
         }
         switch (operation) {
+          case 'toc_headings':
+            result =
+                sourceCheck?.index.tocHeadings ??
+                const <String, Map<String, double>>{};
+          case 'toc_index':
+            result =
+                sourceCheck?.index.tocPositions ??
+                const <String, Map<String, double?>>{};
+          case 'proof':
+            if (sourceCheck != null) {
+              final stat = sourceCheck.verifiedStat!;
+              result = <String, dynamic>{
+                'scope':
+                    '${store.sourceDigest}:${start.version}:${start.originalMode}:original1:${start.dictionary == null ? 'source' : sha256.convert(start.dictionary!).toString()}',
+                'source': sourceCheck.source.path,
+                'bytes': stat.size,
+                'modifiedUs': stat.modified.microsecondsSinceEpoch,
+                'changedUs': stat.changed.microsecondsSinceEpoch,
+                'imported': contentDirectory,
+                'cached': store.originalDirectory,
+                if (store.cache != null)
+                  'shared': p.join(store.cache!.directory, 'assets'),
+                'types': reader!.nativeResourceTypes,
+                'chapters': store.entries,
+              };
+            }
           case 'resource':
             final bytes = await store.load(entry!);
             if (bytes != null) {
@@ -221,6 +310,24 @@ Future<void> _run(_Start start) async {
           case 'document':
             final bytes = await store.load(entry!);
             result = bytes == null ? null : decodeTextBytes(bytes);
+          case 'toc_positions':
+            final (name, fragments) = argument as (String, List<String>);
+            final chapterId = start.chapters[store.entries.indexOf(name)].id;
+            final prepared = sourceCheck?.index.tocPositions[chapterId];
+            if (prepared != null && fragments.every(prepared.containsKey)) {
+              result = {
+                for (final fragment in fragments) fragment: prepared[fragment],
+              };
+              break;
+            }
+            final bytes = await store._load(name, textOnly: true);
+            result = bytes == null
+                ? null
+                : XhtmlBlockBuilder.anchorPositions(
+                    decodeTextBytes(bytes),
+                    name,
+                    fragments,
+                  );
           case 'prefetch':
             await store.load(entry!);
           case 'reset':
@@ -229,7 +336,7 @@ Future<void> _run(_Start start) async {
           case 'close':
             store.close();
             store.reader.close();
-            sourceCheck?.close();
+            await sourceCheck?.close();
             commands.close();
         }
         start.reply.send((id, result, null, null));
@@ -241,7 +348,7 @@ Future<void> _run(_Start start) async {
     });
   } catch (error, stack) {
     reader?.close();
-    sourceCheck?.close();
+    await sourceCheck?.close();
     commands.close();
     start.reply.send((0, null, error, stack));
   }
@@ -249,24 +356,145 @@ Future<void> _run(_Start start) async {
 
 /// 原来的资源选择顺序和转换规则原样保留，只改变执行位置。
 class _Resources {
-  _Resources(this.reader, this.start, this.sourceDigest)
-    : entries = List.generate(reader.chapterCount, reader.entryPathAt);
+  _Resources(
+    this.reader,
+    this.start,
+    this.sourceDigest,
+    this.cache,
+    this.persistentImages,
+  ) : entries = List.generate(reader.chapterCount, reader.entryPathAt);
 
   final EpubSourceReader reader;
   final _Start start;
   final String? sourceDigest;
+  final PublicationCache? cache;
+  final Set<String> persistentImages;
+  final _activeEntries = <String>[];
+  final _dependencies = <String, Set<String>>{};
   final List<String> entries;
   late final _chapters = entries.toSet();
   final _pending = <String, Future<Uint8List?>>{};
   NativeOriginalHtml? _native;
   void close() => _native?.close();
 
+  String get originalDirectory => cache == null
+      ? p.joinAll([
+          start.cacheRoot,
+          'original',
+          start.bookId,
+          '${start.version}',
+          ?sourceDigest,
+          start.dictionary == null ? 'source1' : 'hyphen1',
+        ])
+      : p.join(
+          cache!.directory,
+          'original',
+          start.dictionary == null ? 'source1' : 'hyphen1',
+        );
+
+  File _cached(String entry) => File(
+    cache != null && !_chapters.contains(entry)
+        ? p.join(cache!.directory, 'assets', entry)
+        : p.join(originalDirectory, entry),
+  );
+
+  String get _previousDirectory => p.joinAll([
+    start.cacheRoot,
+    'original',
+    start.bookId,
+    '${start.version}',
+    ?sourceDigest,
+    start.dictionary == null ? 'source1' : 'hyphen1',
+  ]);
+
+  void _track(String entry, Uint8List bytes) {
+    final store = cache;
+    if (store == null) return;
+    _recordDependencies(entry, bytes);
+    if (_chapters.contains(entry)) {
+      _activeEntries.remove(entry);
+      _activeEntries.add(entry);
+      while (_activeEntries.length > 4) {
+        _activeEntries.removeAt(0);
+      }
+    }
+    final visited = <String>{}, pending = [..._activeEntries];
+    while (pending.isNotEmpty) {
+      final name = pending.removeLast();
+      if (!visited.add(name)) continue;
+      if (!_dependencies.containsKey(name) &&
+          {'.html', '.xhtml', '.css', '.svg'}.contains(p.extension(name))) {
+        final file = _cached(name);
+        if (file.existsSync()) {
+          _recordDependencies(name, file.readAsBytesSync());
+        }
+      }
+      pending.addAll(_dependencies[name] ?? const <String>{});
+    }
+    store.pin('original', visited.map(_cached));
+    store.trim();
+  }
+
+  void _recordDependencies(String entry, Uint8List bytes) {
+    final references = <String>{};
+    if ({'.html', '.xhtml', '.css', '.svg'}.contains(p.extension(entry))) {
+      final text = decodeTextBytes(bytes);
+      final values = <String>[];
+      // Only displayed resources are dependencies. A TOC hyperlink must not
+      // protect every chapter (and all their historical caches) in the book.
+      final tags = RegExp(
+        r'<\s*(?:img|image|use|link|source|video|audio|object)\b[^>]*>',
+        caseSensitive: false,
+      );
+      final attributes = RegExp(
+        r'''(?:src|href|poster|data)\s*=\s*(?:"([^"]*)"|'([^']*)')''',
+        caseSensitive: false,
+      );
+      for (final tag in tags.allMatches(text)) {
+        for (final attribute in attributes.allMatches(tag[0]!)) {
+          values.add(attribute[1] ?? attribute[2]!);
+        }
+      }
+      final css = RegExp(
+        r'''url\(\s*(?:"([^"]*)"|'([^']*)'|([^\s)]+))\s*\)|@import\s+["']([^"']+)["']''',
+        caseSensitive: false,
+      );
+      for (final match in css.allMatches(text)) {
+        values.add(
+          [for (var i = 1; i <= 4; i++) match[i]].whereType<String>().first,
+        );
+      }
+      for (final value in values) {
+        try {
+          final path = resolveEntryPath(entry, value);
+          if (path != null &&
+              !_chapters.contains(path) &&
+              reader.containsEntry(path)) {
+            references.add(path);
+          }
+        } on FormatException {
+          /* External/invalid URLs are not local files. */
+        }
+      }
+    }
+    _dependencies[entry] = references;
+  }
+
   Future<Uint8List?> load(String entry) =>
-      _pending[entry] ??= _load(entry).whenComplete(() {
+      _pending[entry] ??= _loadProtected(entry).whenComplete(() {
         _pending.remove(entry);
       });
 
-  Future<Uint8List?> _load(String entry) async {
+  Future<Uint8List?> _loadProtected(String entry) async {
+    if (start.cacheDocuments) await cache?.beginPreparation();
+    try {
+      return await _load(entry);
+    } finally {
+      if (start.cacheDocuments) cache?.endPreparation();
+    }
+  }
+
+  Future<Uint8List?> _load(String entry, {bool textOnly = false}) async {
     // 关闭诊断时不为日志查找章节号，避免每次加载图片都额外遍历目录。
     final trace = !readerWorkTraceEnabled
         ? null
@@ -276,6 +504,20 @@ class _Resources {
           });
     try {
       if (!reader.containsEntry(entry)) return null;
+      if ((textOnly || !start.cacheDocuments) && _chapters.contains(entry)) {
+        // TOC/listening metadata must not expand the entire book into HTML
+        // caches. Reuse an existing display entry, but never publish/pin one.
+        final cached = _cached(entry);
+        try {
+          if (cached.existsSync()) return cached.readAsBytesSync();
+          final previous = File(p.join(_previousDirectory, entry));
+          if (previous.existsSync()) return previous.readAsBytesSync();
+        } on FileSystemException {
+          /* Rebuild a reclaimed entry below. */
+        }
+        final bytes = reader.readEntry(entry);
+        return bytes == null ? null : _transform(entry, bytes, trace);
+      }
       final imported = File(
         p.join(
           start.libraryRoot,
@@ -286,24 +528,29 @@ class _Resources {
           entry,
         ),
       );
+      final cached = _cached(entry);
       if (await imported.exists()) {
-        trace?.details['hit'] = 'imported';
-        return await imported.readAsBytes();
+        try {
+          if (cache != null &&
+              !persistentImages.contains(entry) &&
+              !_chapters.contains(entry)) {
+            cache!.adopt(imported, cached);
+          } else {
+            trace?.details['hit'] = 'imported';
+            return await imported.readAsBytes();
+          }
+        } on FileSystemException {
+          // 简化会话可能同时把旧图片接到共享目录；继续从共享文件或原书读取。
+        }
       }
-      final cached = File(
-        p.joinAll([
-          start.cacheRoot,
-          'original',
-          start.bookId,
-          '${start.version}',
-          ?sourceDigest,
-          start.dictionary == null ? 'source1' : 'hyphen1',
-          entry,
-        ]),
-      );
+      if (cache != null && !cached.existsSync()) {
+        cache!.adopt(File(p.join(_previousDirectory, entry)), cached);
+      }
+      cache?.preparing(cached);
       if (await cached.exists()) {
         try {
           final bytes = await cached.readAsBytes();
+          _track(entry, bytes);
           trace?.details['hit'] = 'disk';
           return bytes;
         } on FileSystemException {
@@ -320,13 +567,21 @@ class _Resources {
       trace?.details['bytes'] = bytes.length;
       if (bytes.length <= EpubArchive.maxEntryBytes) {
         try {
-          await cached.parent.create(recursive: true);
-          await cached.writeAsBytes(bytes, flush: false);
+          if (cache != null) {
+            cache!.write(cached, bytes);
+          } else {
+            await cached.parent.create(recursive: true);
+            // 原生读取可与后台准备并行，只有完整写完的文件才能发布。
+            final temporary = File('${cached.path}.pending');
+            await temporary.writeAsBytes(bytes, flush: false);
+            await temporary.rename(cached.path);
+          }
         } on FileSystemException {
           // 写缓存失败不阻止当前资源返回。
         }
       }
       trace?.mark('cache_write');
+      _track(entry, bytes);
       return bytes;
     } catch (error) {
       trace?.finish(status: error.runtimeType.toString());

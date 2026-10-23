@@ -9,9 +9,11 @@ import '../normalization/sentence_splitter.dart';
 import 'selection_range.dart';
 
 class ScrollRangeGeometry {
-  const ScrollRangeGeometry(this.rects, {this.start, this.end});
+  const ScrollRangeGeometry(this.rects, {this.start, this.end,
+    this.startHeight = 0, this.endHeight = 0});
   final List<Rect> rects;
   final Offset? start, end;
+  final double startHeight, endHeight;
 }
 
 typedef ScrollLine = ({ScrollCell cell, int line, double y, LocatorMapper mapper});
@@ -108,6 +110,7 @@ class ScrollSelection {
     final ordered = normalizeRange(range, chapterOrdinals: ordinals);
     final rects = <Rect>[];
     Offset? leading, trailing;
+    double leadingHeight = 0, trailingHeight = 0;
     for (final line in lines) {
       final from = line.mapper.at(line.cell.block, _start(line));
       final to = line.mapper.at(line.cell.block, _end(line));
@@ -125,13 +128,17 @@ class ScrollSelection {
       }
       if (boxes.isNotEmpty && compare(from, ordered.start) <= 0) {
         leading = Offset(rects[rects.length - boxes.length].left, rects.last.bottom);
+        leadingHeight = line.cell.measured.lines[line.line].height;
       }
       if (boxes.isNotEmpty && compare(to, ordered.end) >= 0) {
         trailing = Offset(rects.last.right, rects.last.bottom);
+        trailingHeight = line.cell.measured.lines[line.line].height;
       }
     }
     final reversed = compareLocators(range.start, range.end, chapterOrdinals: ordinals) > 0;
     return ScrollRangeGeometry(rects, start: reversed ? trailing : leading,
-      end: reversed ? leading : trailing);
+      end: reversed ? leading : trailing,
+      startHeight: reversed ? trailingHeight : leadingHeight,
+      endHeight: reversed ? leadingHeight : trailingHeight);
   }
 }

@@ -16,6 +16,10 @@ final storageRepositoryProvider = Provider<StorageRepository>((ref) {
     clearChapterCache: contents is FileChapterContentRepository
         ? contents.clearChapterCache
         : null,
+    clearLayoutCache: () async {
+      ref.read(readerEngineProvider).invalidateLayout();
+      await ref.read(layoutCheckpointStoreProvider)?.clear();
+    },
     protectedBooks: () => {
       if (listening.snapshot.hasSession) listening.snapshot.bookId,
     },

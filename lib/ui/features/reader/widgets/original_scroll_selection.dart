@@ -40,14 +40,17 @@ mixin _OriginalScrollSelection on ConsumerState<OriginalScrollArea> {
     if (raw is! List) return [for (final _ in ranges) const ScrollRangeGeometry([])];
     Offset? point(Object? value) => value is Map
       ? Offset((value['x'] as num).toDouble(), (value['y'] as num).toDouble()) : null;
+    double height(Object? value) => value is Map ? (value['height'] as num).toDouble() : 0;
+    bool reversed(int i) => compareLocators(ranges[i].start, ranges[i].end,
+      chapterOrdinals: chapterOrdinalsOf(widget.session.chapters)) > 0;
     return [for (var i = 0; i < raw.length; i++)
       ScrollRangeGeometry([for (final r in raw[i]['rects'] as List)
         Rect.fromLTRB((r['left'] as num).toDouble(), (r['top'] as num).toDouble(),
           (r['right'] as num).toDouble(), (r['bottom'] as num).toDouble())],
-        start: point(raw[i][compareLocators(ranges[i].start, ranges[i].end,
-          chapterOrdinals: chapterOrdinalsOf(widget.session.chapters)) > 0 ? 'end' : 'start']),
-        end: point(raw[i][compareLocators(ranges[i].start, ranges[i].end,
-          chapterOrdinals: chapterOrdinalsOf(widget.session.chapters)) > 0 ? 'start' : 'end']))];
+        start: point(raw[i][reversed(i) ? 'end' : 'start']),
+        end: point(raw[i][reversed(i) ? 'start' : 'end']),
+        startHeight: height(raw[i][reversed(i) ? 'end' : 'start']),
+        endHeight: height(raw[i][reversed(i) ? 'start' : 'end']))];
   }
   Future<void> _syncDecorations() async {
     if (!mounted || host == null) return;

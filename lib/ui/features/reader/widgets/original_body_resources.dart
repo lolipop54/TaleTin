@@ -99,7 +99,7 @@ extension _OriginalBodyResources on _OriginalBodyState {
   /// 我们的字号、列宽），直接显示出来就是用户看到的「排版跳一下」。这段
   /// preload 样式让底色先就位、正文隐藏，分栏完成后由 host.js 一次显示；
   /// host.js 里还有兜底定时器，脚本出问题也不会白屏。
-  String _injectFramework(String html, Uri url) {
+  String _frameworkHead(Uri? url) {
     final base = 'https://$kEpubSourceHost$kFrameworkPathPrefix';
     final background = widget.chapters.first.themeColors?['bg'] ?? '#FFFFFF';
     const viewport =
@@ -109,12 +109,16 @@ extension _OriginalBodyResources on _OriginalBodyState {
         '<style id="gt-preload">'
         'html,body{background:$background !important}'
         'body{visibility:hidden !important}'
+        // 字体基准仍读取原书计算样式；只在首次配置前不生成整章布局。
+        '${ReaderDeliveryExperiments.originalFinalLayout ? 'body{display:none !important}' : ''}'
         '</style>';
     // 地址保留原 EPUB 路径，只添加加载编号；不改变原文档的 DOCTYPE。
-    final slot = int.tryParse(url.queryParameters['gtSlot'] ?? '');
-    final load = int.tryParse(url.queryParameters['gtLoad'] ?? '');
-    final chapter = int.tryParse(url.queryParameters['gtChapter'] ?? '');
-    final bridge = slot == null || load == null || chapter == null
+    final slot = int.tryParse(url?.queryParameters['gtSlot'] ?? '');
+    final load = int.tryParse(url?.queryParameters['gtLoad'] ?? '');
+    final chapter = int.tryParse(url?.queryParameters['gtChapter'] ?? '');
+    final bridge = url == null
+        ? '__GT_NATIVE_BRIDGE__'
+        : slot == null || load == null || chapter == null
         ? ''
         : '<script>window.__gtSend=function(event){return parent.__gtPager.post('
               'window,$slot,$load,$chapter,event);};</script>';
@@ -122,7 +126,12 @@ extension _OriginalBodyResources on _OriginalBodyState {
         '$viewport$preload$bridge'
         '<script>window.__gtReaderPerf=$readerPerformanceEnabled;'
         'window.__gtImageDecodeVisible=${OpeningExperiments.visibleImageDecode};</script>'
+        '<script>window.__gtDeliveryOriginal=${ReaderDeliveryExperiments.originalWindow};'
+        'window.__gtContentTarget=${ReaderDeliveryExperiments.contentTarget};</script>'
+        '<script>window.__gtBatchMarkers=${ReaderDeliveryExperiments.originalMarkers};</script>'
+        '<script>window.__gtFinalLayout=${ReaderDeliveryExperiments.originalFinalLayout};</script>'
         '<script src="${base}reader_perf.js" defer></script>'
+        '${readerTurnDiagnosticsEnabled ? '<script src="${base}reader_turn_diagnostics.js" defer></script>' : ''}'
         '${turnTraceEnabled ? '<script>window.__gtTraceTurn=true;</script>' : ''}'
         '${bookmarkTraceEnabled ? '<script>window.__gtTraceBookmark=true;</script>' : ''}'
         '<link rel="stylesheet" href="${base}host.css"/>'
@@ -133,8 +142,15 @@ extension _OriginalBodyResources on _OriginalBodyState {
         '<script src="${base}host_style.js" defer></script>'
         '<script src="${base}host_dom.js" defer></script>'
         '<script src="${base}host_selection.js" defer></script>'
+        '<script src="${base}host_index.js" defer></script>'
+        '<script src="${base}host_content.js" defer></script>'
         '<script src="${base}host_highlight.js" defer></script>'
         '<script src="${base}host.js" defer></script>';
+    return injection;
+  }
+
+  String _injectFramework(String html, Uri url) {
+    final injection = _frameworkHead(url);
     final index = html.toLowerCase().indexOf('</head>');
     if (index < 0) return injection + html;
     return html.replaceRange(index, index, injection);

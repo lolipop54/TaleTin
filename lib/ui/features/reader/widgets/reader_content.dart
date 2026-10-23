@@ -24,6 +24,7 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
 
   @override
   void dispose() {
+    ReaderWorkTrace.start('reader.body.dispose', {'bookId': bookId})?.finish();
     _controlsExitTimer?.cancel();
     unawaited(OriginalHostController.setCaptureEnabled(false));
     super.dispose();
@@ -31,7 +32,8 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
 
   @override
   Widget build(BuildContext context) {
-    final sourceChanged = ref.watch(readerSourceChangeProvider(bookId)) ||
+    final sourceChanged =
+        ref.watch(readerSourceChangeProvider(bookId)) ||
         isSourceChange(ref.watch(readerSessionProvider(bookId)).error);
     ref.listen(readerSessionProvider(bookId), (_, value) {
       if (isSourceChange(value.error)) {
@@ -39,12 +41,34 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
       }
     });
     final state = ref.watch(readerProvider);
+    // 保持动画任务存活到退出结束；简化排版即使没有原书显示器也要避让。
+    ref.listen(readerControlsMotionProvider, (_, _) {});
     ref.listen(readerProvider, (previous, next) {
       if (previous == null) return;
-      if (previous.controlsVisible && !next.controlsVisible) {
-        ref.read(readerProgressReturnProvider(bookId).notifier).controlsClosed();
+      if (!MediaQuery.disableAnimationsOf(context) &&
+          (previous.controlsVisible != next.controlsVisible ||
+              previous.panel != next.panel ||
+              previous.panelCovered != next.panelCovered)) {
+        ReaderWorkTrace.start('reader.controls.change', {
+          'visible': next.controlsVisible,
+          'panel': next.panel.name,
+          'covered': next.panelCovered,
+        })?.finish();
+        ref
+            .read(readerControlsMotionProvider.notifier)
+            .begin(
+              next.controlsVisible
+                  ? readerPanelEnterDuration + readerProgressCollapseDuration
+                  : readerPanelExitDuration,
+            );
       }
-      if (previous.controlsVisible && !next.controlsVisible &&
+      if (previous.controlsVisible && !next.controlsVisible) {
+        ref
+            .read(readerProgressReturnProvider(bookId).notifier)
+            .controlsClosed();
+      }
+      if (previous.controlsVisible &&
+          !next.controlsVisible &&
           next.panel == ReaderPanel.none) {
         _controlsExitTimer?.cancel();
         // 普通控制层和一级面板都保留到滑出结束，不能关闭时直接销毁。
@@ -71,10 +95,12 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
       final before = beforeSession?.currentAnchor;
       final after = afterSession?.currentAnchor;
       // 原书跨章会先清空旧锚点，再回填新章位置，不能只比较两个非空锚点。
-      final chapterChanged = beforeSession != null && afterSession != null &&
+      final chapterChanged =
+          beforeSession != null &&
+          afterSession != null &&
           beforeSession.chapter.id != afterSession.chapter.id;
-      final anchorChanged = before != null && after != null &&
-          !before.samePosition(after);
+      final anchorChanged =
+          before != null && after != null && !before.samePosition(after);
       if (chapterChanged || anchorChanged) {
         ref.read(readerProgressReturnProvider(bookId).notifier).pageChanged();
         ref.read(bookSearchNavigationProvider(bookId).notifier).dismiss();
@@ -86,19 +112,26 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
       }
     });
     final automatic = ref.watch(automaticReadingProvider(bookId));
-    final automaticController = ref.read(automaticReadingProvider(bookId).notifier);
-    final scrolling = ref.watch(readerSessionProvider(bookId)).value?.scrolling == true;
+    final automaticController = ref.read(
+      automaticReadingProvider(bookId).notifier,
+    );
+    final scrolling =
+        ref.watch(readerSessionProvider(bookId)).value?.scrolling == true;
     // 在阅读期间准备并保留索引，避免每次唤出面板先显示文件名再换成章名。
     final progressTitles = ref.watch(progressTitlesProvider(bookId));
     final settingsAsync = ref.watch(readerSettingsProvider(bookId));
     final loaded = settingsAsync.value;
     final session = ref.watch(readerSessionProvider(bookId)).value;
-    final showStatusBar = ref.watch(readingControlsProvider).value?.statusBar ?? true;
-    if (loaded?.settings.layoutMode.isOriginal == true && session?.book.format == BookFormat.epub) {
+    final showStatusBar =
+        ref.watch(readingControlsProvider).value?.statusBar ?? true;
+    if (loaded?.settings.layoutMode.isOriginal == true &&
+        session?.book.format.usesOriginalWebView == true) {
       _keepOriginal = true;
     }
     // 本次阅读用过原书后保留内容对照表；切回原书复用，离开阅读页照常释放。
-    if (_keepOriginal && session != null) ref.watch(originalLayoutProvider(bookId));
+    if (_keepOriginal && session != null) {
+      ref.watch(originalLayoutProvider(bookId));
+    }
     // 本书设置还没读出来时先用全局偏好（启动时已读入）：主题不会闪一下默认色；
     // 正文等设置到位再排，避免按全局值排一遍再重排（AGENTS 规则 8）
     final settings =
@@ -106,31 +139,108 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
         ReaderSettingsState.fromGlobal(
           ref.watch(globalReadingPreferencesProvider),
         );
+    final bars = ref.watch(readingControlsProvider).value;
+    final media = MediaQuery.of(context);
+    final edgeToEdge =
+        !settings.pdfMode &&
+        settings.settings.landscape &&
+        media.size.width > media.size.height &&
+        bars?.statusBar == false &&
+        bars?.navigationBar == false;
+    // 全屏横屏的纸面延伸到屏幕边缘；摄像头占位转为正文页边距，
+    // 只影响这次显示，不把设备安全区写进用户保存的排版设置。
+    final safeMargin = math.max(media.padding.left, media.padding.right);
+    final pageSettings = edgeToEdge && safeMargin > 0
+        ? ReaderSettingsState(
+            settings: settings.fontSettings.copyWith(
+              horizontalPadding: math.max(
+                settings.fontSettings.horizontalPadding,
+                safeMargin + 8,
+              ),
+            ),
+            theme: settings.theme,
+            pdf: settings.pdf,
+            brightness: settings.brightness,
+            customBrightness: settings.customBrightness,
+          )
+        : settings;
     final theme = settings.theme;
+    // 保存当前显示配置快照，框架在构建子面板时抛错也能知道当时阅读方式。
+    AppErrors.reporter.context = {
+      'layout': settings.settings.layoutMode.name,
+      'turnEffect': settings.settings.pageTurnEffect.name,
+      'fontFamily': settings.settings.fontFamily,
+      'fontSize': settings.settings.fontSize,
+      'controls': state.controlsVisible,
+      'panel': state.panel.name,
+      'landscape': settings.settings.landscape,
+      'spread': settings.settings.spreadEnabled,
+      'bookEdges': settings.settings.bookEdges,
+    };
 
     return PopScope(
       // 分页和滚动都先保存最终位置，不能在路由已经销毁后读取 Provider。
       canPop: false,
       onPopInvokedWithResult: (didPop, _) async {
+        ReaderWorkTrace.start('reader.back.system', {
+          'bookId': bookId,
+          'didPop': didPop,
+          'controls': state.controlsVisible,
+          'panel': state.panel.name,
+          'sourceChanged': sourceChanged,
+        })?.finish();
         if (sourceChanged) return; // 刷新层负责等待保存和退出，避免执行两次返回。
         if (didPop) {
           return;
         }
         // 返回结束自动任务，包含已暂停的扫描；撤图后再按普通阅读处理下一次返回。
-        if (!state.controlsVisible && state.panel == ReaderPanel.none &&
-            (automatic.running || automatic.preparing || automaticController.canResume)) {
+        if (!state.controlsVisible &&
+            state.panel == ReaderPanel.none &&
+            (automatic.running ||
+                automatic.preparing ||
+                automaticController.canResume)) {
           await automaticController.discard();
           return;
         }
-        if (!state.controlsVisible && state.panel == ReaderPanel.none &&
-            state.selection == null && state.note == null) {
-          await ref.read(automaticReadingProvider(bookId).notifier).pause();
-          await ref.read(readerSettingsProvider(bookId).notifier).pendingWrites;
-          await ref.read(readerSessionProvider(bookId).notifier).flushPendingPosition();
-          await ref.read(readingStatisticsServiceProvider).leaveVisual();
-          if (!context.mounted) return;
-          await prepareShelfReturn(ref);
-          if (context.mounted) context.pop();
+        if (!state.controlsVisible &&
+            state.panel == ReaderPanel.none &&
+            state.selection == null &&
+            state.note == null) {
+          await traceReaderWork(
+            'reader.exit.system_back',
+            () async {
+              await traceReaderWork(
+                'reader.exit.system.auto_pause',
+                () =>
+                    ref.read(automaticReadingProvider(bookId).notifier).pause(),
+              );
+              await traceReaderWork(
+                'reader.exit.system.settings',
+                () => ref
+                    .read(readerSettingsProvider(bookId).notifier)
+                    .pendingWrites,
+              );
+              await traceReaderWork(
+                'reader.exit.system.position',
+                () => ref
+                    .read(readerSessionProvider(bookId).notifier)
+                    .flushPendingPosition(),
+              );
+              await traceReaderWork(
+                'reader.exit.system.statistics',
+                () => ref.read(readingStatisticsServiceProvider).leaveVisual(),
+              );
+              if (!context.mounted) return;
+              await prepareShelfReturn(ref);
+              if (context.mounted) context.pop();
+            },
+            {
+              'layout': settings.settings.layoutMode.name,
+              'scrolling': scrolling,
+              'controls': state.controlsVisible,
+              'panel': state.panel.name,
+            },
+          );
           return;
         }
         final vm = ref.read(readerProvider.notifier);
@@ -152,100 +262,150 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
             : SystemUiOverlayStyle.dark,
         // 安全区底色与正文同样在200ms内过渡，避免屏幕边缘先跳到新主题。
         child: AnimatedContainer(
-          duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : pageFadeDuration,
+          duration: MediaQuery.disableAnimationsOf(context)
+              ? Duration.zero
+              : pageFadeDuration,
           color: theme.background,
           child: Scaffold(
-          backgroundColor: Colors.transparent,
-          // 键盘不压缩阅读页：正文与上下信息区都不跟着动，
-          // 面板自己按键盘高度让位（ReaderSheet 处理），也不会触发整章重排
-          resizeToAvoidBottomInset: false,
-          body: Stack(
-            children: [
-              CompletionPromptHost(bookId: bookId),
-              BookSearchPageHost(key: ValueKey('search-host-$bookId'), bookId: bookId),
-              ReaderContentViewport(
-                child: Builder(
-                  builder: (context) => ReaderBookmarkLayer(
+            backgroundColor: Colors.transparent,
+            // 键盘不压缩阅读页：正文与上下信息区都不跟着动，
+            // 面板自己按键盘高度让位（ReaderSheet 处理），也不会触发整章重排
+            resizeToAvoidBottomInset: false,
+            body: Stack(
+              children: [
+                CompletionPromptHost(bookId: bookId),
+                if (!ref.watch(pdfModeProvider(bookId)))
+                  BookSearchPageHost(
+                    key: ValueKey('search-host-$bookId'),
                     bookId: bookId,
-                    paper: theme.background,
-                    allowPull: !scrolling && !state.controlsVisible &&
-                        state.selection == null && state.note == null,
-                    topInset: showStatusBar ? MediaQuery.paddingOf(context).top : 0,
-                    child: _ReadingContent(
-                      state: state,
+                  ),
+                ReaderContentViewport(
+                  child: Builder(
+                    builder: (context) => ReaderBookmarkLayer(
                       bookId: bookId,
+                      paper: theme.background,
+                      edgeToEdge: edgeToEdge,
+                      allowPull:
+                          !scrolling &&
+                          !state.controlsVisible &&
+                          state.selection == null &&
+                          state.note == null,
+                      topInset: showStatusBar
+                          ? MediaQuery.paddingOf(context).top
+                          : 0,
+                      child: _ReadingContent(
+                        state: state,
+                        bookId: bookId,
+                        theme: theme,
+                        settings: pageSettings,
+                        edgeToEdge: edgeToEdge,
+                        // 设置就绪即可在加载层下准备原书网页，真实章名仍参与最终显示条件。
+                        settingsReady:
+                            loaded != null &&
+                            (ReaderDeliveryExperiments.originalParallelOpen ||
+                                !progressTitles.isLoading),
+                        titlesReady: !progressTitles.isLoading,
+                      ),
+                    ),
+                  ),
+                ),
+                if (state.panel == ReaderPanel.none && !state.controlsVisible)
+                  SearchReturnBar(
+                    bookId: bookId,
+                    theme: theme,
+                    edgeToEdge: edgeToEdge,
+                    paintMenu: scrolling,
+                  ),
+                // 控制层：顶部栏 + 底部工具栏
+                if (controlsState != null) ...[
+                  // 控制栏打开时，正文任意空白处只负责收起，不能把点击透传成翻页。
+                  Positioned.fill(
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () =>
+                          ref.read(readerProvider.notifier).toggleControls(),
+                    ),
+                  ),
+                  if (controlsState.panel == ReaderPanel.none)
+                    _TopBar(
+                      visible: state.controlsVisible,
+                      state: controlsState,
                       theme: theme,
-                      settings: settings,
-                      // 正文首次显示前也等真实章名索引，避免旧TXT补目录后页眉跳变。
-                      settingsReady: loaded != null && !progressTitles.isLoading,
-                    ),
-                  ),
-                ),
-              ),
-              if (state.panel == ReaderPanel.none && !state.controlsVisible)
-                SearchReturnBar(bookId: bookId, theme: theme, paintMenu: scrolling),
-              // 控制层：顶部栏 + 底部工具栏
-              if (controlsState != null) ...[
-                // 控制栏打开时，正文任意空白处只负责收起，不能把点击透传成翻页。
-                Positioned.fill(
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTap: () =>
-                        ref.read(readerProvider.notifier).toggleControls(),
-                  ),
-                ),
-                if (controlsState.panel == ReaderPanel.none)
-                  _TopBar(visible: state.controlsVisible,
-                    state: controlsState, theme: theme, bookId: bookId),
-                if (!progressTitles.isLoading)
-                  _BottomControls(key: const ValueKey('reader-bottom-controls'),
-                    visible: state.controlsVisible, state: controlsState, theme: theme, bookId: bookId),
-              ],
-              // 笔记面板：贴在键盘上方的一层，选区留着方便对照着写
-              if (state.note != null) ...[
-                Positioned.fill(
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTap: () => ref
-                        .read(readerProvider.notifier)
-                        .requestCloseNoteEditor(),
-                  ),
-                ),
-                Align(
-                  alignment: Alignment.bottomCenter,
-                  child: Padding(
-                    padding: EdgeInsets.only(
-                      bottom: MediaQuery.viewInsetsOf(context).bottom,
-                    ),
-                    child: NoteEditorPanel(
                       bookId: bookId,
-                      request: state.note!,
+                    ),
+                  if (!progressTitles.isLoading)
+                    _BottomControls(
+                      key: const ValueKey('reader-bottom-controls'),
+                      visible: state.controlsVisible,
+                      state: controlsState,
+                      theme: theme,
+                      bookId: bookId,
+                    ),
+                ],
+                // 笔记面板：贴在键盘上方的一层，选区留着方便对照着写
+                if (state.note != null) ...[
+                  Positioned.fill(
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () => ref
+                          .read(readerProvider.notifier)
+                          .requestCloseNoteEditor(),
                     ),
                   ),
+                  Align(
+                    alignment: Alignment.bottomCenter,
+                    child: Padding(
+                      padding: EdgeInsets.only(
+                        bottom: MediaQuery.viewInsetsOf(context).bottom,
+                      ),
+                      child: NoteEditorPanel(
+                        bookId: bookId,
+                        request: state.note!,
+                      ),
+                    ),
+                  ),
+                ],
+                // 子面板和遮罩共用当前阅读主题。
+                if (state.panel != ReaderPanel.none &&
+                    state.panel != ReaderPanel.search &&
+                    !state.panelCovered)
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    top: 0,
+                    bottom: readerPanelBottom(context),
+                    child: GestureDetector(
+                      onTap: () =>
+                          ref.read(readerProvider.notifier).closePanel(),
+                      child: Container(color: ReaderSheet.scrimOf(context)),
+                    ),
+                  ),
+                ReaderPanelViewport(
+                  child: ReaderPanelMotion(
+                    panel:
+                        state.panel == ReaderPanel.none ||
+                            state.panel == ReaderPanel.search ||
+                            state.panelCovered
+                        ? null
+                        : state.panel,
+                    delayOpening: !state.panelCovered,
+                    child:
+                        state.panel == ReaderPanel.none ||
+                            state.panel == ReaderPanel.search ||
+                            state.panelCovered
+                        ? null
+                        : _buildPanel(ref, state),
+                  ),
                 ),
+                // 保留已有正文树，更新期间阻止继续翻页或编辑旧正文。
+                if (sourceChanged)
+                  Positioned.fill(
+                    child: ReaderSourceChangedPage(bookId: bookId),
+                  ),
               ],
-              // 子面板和遮罩共用当前阅读主题。
-              if (state.panel != ReaderPanel.none && state.panel != ReaderPanel.search &&
-                  !state.panelCovered)
-                Positioned(left: 0, right: 0, top: 0,
-                  bottom: readerPanelBottom(context), child: GestureDetector(
-                  onTap: () => ref.read(readerProvider.notifier).closePanel(),
-                  child: Container(color: ReaderSheet.scrimOf(context)),
-                )),
-              ReaderPanelViewport(
-                child: ReaderPanelMotion(
-                  panel: state.panel == ReaderPanel.none || state.panel == ReaderPanel.search ||
-                      state.panelCovered ? null : state.panel,
-                  delayOpening: !state.panelCovered,
-                  child: state.panel == ReaderPanel.none || state.panel == ReaderPanel.search ||
-                      state.panelCovered ? null : _buildPanel(ref, state),
-                ),
-              ),
-              // 保留已有正文树，更新期间阻止继续翻页或编辑旧正文。
-              if (sourceChanged) Positioned.fill(child: ReaderSourceChangedPage(bookId: bookId)),
-            ],
+            ),
           ),
-        )),
+        ),
       ),
     );
   }
@@ -275,263 +435,5 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
       case ReaderPanel.none:
         return const SizedBox.shrink();
     }
-  }
-}
-
-/// 正文层：顶部章节信息 + 真实分页正文 + 底部状态行。
-class _ReadingContent extends ConsumerStatefulWidget {
-  const _ReadingContent({
-    required this.state,
-    required this.bookId,
-    required this.theme,
-    required this.settings,
-    required this.settingsReady,
-  });
-
-  final ReaderState state;
-  final String bookId;
-  final ReadingTheme theme;
-
-  /// 当前生效的阅读设置（本书设置没读出来时是全局偏好）
-  final ReaderSettingsState settings;
-
-  /// 本书设置是否已读出来
-  final bool settingsReady;
-
-  @override
-  ConsumerState<_ReadingContent> createState() => _ReadingContentState();
-}
-
-class _ReadingContentState extends ConsumerState<_ReadingContent> {
-  final _transitionKey = GlobalKey();
-  late final ReaderProgressReturn _progressReturn;
-  late final Future<void> Function() _prepareJumpCover;
-  late final Future<void> Function() _finishJumpCover;
-  var _originalKey = GlobalKey();
-  var _pageKey = GlobalKey<_PageAreaState>();
-  var _scrollKey = GlobalKey<OriginalScrollAreaState>();
-  var _textScrollKey = GlobalKey<SimplifiedScrollAreaState>();
-  Book? _displayBook;
-  OriginalLayoutController? _displayOriginal;
-  Object? _reportedOriginalError;
-  Size? _originalViewport;
-  ReaderState get state => widget.state;
-  String get bookId => widget.bookId;
-  ReadingTheme get theme => widget.theme;
-  ReaderSettingsState get settings => widget.settings;
-  bool get settingsReady => widget.settingsReady;
-
-  @override
-  void initState() {
-    super.initState();
-    _progressReturn = ref.read(readerProgressReturnProvider(bookId).notifier);
-    _prepareJumpCover = () => ReaderDisplayTransition.captureForJump(_transitionKey);
-    _progressReturn.prepareJumpCover = _prepareJumpCover;
-    _finishJumpCover = () => ReaderDisplayTransition.finishJump(_transitionKey);
-    _progressReturn.finishJumpCover = _finishJumpCover;
-  }
-
-  @override
-  void dispose() {
-    if (_progressReturn.prepareJumpCover == _prepareJumpCover) {
-      _progressReturn.prepareJumpCover = null;
-      _progressReturn.finishJumpCover = null;
-    }
-    super.dispose();
-  }
-
-  Future<NativeReadingFrame?> _captureNative() async {
-    if (_scrollKey.currentState != null) return OriginalScrollArea.capture(_scrollKey);
-    if (_originalKey.currentState != null) return OriginalReaderArea.capture(_originalKey);
-    return null;
-  }
-
-  bool _displayReady() {
-    // 失败页也是准备结束，不能继续盖着加载动画隐藏真正的错误。
-    final session = ref.read(readerSessionProvider(bookId));
-    if (session.hasError && !session.isLoading) return true;
-    if (ref.read(readerSessionProvider(bookId).notifier).displayTarget != null) return false;
-    if (_scrollKey.currentState case final scroll?) return scroll.isReady;
-    if (_textScrollKey.currentState case final scroll?) return scroll.isReady;
-    if (_originalKey.currentState != null) return OriginalReaderArea.ready(_originalKey);
-    return _pageKey.currentState?.isReady ?? false;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final sessionAsync = ref.watch(readerSessionProvider(bookId));
-    final session = sessionAsync.value;
-    if (session != null && !identical(_displayBook, session.book)) {
-      // 来源刷新仍沿用 bookId 和正文规则版本，但章节与会话已经换了。
-      // 重建各显示器，避免滚动窗口继续使用旧章节列表或已释放的会话；外层保留旧截图。
-      _displayBook = session.book;
-      _displayOriginal = null;
-      _originalKey = GlobalKey();
-      _pageKey = GlobalKey<_PageAreaState>();
-      _scrollKey = GlobalKey<OriginalScrollAreaState>();
-      _textScrollKey = GlobalKey<SimplifiedScrollAreaState>();
-      _reportedOriginalError = null;
-    }
-    final searchBusy = ref.watch(bookSearchNavigationProvider(bookId).select((s) => s.busy));
-    final jumpBusy = ref.watch(readerProgressReturnProvider(bookId).select((s) => s.busy));
-    return ReadingStatisticsScope(bookId: bookId,
-      onVolumeTurn: (forward) async {
-        if (_textScrollKey.currentState case final scroll?) {
-          await scroll.volumeTurn(forward);
-        } else if (_scrollKey.currentState case final scroll?) {
-          await scroll.volumeTurn(forward);
-        } else if (_originalKey.currentState != null) {
-          await OriginalReaderArea.turn(_originalKey, forward);
-        } else { await _pageKey.currentState?.volumeTurn(forward); }
-      },
-      ready: () => settingsReady && _displayReady() &&
-        !ref.read(readerSessionProvider(bookId)).hasError &&
-        ref.read(readerSessionProvider(bookId)).value?.currentAnchor != null,
-      child: SafeArea(
-      top: ref.watch(readingControlsProvider).value?.statusBar ?? true,
-      bottom: ref.watch(readingControlsProvider).value?.navigationBar ?? true,
-      // 显示系统栏时避开对应安全区；隐藏时，两种排版的画布和手势一起延伸。
-      // 键盘收起的中间帧也保留导航栏留白，正文不先变高再缩回。
-      maintainBottomViewPadding: true,
-      child: Stack(
-        children: [
-          Positioned.fill(child: LayoutBuilder(builder: (context, constraints) {
-            final originalPaged = settings.settings.layoutMode.isOriginal &&
-                settings.settings.pageTurnEffect != PageTurnEffect.scroll;
-            if (MediaQuery.viewInsetsOf(context).bottom == 0) {
-              _originalViewport = constraints.biggest;
-            }
-            return ReaderDisplayTransition(
-            key: _transitionKey,
-            appearance: theme,
-            loadingRevision: settings.settings.layoutMode,
-            onReadable: ReaderPageReady.of(context),
-            viewport: originalPaged ? _originalViewport : null,
-            reflow: originalPaged ? (settings.settings.fontSize,
-              settings.settings.fontFamily, settings.settings.useOriginalFont,
-              settings.settings.fontWeight, settings.settings.indent,
-              settings.settings.lineHeight, settings.settings.paragraphGapEm,
-              settings.settings.horizontalPadding, settings.settings.pageTurnEffect,
-              theme, MediaQuery.textScalerOf(context),
-              ref.watch(statusInfoVisibleProvider).value) : searchBusy,
-            display: (settings.settings.layoutMode,
-              settings.settings.pageTurnEffect == PageTurnEffect.scroll),
-            ready: () => !ref.read(readerSourceChangeProvider(bookId)) &&
-                settingsReady && !searchBusy && !jumpBusy && _displayReady(), captureNative: _captureNative,
-            loadingBackground: theme.background,
-            child: ReaderPerformance(
-              label: '${settings.settings.layoutMode.name}.${settings.settings.pageTurnEffect.name}',
-              child: _body(context, ref, sessionAsync, session)));
-          })),
-          // 一次性提示（全书首尾、原书排版不可用）：两种排版模式共用一处显示
-          if (state.notice != null)
-            Align(
-              alignment: Alignment.bottomCenter,
-              child: Padding(
-                padding: const EdgeInsets.only(bottom: GtSpacing.s6),
-                child: _ReaderNotice(
-                  key: ValueKey(state.noticeToken),
-                  text: state.notice!,
-                ),
-              ),
-            ),
-        ],
-      ),
-    ));
-  }
-
-  Widget _body(
-    BuildContext context,
-    WidgetRef ref,
-    AsyncValue<ReaderSession> sessionAsync,
-    ReaderSession? session,
-  ) {
-    if (sessionAsync.hasError && !sessionAsync.isLoading) {
-      return _ErrorState(
-        message: '${sessionAsync.error}',
-        onRetry: () => ref.invalidate(readerSessionProvider(bookId)),
-      );
-    }
-    if (session == null) return const _PreparingState();
-    // 本书的排版设置还没到位：先不排，否则会按全局值排一遍再重排
-    if (!settingsReady) return const _PreparingState();
-    if (settings.settings.pageTurnEffect == PageTurnEffect.scroll) {
-      final annotations = ref.watch(annotationsProvider(bookId));
-      if (!annotations.hasValue && annotations.isLoading) return const _PreparingState();
-    }
-
-    if (settings.settings.pageTurnEffect == PageTurnEffect.scroll &&
-        (!settings.settings.layoutMode.isOriginal || session.book.format != BookFormat.epub)) {
-      return SimplifiedScrollArea(key: _textScrollKey,
-          bookId: bookId, session: session, settings: settings);
-    }
-
-    // 原书排版模式：EPUB 且用户选了原书排版时走 WebView
-    if (settings.settings.layoutMode.isOriginal &&
-        session.book.format == BookFormat.epub) {
-      final original = ref.watch(originalLayoutProvider(bookId));
-      // Provider 更新时可能暂存上一份 value；已关闭的旧原书服务不能交给新显示器。
-      if (original.isLoading) return const _PreparingState();
-      // 原书内容打不开（源文件缺失、与章节索引对不上）：降级回简化排版，
-      // 并把原因告诉用户，而不是留一个空白页（计划 3.1）
-      if (original.hasError && !original.isLoading) {
-        if (ref.read(readerSourceChangeProvider(bookId))) return const SizedBox.expand();
-        if (isSourceChange(original.error)) {
-          if (_reportedOriginalError != original.error) {
-            _reportedOriginalError = original.error;
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (mounted) ref.read(readerSourceChangeProvider(bookId).notifier).markChanged();
-            });
-          }
-          return const SizedBox.expand();
-        }
-        if (_reportedOriginalError != original.error) {
-          _reportedOriginalError = original.error;
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (!mounted) return;
-            ref.read(readerSessionProvider(bookId).notifier).setLayoutMode(ReadingLayoutMode.simplified);
-            ref.read(readerProvider.notifier).showNotice('原书内容无法读取，已用简化排版显示');
-          });
-        }
-        if (settings.settings.pageTurnEffect == PageTurnEffect.scroll) {
-          return SimplifiedScrollArea(bookId: bookId, session: session, settings: settings);
-        }
-        return _PageArea(
-          key: _pageKey,
-          state: state,
-          bookId: bookId,
-          session: session,
-          settings: settings,
-        );
-      }
-      final controller = original.value;
-      if (controller == null) return const _PreparingState();
-      if (!identical(_displayOriginal, controller)) {
-        _displayOriginal = controller;
-        _originalKey = GlobalKey();
-        _scrollKey = GlobalKey<OriginalScrollAreaState>();
-      }
-      if (settings.settings.pageTurnEffect == PageTurnEffect.scroll) {
-        return OriginalScrollArea(key: _scrollKey, bookId: bookId, session: session,
-            settings: settings, original: controller);
-      }
-      return OriginalReaderArea(
-        key: _originalKey,
-        bookId: bookId,
-        session: session,
-        controller: controller,
-        settings: settings.settings,
-        theme: settings.theme,
-        onCenterTap: () => ref.read(automaticReadingProvider(bookId).notifier).centerTap(),
-      );
-    }
-    // 还没排完版时也走排版区：它负责把当前尺寸与设置交给引擎
-    return _PageArea(
-      key: _pageKey,
-      state: state,
-      bookId: bookId,
-      session: session,
-      settings: settings,
-    );
   }
 }

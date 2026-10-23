@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:taletin/core/diagnostics/app_errors.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -7,8 +8,10 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import '../../../../data/services/epub_source_repository.dart';
 import '../../../../platform/channels/reading_fonts.dart';
 import '../../../../core/diagnostics/opening_experiments.dart';
+import '../../../../core/diagnostics/reader_turn_diagnostics.dart';
 import 'reader_performance.dart';
 import 'original_font_assets.dart';
+import 'original_console_errors.dart';
 
 class ScrollHostAssets {
   ScrollHostAssets(
@@ -20,6 +23,7 @@ class ScrollHostAssets {
   );
   final String script, styleScript, css, autoScript, selectionScript;
   static Future<ScrollHostAssets> load() async => ScrollHostAssets(
+    '${readerTurnDiagnosticsEnabled ? await rootBundle.loadString('assets/webview/reader_turn_diagnostics.js') : ''}\n'
     '${await rootBundle.loadString('assets/webview/reader_perf.js')}\n'
     '${await rootBundle.loadString('assets/webview/scroll_anchor.js')}\n'
     '${await rootBundle.loadString('assets/webview/scroll_host.js')}',
@@ -53,6 +57,7 @@ class OriginalScrollWebView extends StatelessWidget {
     required this.onController,
     required this.onLoaded,
     required this.onMessage,
+    required this.onScroll,
     this.preparedView,
   });
   final EpubSourceSession source;
@@ -61,6 +66,7 @@ class OriginalScrollWebView extends StatelessWidget {
   final ValueChanged<InAppWebViewController> onController;
   final VoidCallback onLoaded;
   final Future<Object?> Function(Map<String, dynamic>) onMessage;
+  final VoidCallback onScroll;
 
   @override
   Widget build(BuildContext context) => InAppWebView(
@@ -69,8 +75,11 @@ class OriginalScrollWebView extends StatelessWidget {
       url: WebUri('https://$kEpubSourceHost/__gt__/scroll'),
     ),
     initialSettings: originalWebViewSettings(scrolling: true),
+    // 插件本来就发送此原生回调；订阅它不增加逐帧JS查询或跨桥请求。
+    onScrollChanged: (_, _, _) => onScroll(),
     onWebViewCreated: (controller) async {
       onController(controller);
+      await source.bindResources(controller.getViewId()!);
       controller.addJavaScriptHandler(
         handlerName: 'scrollHost',
         callback: (args) async {
@@ -94,8 +103,26 @@ class OriginalScrollWebView extends StatelessWidget {
         onLoaded();
       }
     },
-    onConsoleMessage: (_, message) =>
-        debugPrint('[scroll web] ${message.message}'),
+    onConsoleMessage: (_, message) {
+      debugPrint('[scroll web] ${message.message}');
+      if (message.messageLevel == ConsoleMessageLevel.ERROR) {
+        reportOriginalConsoleError(
+          message.message,
+          operation: '原书滚动脚本失败',
+          sandboxedChapters: true,
+        );
+      }
+    },
+    onReceivedError: (_, request, error) {
+      if (request.isForMainFrame == true) {
+        AppErrors.report(StateError('${error.type}: ${error.description}'),
+          StackTrace.current, operation: '原书滚动页面加载失败');
+      }
+    },
+    onRenderProcessGone: (_, detail) async {
+      AppErrors.report(StateError('didCrash=${detail.didCrash}'),
+        StackTrace.current, operation: '原书渲染进程退出');
+    },
     shouldOverrideUrlLoading: (_, action) async {
       final url = action.request.url;
       // 允许阅读器自己的宿主及子框架导航，资源仍由本地拦截器回答。
@@ -105,7 +132,8 @@ class OriginalScrollWebView extends StatelessWidget {
       }
       return NavigationActionPolicy.CANCEL;
     },
-    shouldInterceptRequest: (_, request) async {
+    shouldInterceptRequest: (controller, request) async {
+      await source.bindResources(controller.getViewId()!);
       final url = request.url;
       if (url.host == kEpubSourceHost && url.path == '/__gt__/scroll') {
         return WebResourceResponse(

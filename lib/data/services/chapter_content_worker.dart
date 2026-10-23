@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:developer' show Timeline;
 import 'dart:io';
 import 'dart:isolate';
@@ -10,10 +11,15 @@ import 'package:direct_read_rust/direct_read_rust.dart';
 import '../../core/diagnostics/reader_work_trace.dart';
 
 import '../../domain/models/book_document.dart';
+import '../../domain/models/source_content_index.dart';
 import '../../domain/repositories/chapter_content_repository.dart';
 import '../../domain/services/text_preparation.dart';
 import 'chapter_disk_cache.dart';
+import 'chapter_manifest.dart';
 import 'indexed_chapter_reader.dart';
+import 'publication_cache.dart';
+
+part 'pdf_content_worker.dart';
 
 /// 整个正文仓库共用一个后台任务，串行处理 ZIP、TXT 和缓存文件。
 /// 重复章请求由仓库合并；清缓存和换书库也排在正在读的章节之后。
@@ -44,6 +50,7 @@ class ChapterContentWorker {
           libraryRoot,
           cacheRoot,
           ProcessingFeatures.mask,
+          PublicationCache.processEpoch,
         ),
         onError: worker._responses.sendPort,
         onExit: worker._responses.sendPort,
@@ -139,9 +146,15 @@ class ChapterContentWorker {
   }) async =>
       await _request('chapter', (bookId, chapter, textOnly)) as ChapterContent;
 
+  Future<Object?> pdf(String operation, Object? argument) =>
+      _request('pdf', (operation, argument));
+
   Future<void> invalidate([String? bookId]) async {
     await _request('invalidate', bookId);
   }
+
+  Future<ChapterManifest?> manifest(String bookId, String directory) async =>
+      await _request('manifest', (bookId, directory)) as ChapterManifest?;
 
   Future<ChapterContent?> cachedPreviousChapter(
     String bookId,
@@ -158,21 +171,23 @@ class ChapterContentWorker {
   }
 }
 
-Future<void> _run((SendPort, String, String?, int) start) async {
-  final (reply, libraryRoot, cacheRoot, features) = start;
+Future<void> _run((SendPort, String, String?, int, String) start) async {
+  final (reply, libraryRoot, cacheRoot, features, cacheEpoch) = start;
   ProcessingFeatures.configureExperiment(features);
   final commands = ReceivePort();
   final readers = <String, IndexedChapterReader>{};
   final memory = <String, ChapterContent>{};
+  final pdfCache = _PdfContentCache(libraryRoot, cacheRoot, cacheEpoch);
   final cache = ChapterDiskCache(
     cacheRoot == null ? null : p.join(cacheRoot, 'chapters'),
   );
   reply.send((0, commands.sendPort, null, null));
 
-  void invalidate(String? bookId) {
+  Future<void> invalidate(String? bookId) async {
+    await pdfCache.close(bookId);
     for (final key in readers.keys.toList()) {
       if (bookId == null || key.startsWith('$bookId/')) {
-        readers.remove(key)!.close();
+        await readers.remove(key)!.close();
       }
     }
     memory.removeWhere(
@@ -203,6 +218,54 @@ Future<void> _run((SendPort, String, String?, int) start) async {
     try {
       Object? result;
       switch (operation) {
+        case 'pdf':
+          result = await pdfCache.run(argument as (String, Object?));
+        case 'manifest':
+          final (bookId, directory) = argument as (String, String);
+          final file = File(
+            p.join(libraryRoot, bookId, directory, 'manifest.json'),
+          );
+          Map<String, dynamic>? manifest;
+          SourceContentIndex? index;
+          if (file.existsSync()) {
+            final decoded = jsonDecode(file.readAsStringSync());
+            if (decoded is Map) {
+              manifest = decoded.cast<String, dynamic>();
+              if (manifest['sourceIndex'] case final Map raw) {
+                index = SourceContentIndex.fromJson(
+                  raw.cast<String, dynamic>(),
+                );
+                // 清单、索引和缓存身份在同一后台只解析一次，界面接收结果副本。
+                // 原书/旧目录可以只读清单；版本不符仍由实际读章按原规则拒绝。
+                if (manifest['contentVersion'] == kContentVersion) {
+                  final key = '$bookId/$directory';
+                  final reader =
+                      readers.remove(key) ??
+                      IndexedChapterReader.open(
+                        p.join(libraryRoot, bookId),
+                        p.join(libraryRoot, bookId, directory),
+                        cacheRoot: cacheRoot,
+                        cacheEpoch: cacheEpoch,
+                        preparedIndex: (kContentVersion, index),
+                      );
+                  readers[key] = reader;
+                  while (readers.length > 2) {
+                    await readers.remove(readers.keys.first)!.close();
+                  }
+                }
+              }
+            }
+          }
+          if (manifest != null) {
+            // 当前目录无需旧书修复：章信息已从数据库读好，不能再复制和构造一遍。
+            // 索引单独传已解析对象，避免原始JSON结构与转换结果同时跨isolate复制。
+            if (((manifest['tocRevision'] as num?)?.toInt() ?? 0) >=
+                kTocRevision) {
+              manifest.remove('chapters');
+              manifest.remove('sourceIndex');
+            }
+            result = ChapterManifest(manifest, index);
+          }
         case 'previous':
           final (bookId, chapter) = argument as (String, Chapter);
           final directory = p.dirname(chapter.contentPath);
@@ -211,10 +274,19 @@ Future<void> _run((SendPort, String, String?, int) start) async {
               IndexedChapterReader.open(
                 p.join(libraryRoot, bookId),
                 p.join(libraryRoot, bookId, directory),
+                cacheRoot: cacheRoot,
+                cacheEpoch: cacheEpoch,
               );
           final key = '$bookId/${reader.signature}/${chapter.id}.json';
-          result = memory[key] ?? cache.read(key, chapter);
-          if (!readers.containsValue(reader)) reader.close();
+          result =
+              memory[key] ??
+              (reader.cache == null
+                  ? cache.read(key, chapter)
+                  : ChapterDiskCache(
+                      p.join(reader.cache!.directory, 'chapters'),
+                    ).read('${chapter.id}.json', chapter)) ??
+              cache.read(key, chapter);
+          if (!readers.containsValue(reader)) await reader.close();
         case 'chapter':
           final (bookId, chapter, textOnly) =
               argument as (String, Chapter, bool);
@@ -228,53 +300,87 @@ Future<void> _run((SendPort, String, String?, int) start) async {
               IndexedChapterReader.open(
                 p.join(libraryRoot, bookId),
                 p.join(libraryRoot, bookId, p.dirname(chapter.contentPath)),
+                cacheRoot: cacheRoot,
+                cacheEpoch: cacheEpoch,
               );
           readers[key] = reader;
           while (readers.length > 2) {
-            readers.remove(readers.keys.first)!.close();
+            await readers.remove(readers.keys.first)!.close();
           }
           trace?.mark('open_index');
           await reader.verifySource();
           trace?.mark('verify_source');
           final cacheKey = '$bookId/${reader.signature}/${chapter.id}.json';
-          var content = textOnly ? memory[cacheKey] : memory.remove(cacheKey);
-          var hit = content == null ? 'miss' : 'memory';
-          if (content == null) {
-            content = cache.read(cacheKey, chapter);
-            if (content != null) hit = 'disk';
-          }
-          trace?.mark('cache_read');
-          trace?.details['hit'] = hit;
-          if (content == null) {
-            content = await reader.read(chapter, decode, textOnly: textOnly);
-            trace?.mark('read_decode_convert');
-            if (!textOnly) {
-              // 缓存写失败不影响已正确解析的正文，磁盘紧张时仍能阅读。
-              try {
-                cache.write(cacheKey, content);
-              } on FileSystemException {
-                trace?.details['cacheWriteFailed'] = true;
+          final store = reader.cache;
+          if (!textOnly) await store?.beginPreparation();
+          try {
+            final disk = store == null
+                ? cache
+                : ChapterDiskCache(p.join(store.directory, 'chapters'));
+            final diskKey = store == null ? cacheKey : '${chapter.id}.json';
+            var content = textOnly ? memory[cacheKey] : memory.remove(cacheKey);
+            var hit = content == null ? 'miss' : 'memory';
+            if (content == null) {
+              content = disk.read(diskKey, chapter);
+              if (content != null) hit = 'disk';
+            }
+            if (content == null && store != null && cacheRoot != null) {
+              content = cache.read(cacheKey, chapter);
+              if (content != null) {
+                hit = 'previous-disk';
+                store.adopt(
+                  File(p.join(cacheRoot, 'chapters', cacheKey)),
+                  store.file('chapters/$diskKey'),
+                );
               }
-              trace?.mark('cache_encode_write');
             }
-          }
-          if (!textOnly && content.textLength <= 500000) {
-            memory[cacheKey] = content;
-            while (memory.length > 4 ||
-                memory.values.fold<int>(0, (n, c) => n + c.textLength) >
-                    500000) {
-              memory.remove(memory.keys.first);
+            trace?.mark('cache_read');
+            trace?.details['hit'] = hit;
+            if (content == null) {
+              content = await reader.read(chapter, decode, textOnly: textOnly);
+              trace?.mark('read_decode_convert');
+              if (!textOnly) {
+                // 缓存写失败不影响已正确解析的正文，磁盘紧张时仍能阅读。
+                try {
+                  if (store == null) {
+                    cache.write(cacheKey, content);
+                  } else {
+                    store.write(
+                      store.file('chapters/$diskKey'),
+                      content.encode(),
+                    );
+                  }
+                } on FileSystemException {
+                  trace?.details['cacheWriteFailed'] = true;
+                }
+                trace?.mark('cache_encode_write');
+              }
             }
+            if (!textOnly) await reader.prepareResources(content);
+            if (!textOnly && content.textLength <= 500000) {
+              memory[cacheKey] = content;
+              while (memory.length > 4 ||
+                  memory.values.fold<int>(0, (n, c) => n + c.textLength) >
+                      500000) {
+                memory.remove(memory.keys.first);
+              }
+            }
+            result = content;
+            trace?.details['characters'] = content.textLength;
+          } finally {
+            if (!textOnly) store?.endPreparation();
           }
-          result = content;
-          trace?.details['characters'] = content.textLength;
         case 'invalidate':
-          invalidate(argument as String?);
+          await invalidate(argument as String?);
         case 'clear':
-          invalidate(argument as String?);
+          await invalidate(argument as String?);
           cache.clear(argument);
+          PublicationCache.clearChapters(
+            PublicationCache.effectiveRoot(libraryRoot, cacheRoot),
+            argument,
+          );
         case 'close':
-          invalidate(null);
+          await invalidate(null);
           commands.close();
       }
       reply.send((id, result, null, null));
@@ -284,7 +390,7 @@ Future<void> _run((SendPort, String, String?, int) start) async {
       reply.send((
         id,
         null,
-        error is ContentFailure
+        error is ContentFailure || operation == 'manifest'
             ? error
             : ContentFailure(ContentErrorCode.corrupted, '$error'),
         stack,

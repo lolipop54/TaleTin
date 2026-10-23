@@ -185,7 +185,8 @@ class ScrollWindow extends ChangeNotifier {
       }
       final target = await _prepare(index, value, request);
       final local = anchor == null ? 0.0 : target.layout.offsetOf(anchor);
-      final next = await _around(target, local, value, request);
+      final next = await _around(target, local, value, request,
+        visibleOnly: target.layout.content.pdfPage != null);
       if (_disposed || request != _request) return;
       final before = next
           .where((e) => e.index < index)
@@ -361,22 +362,32 @@ class ScrollWindow extends ChangeNotifier {
     ScrollEntry target,
     double local,
     LayoutOptions value,
-    int request,
-  ) async {
+    int request, {
+    bool visibleOnly = false,
+  }) async {
     final next = <ScrollEntry>[target];
     var above = local, below = target.layout.height - local;
-    final reserve = value.contentHeight * 2;
-    while (next.first.index > 0 &&
-        (next.first.index == target.index || above < reserve)) {
+    // PDF跳转只等目标屏幕需要的页。落地后maintain继续准备上下余量，
+    // 不让前后数张扫描页的无损编码阻塞目标页显示。
+    final reserve = visibleOnly ? 0.0 : value.contentHeight * 2;
+    final requiredBelow = visibleOnly ? value.contentHeight : reserve * 1.5;
+    // A long current chapter can already cover many screens. Prepare adjacent
+    // chapters only when the same distance reserve requires them; short chapters
+    // still fill two screens above and three below before the window is shown.
+    while (next.first.index > 0 && above < reserve) {
       final entry = await _prepare(next.first.index - 1, value, request);
       next.insert(0, entry);
       above += entry.layout.height;
     }
-    while (next.last.index + 1 < chapters.length &&
-        (next.last.index == target.index || below < reserve * 1.5)) {
+    while (next.last.index + 1 < chapters.length && below < requiredBelow) {
       final entry = await _prepare(next.last.index + 1, value, request);
       next.add(entry);
       below += entry.layout.height;
+    }
+    while (visibleOnly && next.first.index > 0 && above + below < value.contentHeight) {
+      final entry = await _prepare(next.first.index - 1, value, request);
+      next.insert(0, entry);
+      above += entry.layout.height;
     }
     return next;
   }

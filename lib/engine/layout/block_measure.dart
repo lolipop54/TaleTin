@@ -20,6 +20,8 @@ class BlockMeasurer {
   BlockMeasurer(this.options, {BlockMeasurementCache? cache})
     : _cache = cache ?? BlockMeasurementCache();
   final BlockMeasurementCache _cache;
+  // 一个测量器的排版参数固定；长章反复使用相同样式，不必逐段重新构造。
+  final _styles = <(BlockKind, int?, bool, bool), TextStyle>{};
   int cacheHits = 0, measuredBlocks = 0;
 
   final LayoutOptions options;
@@ -141,11 +143,14 @@ class BlockMeasurer {
     final runs = _withPrefix(block.runs, prefix);
     final styles = [
       for (final run in runs)
-        options.textStyleFor(
-          block.kind,
-          level: styleLevel ?? block.level,
-          bold: run.bold,
-          italic: run.italic,
+        _styles.putIfAbsent(
+          (block.kind, styleLevel ?? block.level, run.bold, run.italic),
+          () => options.textStyleFor(
+            block.kind,
+            level: styleLevel ?? block.level,
+            bold: run.bold,
+            italic: run.italic,
+          ),
         ),
     ];
     final buffer = StringBuffer();

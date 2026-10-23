@@ -1,10 +1,9 @@
 /// 删除书籍用例（设计文档 2.1「书籍管理」/7.3）：
 ///
-/// - 数据库先行：把书籍标成墓碑删除（`status=removed`），书架立即不再显示；
+/// - 数据库先行：事务中删除书籍及位置、笔记、设置、统计等关联数据；
 /// - 再删本地文件：源文件副本、解析后的正文与资源目录一起删掉；
-/// - **保留 bookId**：同一个文件重新导入时复用这一行（`reactivateImport`），
-///   后续版本的阅读进度、笔记、统计因为挂在 bookId 上而不会被丢弃；
-/// - 文件删除失败不视为失败：墓碑已经生效，残留目录由下次启动回收。
+/// - 重新导入按全新书籍处理，不复用旧 bookId 或阅读资料；
+/// - 文件清理失败只暂存清理任务ID，启动恢复继续清理，成功后移除任务。
 library;
 
 import '../services/library_file_gate.dart';
@@ -27,10 +26,10 @@ class DeleteBooksResult {
   /// 已确认删除成功的文件字节数，不把旧估计或失败文件算作释放。
   final int freedBytes;
 
-  /// 准备交接、数据库标记或文件清理失败的书籍数。
+  /// 准备交接、数据库删除或文件清理失败的书籍数。
   final int failedCount;
 
-  /// 没能写入墓碑的书籍仍留在书架，供界面保留选择并允许重试。
+  /// 数据库删除失败的书籍仍留在书架，供界面保留选择并允许重试。
   final Set<String> undeletedIds;
 }
 
@@ -115,7 +114,11 @@ class DeleteBooks {
           final dir = await _storage.bookDirectoryPath(id);
           final result = await _storage.deleteRecursivelyWithSize(dir);
           freed += result.freedBytes;
-          if (result.failed) failed++;
+          if (result.failed) {
+            failed++;
+          } else {
+            await _books.deleteJob('delete:$id');
+          }
         } catch (_) {
           failed++;
         }

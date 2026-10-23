@@ -155,7 +155,7 @@ impl Html {
         }
         json!({"images":images,"links":links})
     }
-    pub fn convert(&self, metadata: Value, flags: u32) -> Value {
+    fn build(&self, metadata: Value, flags: u32) -> Builder {
         let mut build = Builder::new(metadata, flags | if self.optimized { 4 } else { 0 });
         if let Some(body) = find(&self.dom.document, "body") {
             build.walk_all(&body, Style::default());
@@ -167,12 +167,34 @@ impl Html {
         {
             build.blocks.remove(0);
         }
+        build
+    }
+    pub fn convert(&self, metadata: Value, flags: u32) -> Value {
+        let anchors = metadata.get("anchors").cloned();
+        let anchor_metadata = metadata.clone();
+        let build = self.build(metadata, flags);
         let mut result = json!({"blocks":build.blocks,"tables":build.tables,"heading":build.heading,"warnings":build.warnings,
             "length":build.length,"singleImage":build.single_image,"pieces":build.maps});
+        if anchors.is_some() {
+            result["tocHeadings"] = json!(build.toc_headings);
+        }
         if build.map {
             result["dom"] = self.export(&self.dom.document);
         }
+        if anchors.as_ref().is_some_and(|a| a.as_array().is_some_and(|a| !a.is_empty())) {
+            // Reuse this parsed tree. Only the small target positions leave the
+            // import batch; original HTML and standard body are never saved.
+            crate::original::sanitize_dom(&self.dom);
+            result["tocPositions"] = self.anchor_positions(anchor_metadata);
+        }
         result
+    }
+    pub fn anchor_positions(&self, metadata: Value) -> Value {
+        let wanted = metadata["anchors"].as_array().cloned().unwrap_or_default();
+        // Use the same conversion and source pieces, but keep its large DOM
+        // graph native; only the requested targets and their blocks leave Rust.
+        let build = self.build(metadata, 2);
+        crate::html_anchors::positions(&self.dom, &build.blocks, &build.maps, &wanted)
     }
     fn export(&self, node: &Handle) -> Value {
         let attrs: serde_json::Map<String, Value> = node
@@ -236,11 +258,12 @@ struct Builder {
     length: usize,
     count: usize,
     single_image: Option<String>,
+    toc_headings: Vec<Value>,
 }
 fn units(s: &str) -> usize {
     s.encode_utf16().count()
 }
-fn html_space(c: char) -> bool {
+pub(crate) fn html_space(c: char) -> bool {
     matches!(
         c,
         '\t' | '\n'
@@ -258,7 +281,7 @@ fn html_space(c: char) -> bool {
             | '\u{feff}'
     ) || ('\u{2000}'..='\u{200a}').contains(&c)
 }
-fn collapse(raw: &str) -> String {
+pub(crate) fn collapse(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let mut space = false;
     for c in raw.chars() {
@@ -295,6 +318,7 @@ impl Builder {
             length: 0,
             count: 0,
             single_image: None,
+            toc_headings: vec![],
         }
     }
     fn warning(&mut self) {
@@ -511,6 +535,7 @@ impl Builder {
             let mut length = 0;
             let mut nonempty = false;
             let heading = self.heading.is_none() && (kind == "paragraph" || kind == "heading");
+            let toc_heading = kind == "heading" && self.metadata.get("anchors").is_some();
             let mut title = String::new();
             for run in &self.runs {
                 let text = run.text.trim_matches(|c| c == ' ' || c == '\n');
@@ -519,11 +544,14 @@ impl Builder {
                 }
                 nonempty = true;
                 length += units(text);
-                if heading {
+                if heading || toc_heading {
                     title.push_str(text);
                 }
             }
             if nonempty {
+                if toc_heading {
+                    self.toc_headings.push(json!([title, self.length]));
+                }
                 if heading {
                     self.heading = Some(title);
                 }
@@ -553,6 +581,10 @@ impl Builder {
         }
         if self.heading.is_none() && (kind == "paragraph" || kind == "heading") {
             self.heading = Some(runs.iter().map(|r| r.text.as_str()).collect());
+        }
+        if kind == "heading" && self.metadata.get("anchors").is_some() {
+            let title: String = runs.iter().map(|r| r.text.as_str()).collect();
+            self.toc_headings.push(json!([title, self.length]));
         }
         self.record(
             kind,

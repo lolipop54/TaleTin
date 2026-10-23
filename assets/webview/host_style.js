@@ -102,17 +102,22 @@
   }
 
   function markImageOnlyParagraphs() {
+    var pending = [];
+    function mark(node, name, value) {
+      if (window.__gtBatchMarkers) pending.push([node, name, value]);
+      else node.setAttribute(name, value);
+    }
     var paragraphs = document.body.querySelectorAll('p');
     for (var i = 0; i < paragraphs.length; i++) {
       var paragraph = paragraphs[i];
       if (paragraph.querySelector('img') && !paragraph.textContent.trim()) {
-        paragraph.setAttribute('data-gt-image-only', '');
+        mark(paragraph, 'data-gt-image-only', '');
       }
       var align = window.getComputedStyle(paragraph).textAlign;
       // 只给正文段落补两字缩进，目录、列表、表格、图注及居中章题保留原布局。
       if (paragraph.textContent.trim() && align !== 'center' && align !== 'right' &&
           !paragraph.closest('li,table,figure,nav,pre,[role="heading"]')) {
-        paragraph.setAttribute('data-gt-indent', '');
+        mark(paragraph, 'data-gt-indent', '');
       }
     }
     // 部分书用 div + br 承载正文，标记直接含文字的 div，避免修改纯容器/章题。
@@ -124,29 +129,53 @@
         return node.nodeType === 3 && node.nodeValue.trim();
       });
       if (directText) {
-        divs[j].setAttribute('data-gt-prose', '');
+        mark(divs[j], 'data-gt-prose', '');
         if (!divs[j].closest('li,table,figure,nav,pre,[role="heading"]')) {
-          divs[j].setAttribute('data-gt-indent', '');
+          mark(divs[j], 'data-gt-indent', '');
         }
       }
     }
+    // 先读取原书的全部对齐状态，再一次写标记，避免读写交错反复重算样式。
+    pending.forEach(function(item) { item[0].setAttribute(item[1], item[2]); });
   }
 
   function markHeadingMargins() {
+    var pending = [];
     var headings = document.body.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"]');
     for (var i = 0; i < headings.length; i++) {
-      var style = window.getComputedStyle(headings[i]);
+      var heading = headings[i];
+      var typed = window.__gtBatchMarkers && heading.computedStyleMap
+        ? heading.computedStyleMap() : null;
+      var style = null;
       var negative = [];
       // 书里的章题常用负边距扩背景或向上挪动。只归零负值，保留正值和自动对齐。
       ['Top', 'Right', 'Bottom', 'Left'].forEach(function (side) {
-        if (parseFloat(style['margin' + side]) < 0) {
+        var value = typed && typed.get('margin-' + side.toLowerCase());
+        var isNegative;
+        // 只判断正负，不需要把百分比换成像素。读取常见的计算值能避免在
+        // 设置分栏之前先为整章做一次无用排版；calc 等混合表达式仍按原逻辑
+        // 读取实际像素，不能根据表达式中的某一项猜测最终正负。
+        if (value && (value.unit === 'px' || value.unit === 'percent')) {
+          isNegative = value.value < 0;
+        } else if (value && value.toString() === 'auto') {
+          isNegative = false;
+        } else {
+          // 混合calc依赖原书容器的实际宽度，保留旧像素判断，不从隐藏
+          // 正文的未解析表达式猜正负；此类章节允许退回提前布局。
+          if (window.__gtFinalLayout) beginContentLayout();
+          if (!style) style = window.getComputedStyle(heading);
+          isNegative = parseFloat(style['margin' + side]) < 0;
+        }
+        if (isNegative) {
           negative.push(side.toLowerCase());
         }
       });
       if (negative.length) {
-        headings[i].setAttribute('data-gt-heading-margins', negative.join(' '));
+        if (window.__gtBatchMarkers) pending.push([headings[i], negative.join(' ')]);
+        else headings[i].setAttribute('data-gt-heading-margins', negative.join(' '));
       }
     }
+    pending.forEach(function(item) { item[0].setAttribute('data-gt-heading-margins', item[1]); });
   }
 
   function clearElementFontScale() {
@@ -237,11 +266,15 @@
     var savedProgress;
     var savedAnchor = null;
     if (changingLayout) {
-      savedProgress = state.pages <= 1 ? 0 : state.page / state.pages;
+      // 尚未完成的索引只有局部页数，不能当成整章进度参与恢复。
+      savedProgress = state.indexComplete === false ? null :
+        (state.pages <= 1 ? 0 : state.page / state.pages);
       savedAnchor = internal.dom.captureAnchor();
-      if (savedAnchor && Math.floor(
-          internal.dom.anchorOffsetX(savedAnchor) / state.width) !== state.page) {
-        savedAnchor = null;
+      if (savedAnchor) {
+        var anchorX = internal.dom.anchorOffsetX(savedAnchor);
+        if (anchorX === null || Math.floor(anchorX / state.width) !== state.page) {
+          savedAnchor = null;
+        }
       }
     }
     if (fontSizePx > 0) {
@@ -316,6 +349,12 @@
   function revealContent() {
     var preload = document.getElementById('gt-preload');
     if (preload && preload.parentNode) preload.parentNode.removeChild(preload);
+  }
+
+  function beginContentLayout() {
+    var preload = document.getElementById('gt-preload');
+    if (preload) preload.textContent = preload.textContent.replace(
+      'body{display:none !important}', '');
   }
 
   function whenContentReady(callback) {
@@ -411,9 +450,14 @@
     markImageOnlyParagraphs: markImageOnlyParagraphs,
     markHeadingMargins: markHeadingMargins,
     revealContent: revealContent,
+    beginContentLayout: beginContentLayout,
     watchImages: watchImages,
     whenContentReady: whenContentReady,
     prepareImagesRect: prepareImagesRect,
+    layoutSignature: function() {
+      return JSON.stringify([appliedFontSize,appliedFamily,appliedFontWeight,
+        appliedIndent,appliedLineHeight,appliedParagraphGap,state.margin]);
+    },
     prepareFont: prepareFont
   };
 })();

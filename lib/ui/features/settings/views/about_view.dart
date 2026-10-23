@@ -39,9 +39,10 @@ class AboutView extends ConsumerWidget {
                   const SizedBox(height: 24),
                   Text('支持格式', style: Theme.of(context).textTheme.titleMedium),
                   const Text(
-                    'EPUB 与 TXT。\n\n'
-                    'EPUB 可选「简化排版」或「原书排版」，阅读进度、书签、笔记在两种模式间互通；'
+                    'EPUB、TXT、MOBI、AZW3 与 PDF。\n\n'
+                    'EPUB、MOBI 和 AZW3 可选「简化排版」或「原书排版」，阅读进度、书签、笔记在两种模式间互通；'
                     'TXT 使用简化排版，导入时可确认文字编码和章节规则。\n\n'
+                    'PDF 可选「电子书模式」或「PDF模式」；电子书模式读取文字层和图片，扫描页直接显示整页图片，不进行文字识别。\n\n'
                     '加密或带 DRM 保护的书无法导入；固定版式 EPUB（漫画类常见）不做重排，按单页图片顺排显示。',
                   ),
                   const SizedBox(height: 24),

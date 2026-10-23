@@ -134,6 +134,14 @@ class NativeHtml implements Finalizable {
       (b) => jsonDecode(utf8.decode(b)) as Map<String, dynamic>,
     ),
   );
+  Map<String, dynamic> anchorPositions(Map<String, Object> metadata) =>
+      withNativeInput(
+        utf8.encode(jsonEncode(metadata)),
+        (input, length) => withNativeResult(
+          (out) => gt_html_anchor_positions(_handle, input, length, out),
+          (bytes) => jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>,
+        ),
+      );
   void close() {
     if (_handle != nullptr) {
       _finalizer.detach(_token);

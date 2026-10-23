@@ -1,8 +1,10 @@
+import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../view_models/reader_view_model.dart';
 import '../view_models/reader_settings_view_model.dart';
+import '../view_models/pdf_book_provider.dart';
 import 'reader_option_autosave.dart';
 import 'reader_panel_motion.dart';
 import 'reader_sheet.dart';
@@ -29,7 +31,8 @@ Future<T?> showReaderOption<T>(
     if (next != null && bookId != null) {
       try {
         await prepareReaderPanel(navigator.context, container, bookId, next);
-      } catch (_) {
+      } catch (appError, appStack) {
+        AppErrors.report(appError, appStack, operation: '切换阅读面板失败');
         vm.showNotice('面板准备失败，请重试');
         return;
       }
@@ -113,6 +116,9 @@ Future<T?> showReaderOption<T>(
                           maintainBottomViewPadding: true,
                           child: Consumer(
                             builder: (context, ref, _) => ReaderToolbar(
+                              showListening: !ref.watch(
+                                pdfModeProvider(bookId),
+                              ),
                               theme: ref
                                   .watch(readerSettingsProvider(bookId))
                                   .value!
