@@ -1,5 +1,8 @@
 import 'package:taletin/core/diagnostics/app_errors.dart';
+
 import 'dart:async';
+
+import '../../../core/diagnostics/listening_follow_diagnostics.dart';
 
 import '../../../domain/models/locator.dart';
 import '../../../domain/models/speech_unit.dart';
@@ -179,6 +182,7 @@ class ListeningController implements ListeningService {
   final Duration? eventTimeout;
   Timer? _watchdog;
   final _states = StreamController<ListeningState>.broadcast();
+  final _diagnostics = ListeningFollowDiagnostics('playback');
   late final StreamSubscription<TtsEngineEvent> _events;
   ListeningState _snapshot = const ListeningState();
   @override
@@ -216,6 +220,7 @@ class ListeningController implements ListeningService {
         snapshot.confirmedLocator?.samePosition(locator) != true) {
       positions?.update(locator);
     }
+    _diagnostics.playback(value, _snapshot);
     _snapshot = value;
     _states.add(value);
   }
@@ -704,6 +709,7 @@ class ListeningController implements ListeningService {
     if (_disposed) return;
     await stop();
     _disposed = true;
+    _diagnostics.dispose();
     await _sleep?.dispose();
     _invalidate();
     await _engineTail;

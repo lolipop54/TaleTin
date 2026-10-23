@@ -152,6 +152,21 @@ mixin _ReaderScrollPosition on AsyncNotifier<ReaderSession> {
       ),
     );
     reportDisplayArrival(anchor);
+    if (jumpToken != null && jumpToken == speechScrollToken) {
+      // 只有滚动显示器真实回报位置才算落位，发出跳转请求不代表已经显示。
+      ref.read(readerSessionProvider(bookId).notifier)._speechDiagnostics?.step(
+        'scrollArrived',
+        {
+          'token': jumpToken,
+          'chapter': index,
+          'anchor': listeningDiagnosticPosition(anchor),
+          'target': listeningDiagnosticPosition(
+            session.scrollJump?.locator,
+            relativeTo: anchor,
+          ),
+        },
+      );
+    }
     _scrollLanding?.complete();
     _scrollLanding = null;
     return true;

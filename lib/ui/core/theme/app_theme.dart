@@ -132,6 +132,10 @@ abstract final class GtTheme {
       splashFactory: NoSplash.splashFactory,
       splashColor: Colors.transparent,
       highlightColor: Colors.transparent,
+      bottomSheetTheme: const BottomSheetThemeData(
+        // Material 3 默认最多640dp；底部面板应跟随窗口宽度，安全区由各面板保留。
+        constraints: BoxConstraints(),
+      ),
       dialogTheme: const DialogThemeData(
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.all(Radius.circular(GtRadius.dialog)),

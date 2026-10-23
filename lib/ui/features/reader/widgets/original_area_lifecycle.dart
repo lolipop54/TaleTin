@@ -38,6 +38,8 @@ extension _OriginalAreaLifecycle on _OriginalReaderAreaState {
       notifier.cancelOriginalProgressPreparation = null;
     }
     GestureBinding.instance.pointerRouter.removeGlobalRoute(_onGlobalPointer);
+    _speechLog('disposed');
+    _speech.diagnostics.dispose();
     _speech.lifecycle.dispose();
     _speech.service.setPageBoundaries(this, const []);
     widget.controller.holdPageDuringJump = null;

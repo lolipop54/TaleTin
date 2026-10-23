@@ -12,6 +12,7 @@ import 'dart:async';
 import '../../../../platform/channels/reading_window.dart';
 
 import '../../../../core/diagnostics/app_errors.dart';
+import '../../../../core/diagnostics/listening_follow_diagnostics.dart';
 import '../../../../data/services/toc_index_compute.dart';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -56,6 +57,7 @@ part 'reader_original_position.dart';
 part 'reader_pdf_position.dart';
 part 'reader_annotation_navigation.dart';
 part 'reader_scroll_position.dart';
+part 'reader_speech_follow.dart';
 part 'reader_display_position.dart';
 part 'reader_toc_navigation.dart';
 part 'reader_progress_titles.dart';
@@ -71,6 +73,7 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
         _ReaderOriginalPosition,
         _ReaderAnnotationNavigation,
         _ReaderScrollPosition,
+        _ReaderSpeechFollow,
         _ReaderDisplayPosition,
         _ReaderTocNavigation {
   ReaderSessionNotifier(this.bookId);
@@ -585,90 +588,6 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
     final index = session.chapters.indexWhere((c) => c.id == chapterId);
     if (index < 0) return;
     await goToChapter(index);
-  }
-
-  /// 跳到内容位置（书签、进度滑块、目录定位）。
-  int _speechRequest = 0;
-  void cancelSpeechFollow() => _speechRequest++;
-
-  /// 跟随只替换显示状态；不保存页首、不启动翻页动画。同页直接返回。
-  Future<void> followSpeech(Locator locator) async {
-    final request = ++_speechRequest;
-    final session = state.value;
-    final options = _options;
-    if (session == null) return;
-    final index = session.chapters.indexWhere((c) => c.id == locator.chapterId);
-    if (index < 0) return;
-    if (session.scrolling) {
-      requestScrollPosition(locator, animated: true);
-      return;
-    }
-    if (_mode.isOriginal) {
-      if (session.chapterIndex == index) return;
-      final content = await ref
-          .read(chapterContentRepositoryProvider)
-          .chapter(bookId, session.chapters[index]);
-      if (!ref.mounted || request != _speechRequest || !_mode.isOriginal) {
-        return;
-      }
-      _originalExact = locator;
-      _pendingOriginalFraction = 0;
-      state = AsyncData(
-        session.copyWith(
-          chapterIndex: index,
-          content: content,
-          pageIndex: 0,
-          clearOriginalPosition: true,
-        ),
-      );
-      return;
-    }
-    if (options == null) return;
-    var layout = session.layout;
-    var content = session.content;
-    if (layout == null || layout.chapterId != locator.chapterId) {
-      content = await ref
-          .read(chapterContentRepositoryProvider)
-          .chapter(bookId, session.chapters[index]);
-      if (request != _speechRequest || !ref.mounted) return;
-      layout = await ref
-          .read(readerEngineProvider)
-          .layoutWindow(
-            LayoutRequest(
-              bookId: bookId,
-              contentVersion: session.book.contentVersion,
-              chapter: session.chapters[index],
-              content: content,
-              options: options,
-            ),
-            target: locator,
-          );
-    }
-    if (!ref.mounted ||
-        request != _speechRequest ||
-        _mode.isOriginal ||
-        options != _options) {
-      return;
-    }
-    layout = await layout.ensureTarget(locator);
-    if (!ref.mounted || request != _speechRequest) return;
-    final page = layout.pageIndexOf(locator);
-    if (page == null ||
-        (layout == session.layout && page == session.pageIndex)) {
-      return;
-    }
-    state = AsyncData(
-      ReaderSession(
-        book: session.book,
-        chapters: session.chapters,
-        chapterIndex: index,
-        content: content,
-        layout: layout,
-        pageIndex: page,
-        viewportSignature: options.layoutSignature,
-      ),
-    );
-    _watchLayout(layout);
   }
 
   @override

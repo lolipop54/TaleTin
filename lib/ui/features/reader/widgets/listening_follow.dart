@@ -31,20 +31,44 @@ class _ListeningFollowState extends ConsumerState<ListeningFollow> {
   Object? _layout;
   final _diagnostics = ListeningFollowDiagnostics('standard');
 
+  Map<String, Object?> _snapshot() {
+    final session = ref.read(readerSessionProvider(widget.bookId)).value;
+    final target = _service.snapshot.pageFollowLocator;
+    return {
+      ...listeningDiagnosticSnapshot(
+        _service.snapshot,
+        readerBookId: widget.bookId,
+        anchor: session?.currentAnchor,
+      ),
+      'visible': _visible,
+      'mounted': mounted,
+      'scheduled': _scheduled,
+      'hasSettings':
+          ref.read(readerSettingsProvider(widget.bookId)).value != null,
+      'hasSessionData': session != null,
+      'scrolling': session?.scrolling,
+      'chapter': session?.chapterIndex,
+      'page': session?.pageIndex,
+      'targetChapter': session?.chapters.indexWhere(
+        (c) => c.id == target?.chapterId,
+      ),
+      'sameRequestedTarget':
+          target != null && _requested?.samePosition(target) == true,
+      'hasLayout': session?.layout != null,
+    };
+  }
+
   @override
   void initState() {
     super.initState();
     // 立即保存服务引用；late 初始化表达式可能直到 dispose 才执行，届时 ref 已失效。
     _service = ref.read(listeningServiceProvider);
+    _diagnostics.lifecycle('attached', _snapshot());
     _lifecycle = AppLifecycleListener(
       onStateChange: (state) {
         _visible = state == AppLifecycleState.resumed;
         if (_service.snapshot.bookId == widget.bookId) {
-          _diagnostics.lifecycle(state.name, {
-            'status': _service.snapshot.status.name,
-            'hasTarget': _service.snapshot.pageFollowLocator != null,
-            'scheduled': _scheduled,
-          });
+          _diagnostics.lifecycle(state.name, _snapshot(), snapshot: _snapshot);
         }
         if (!_visible) {
           _service.setPageBoundaries(this, const []);
@@ -60,23 +84,47 @@ class _ListeningFollowState extends ConsumerState<ListeningFollow> {
   }
 
   void _schedule() {
-    if (_scheduled) return;
+    if (_scheduled) {
+      _diagnostics.step('scheduleSkip', {'reason': 'alreadyScheduled'});
+      return;
+    }
     _scheduled = true;
+    _diagnostics.step('frameQueued', {'visible': _visible});
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _scheduled = false;
+      _diagnostics.step('frameCallback', {
+        'mounted': mounted,
+        'visible': _visible,
+      });
       if (mounted) _follow();
     });
   }
 
   void _follow() {
     if (!_visible || ref.read(readerSourceChangeProvider(widget.bookId))) {
+      _diagnostics.step('skip', {
+        'reason': !_visible ? 'background' : 'sourceChanging',
+      });
       return;
     }
     final settings = ref.read(readerSettingsProvider(widget.bookId)).value;
-    if (settings == null) return;
+    if (settings == null) {
+      _diagnostics.step('skip', {'reason': 'settingsNotReady'});
+      return;
+    }
     final session = ref.read(readerSessionProvider(widget.bookId)).value;
-    if (session == null) return;
-    if (settings.settings.layoutMode.isOriginal && !session.scrolling) return;
+    if (session == null) {
+      _diagnostics.step('skip', {'reason': 'sessionNotReady'});
+      return;
+    }
+    // TXT可能继承“原书”偏好，但实际正文仍是简化排版，必须由这里跟随。
+    // 与正文显示器使用同一判断，只有真正使用原书分页时才交给它处理。
+    if (settings.settings.layoutMode.isOriginal &&
+        session.book.format.supportsOriginalLayout &&
+        !session.scrolling) {
+      _diagnostics.step('skip', {'reason': 'originalRendererOwnsFollow'});
+      return;
+    }
     final layout = session.layout;
     if (_layout != layout?.identity) {
       _layout = layout?.identity;
@@ -93,6 +141,7 @@ class _ListeningFollowState extends ConsumerState<ListeningFollow> {
         ? state.pageFollowLocator
         : null;
     _diagnostics.step('check', {
+      if (_diagnostics.observing) ..._snapshot(),
       'status': state.status.name,
       'hasTarget': target != null,
       'chapter': session.chapterIndex,
@@ -109,31 +158,39 @@ class _ListeningFollowState extends ConsumerState<ListeningFollow> {
           .cancelSpeechFollow();
       return;
     }
-    if (_requested?.samePosition(target) == true) return;
+    if (_requested?.samePosition(target) == true) {
+      _diagnostics.step('skip', {'reason': 'sameRequestedTarget'});
+      return;
+    }
     _requested = target;
     if (settings.settings.spreadEnabled &&
         spreadContains(
           ref.read(visibleSpreadProvider(widget.bookId)),
           target,
         )) {
+      _diagnostics.step('skip', {'reason': 'targetInVisibleSpread'});
       return;
     }
     unawaited(
       ref
           .read(readerSessionProvider(widget.bookId).notifier)
-          .followSpeech(target)
+          .followSpeech(target, diagnostics: _diagnostics)
           .then((_) {
             if (!mounted) return;
             final current = ref
                 .read(readerSessionProvider(widget.bookId))
                 .value;
-            _diagnostics.step('positioned', {
+            _diagnostics.step('followReturned', {
+              ..._snapshot(),
               'visible': _visible,
               'chapter': current?.chapterIndex,
               'page': current?.pageIndex,
             });
           })
           .catchError((Object error, StackTrace stack) {
+            _diagnostics.step('followError', {
+              'type': error.runtimeType.toString(),
+            });
             if (mounted) {
               ref
                   .read(readerSessionProvider(widget.bookId).notifier)
@@ -154,6 +211,11 @@ class _ListeningFollowState extends ConsumerState<ListeningFollow> {
 
   @override
   void dispose() {
+    _diagnostics.step('disposed', {
+      'visible': _visible,
+      'scheduled': _scheduled,
+    });
+    _diagnostics.dispose();
     _service.setPageBoundaries(this, const []);
     _lifecycle.dispose();
     super.dispose();

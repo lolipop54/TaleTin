@@ -150,55 +150,56 @@ class _EncodingSheetState extends State<EncodingSheet> {
   }
 
   Widget _panel(BuildContext context) {
-    return Container(
-      decoration: const BoxDecoration(
-        color: Color(0xFFF7F3EA),
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
-      child: SafeArea(
-        top: false,
-        child: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text('编码与章节规则',
-                  style: TextStyle(
-                      fontSize: 21,
-                      fontWeight: FontWeight.w600,
-                      color: Color(0xFF20242B))),
-              const SizedBox(height: 8),
-              const Text(
-                '自动识别的编码不确定，请对照下面的预览确认；确认后按此编码导入。',
-                style: TextStyle(fontSize: 13, color: Color(0xFF596270)),
-              ),
-              const SizedBox(height: 16),
-              if (widget.items.length > 1) _fileSelector(),
-              _charsetSelector(),
-              const SizedBox(height: 16),
-              _previewBox(),
-              const SizedBox(height: 16),
-              _chapterRule(),
-              const SizedBox(height: 20),
-              Row(
-                children: [
-                  Expanded(
-                    child: GtButton.outlined(
-                      onPressed: () => Navigator.of(context).pop(),
-                      child: const Text('取消'),
+    // 选项行需要在同一层 Material 上绘制选中底色，不能隔着不透明的装饰背景。
+    return Material(
+      color: const Color(0xFFF7F3EA),
+      borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+        child: SafeArea(
+          top: false,
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text('编码与章节规则',
+                    style: TextStyle(
+                        fontSize: 21,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFF20242B))),
+                const SizedBox(height: 8),
+                const Text(
+                  '自动识别的编码不确定，请对照下面的预览确认；确认后按此编码导入。',
+                  style: TextStyle(fontSize: 13, color: Color(0xFF596270)),
+                ),
+                const SizedBox(height: 16),
+                if (widget.items.length > 1) _fileSelector(),
+                _charsetSelector(),
+                const SizedBox(height: 16),
+                _previewBox(),
+                const SizedBox(height: 16),
+                _chapterRule(),
+                const SizedBox(height: 20),
+                Row(
+                  children: [
+                    Expanded(
+                      child: GtButton.outlined(
+                        onPressed: () => Navigator.of(context).pop(),
+                        child: const Text('取消'),
+                      ),
                     ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: GtButton.filled(
-                      onPressed: _confirm,
-                      child: const Text('开始导入'),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: GtButton.filled(
+                        onPressed: _confirm,
+                        child: const Text('开始导入'),
+                      ),
                     ),
-                  ),
-                ],
-              ),
-            ],
+                  ],
+                ),
+              ],
+            ),
           ),
         ),
       ),

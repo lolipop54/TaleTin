@@ -16,6 +16,7 @@
 <p align="center">
   <a href="#主要特性">主要特性</a> ·
   <a href="#界面预览">界面预览</a> ·
+  <a href="#翻页帧率对比">翻页帧率对比</a> ·
   <a href="#翻页动画">翻页动画</a> ·
   <a href="#开始阅读">开始阅读</a> ·
   <a href="#从源码构建">从源码构建</a> ·
@@ -78,6 +79,12 @@ TaleTin 是一款专注本地阅读的 Android 阅读器，支持 TXT、EPUB、M
   </tr>
 </table>
 
+
+## 翻页帧率对比
+
+<p align="center">
+  <img src="readme/帧率对比.gif" width="480" alt="简化排版、原书排版、PDF阅读与微信读书的翻页实录及同步FPS对比">
+</p>
 
 ## 翻页动画
 
