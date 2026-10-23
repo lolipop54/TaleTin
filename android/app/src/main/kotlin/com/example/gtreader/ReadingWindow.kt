@@ -8,6 +8,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.view.ViewCompat
+import androidx.core.graphics.Insets
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
@@ -15,6 +16,9 @@ import io.flutter.plugin.common.MethodChannel
 object ReadingWindow {
     private var volumeKeys = false
     private var channel: MethodChannel? = null
+    /** 无系统栏的设备没有可等待的可见状态；临时隐藏的栏仍有非零最大占位。 */
+    private fun systemBarReady(insets: WindowInsetsCompat, type: Int): Boolean =
+        insets.isVisible(type) || insets.getInsetsIgnoringVisibility(type) == Insets.NONE
     fun onKey(event: KeyEvent): Boolean {
         if (!volumeKeys || (event.keyCode != KeyEvent.KEYCODE_VOLUME_DOWN &&
             event.keyCode != KeyEvent.KEYCODE_VOLUME_UP)) return false
@@ -47,13 +51,15 @@ object ReadingWindow {
                         if (call.argument<Boolean>("status") != false) controller.show(status) else controller.hide(status)
                         if (call.argument<Boolean>("navigation") != false) controller.show(navigation) else controller.hide(navigation)
                         if (call.argument<Boolean>("waitForInsets") == true) {
-                            // show()只提交请求。等系统栏真实可见并经过两次绘制机会再返回Flutter。
+                            // 现有系统栏要等到可见；MuMu等没有导航栏的设备不可能报告它可见。
+                            // 使用“不考虑隐藏”的占位区分不存在与暂时隐藏，仍等两帧布局稳定。
                             val decor = activity.window.decorView
                             var readyFrames = 0
                             val check = object : Runnable {
                                 override fun run() {
                                     val insets = ViewCompat.getRootWindowInsets(decor)
-                                    if (insets?.isVisible(status or navigation) == true && !decor.isLayoutRequested) {
+                                    if (insets != null && systemBarReady(insets, status) &&
+                                        systemBarReady(insets, navigation) && !decor.isLayoutRequested) {
                                         readyFrames++
                                     } else readyFrames = 0
                                     if (readyFrames >= 2) result.success(null)
