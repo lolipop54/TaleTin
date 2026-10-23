@@ -103,7 +103,7 @@ class MainActivity : AudioServiceActivity(), DocumentPicker {
         OriginalScrollDraw.register(flutterEngine)
         OriginalWebViewStartup.register(applicationContext, flutterEngine)
         ReadingWindow.register(this, flutterEngine)
-        DeviceStatus(applicationContext, flutterEngine)
+        DeviceStatus.register(flutterEngine)
         SystemToast.register(applicationContext, flutterEngine)
         ErrorDiagnostics.register(applicationContext, flutterEngine)
         ReaderTurnLog.register(this, flutterEngine)

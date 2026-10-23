@@ -6,16 +6,26 @@ import android.content.Intent
 import android.content.IntentFilter
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.EventChannel
 
 /** 阅读页订阅期间监听系统通知，不用高频轮询电量或重建正文。 */
-class DeviceStatus(context: Context, engine: FlutterEngine) : EventChannel.StreamHandler {
-    private val context = context.applicationContext
+class DeviceStatus : FlutterPlugin, EventChannel.StreamHandler {
+    private lateinit var context: Context
+    private var channel: EventChannel? = null
     private var receiver: BroadcastReceiver? = null
 
-    init {
-        EventChannel(engine.dartExecutor.binaryMessenger, "gtreader/device_status")
-            .setStreamHandler(this)
+    override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+        context = binding.applicationContext
+        channel = EventChannel(binding.binaryMessenger, "gtreader/device_status").also {
+            it.setStreamHandler(this)
+        }
+    }
+
+    override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+        onCancel(null)
+        channel?.setStreamHandler(null)
+        channel = null
     }
 
     override fun onListen(arguments: Any?, events: EventChannel.EventSink) {
@@ -38,5 +48,15 @@ class DeviceStatus(context: Context, engine: FlutterEngine) : EventChannel.Strea
     override fun onCancel(arguments: Any?) {
         receiver?.let(context::unregisterReceiver)
         receiver = null
+    }
+
+    companion object {
+        fun register(engine: FlutterEngine) {
+            // 导航方式切换可重建 Activity，但 audio_service 会保留同一个引擎。
+            // 重设 EventChannel 会丢失它内部的活动订阅，旧 Dart 订阅取消时就会报错，
+            // 旧广播也无法正常释放。随引擎只注册一次，窗口重建不打断现有通知。
+            if (engine.plugins.has(DeviceStatus::class.java)) return
+            engine.plugins.add(DeviceStatus())
+        }
     }
 }

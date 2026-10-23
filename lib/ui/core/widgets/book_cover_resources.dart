@@ -5,7 +5,7 @@ import 'package:flutter/services.dart';
 import '../../../domain/models/book_cover_choice.dart';
 import 'martial_cover_background.dart';
 
-/// 预设图只解码一次，页面等图片准备好后再显示，避免先露出空白。
+/// 无损 WebP 预设图只解码一次，页面等图片准备好后再显示，避免先露出空白。
 abstract final class BookCoverResources {
   static final images = <BookCoverPreset, ui.Image>{};
   static Future<void>? _loading;
@@ -28,7 +28,7 @@ abstract final class BookCoverResources {
       final name = preset == BookCoverPreset.parchment
           ? 'kraft_paper'
           : preset.code;
-      final bytes = await rootBundle.load('assets/covers/$name.png');
+      final bytes = await rootBundle.load('assets/covers/$name.webp');
       final codec = await ui.instantiateImageCodec(
         bytes.buffer.asUint8List(bytes.offsetInBytes, bytes.lengthInBytes),
         targetWidth: 512,
