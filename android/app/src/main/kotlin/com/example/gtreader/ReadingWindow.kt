@@ -66,6 +66,19 @@ object ReadingWindow {
                         }
                         trace("system-bars-request", "status=${call.argument<Boolean>("status")} navigation=${call.argument<Boolean>("navigation")} wait=${call.argument<Boolean>("waitForInsets")}")
                         save("begin")
+                        // 隐藏状态栏不会自动解除挖孔区域限制。Android 9～14 的默认策略
+                        // 会把整个窗口下移，留下系统绘制的黑边，Flutter 无法在其中画正文。
+                        // 窗口始终允许铺满屏幕；系统栏显示时仍由 Flutter 的安全区避让。
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                            val cutoutMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
+                                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                            else WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                            val attributes = activity.window.attributes
+                            if (attributes.layoutInDisplayCutoutMode != cutoutMode) {
+                                attributes.layoutInDisplayCutoutMode = cutoutMode
+                                activity.window.attributes = attributes
+                            }
+                        }
                         val controller = WindowCompat.getInsetsController(activity.window, activity.window.decorView)
                         controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
                         val status = WindowInsetsCompat.Type.statusBars()
