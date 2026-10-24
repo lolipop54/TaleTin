@@ -10,6 +10,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../app/di/local_book_files_provider.dart';
 import '../../../../app/di/app_providers.dart';
+import '../../../../app/di/imported_font_providers.dart';
 import 'import_view_model.dart';
 import '../../../../domain/services/local_book_files.dart';
 
@@ -89,7 +90,15 @@ final localFilesProvider =
       LocalFilesViewModel.new,
     );
 
+// 两种用途的扫描、选择与缓存分别保存，返回书籍导入时不会混入字体结果。
+final localFontFilesProvider =
+    NotifierProvider.autoDispose<LocalFilesViewModel, LocalFilesState>(
+      () => LocalFilesViewModel(LocalFilePurpose.fonts),
+    );
+
 class LocalFilesViewModel extends Notifier<LocalFilesState> {
+  LocalFilesViewModel([this.purpose = LocalFilePurpose.books]);
+  final LocalFilePurpose purpose;
   int _request = 0, _presentation = 0;
   List<LocalBookEntry> _roots = [];
   List<LocalBookEntry> _smartEntries = [];
@@ -214,7 +223,11 @@ class LocalFilesViewModel extends Notifier<LocalFilesState> {
       var entries = <LocalBookEntry>[];
       var skipped = 0;
       if (mode == LocalFilesMode.folders) {
-        entries.addAll(path == null ? _roots : await files.list(path));
+        entries.addAll(
+          path == null
+              ? _roots
+              : await files.list(path, extensions: purpose.extensions),
+        );
       } else {
         final pending = _roots.map((e) => e.path).toList();
         final seen = <String>{};
@@ -222,10 +235,14 @@ class LocalFilesViewModel extends Notifier<LocalFilesState> {
           final directory = pending.removeLast();
           if (!seen.add(directory)) continue;
           try {
-            for (final entry in await files.list(directory, counts: false)) {
+            for (final entry in await files.list(
+              directory,
+              counts: false,
+              extensions: purpose.extensions,
+            )) {
               if (entry.directory) {
                 pending.add(entry.path);
-              } else {
+              } else if (purpose.extensions.contains(entry.extension)) {
                 entries.add(entry);
               }
             }
@@ -242,6 +259,9 @@ class LocalFilesViewModel extends Notifier<LocalFilesState> {
         }
       }
       if (request != _request) return;
+      entries.removeWhere(
+        (e) => !e.directory && !purpose.extensions.contains(e.extension),
+      );
       final imported = await _findImported(entries, request);
       if (request != _request) return;
       late LocalFilePresentation prepared;
@@ -277,15 +297,25 @@ class LocalFilesViewModel extends Notifier<LocalFilesState> {
     }
   }
 
-  bool _queued(LocalBookEntry entry) => ref
-      .read(importProvider)
-      .items
-      .any((item) => item.key == entry.document.uri && !item.stage.isFinished);
+  bool _queued(LocalBookEntry entry) =>
+      purpose == LocalFilePurpose.books &&
+      ref
+          .read(importProvider)
+          .items
+          .any(
+            (item) => item.key == entry.document.uri && !item.stage.isFinished,
+          );
 
   Future<Set<String>> _findImported(
     List<LocalBookEntry> entries,
     int request,
   ) async {
+    if (purpose == LocalFilePurpose.fonts) {
+      return ref.read(importedFontStoreProvider).findImported({
+        for (final e in entries)
+          if (!e.directory) e.path: e.size,
+      });
+    }
     final books = await ref.read(libraryBooksProvider.future);
     if (request != _request) return {};
     return ref
@@ -307,6 +337,8 @@ class LocalFilesViewModel extends Notifier<LocalFilesState> {
         ..removeWhere((path, _) => imported.contains(path)),
     );
   }
+
+  void showMessage(String message) => state = state.copy(message: message);
 
   Future<void> up() async {
     final path = state.path;

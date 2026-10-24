@@ -1,9 +1,12 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
 import '../../../../app/di/app_providers.dart';
 import '../../../../domain/models/reading_settings.dart';
 
-final globalSettingsProvider = AsyncNotifierProvider<GlobalSettingsNotifier,
-    GlobalReadingPreferences>(GlobalSettingsNotifier.new);
+final globalSettingsProvider =
+    AsyncNotifierProvider<GlobalSettingsNotifier, GlobalReadingPreferences>(
+      GlobalSettingsNotifier.new,
+    );
 
 /// 所有全局排版入口共用这条写入队列，逐次读取最新值，只改本次选择的字段。
 class GlobalSettingsNotifier extends AsyncNotifier<GlobalReadingPreferences> {
@@ -16,7 +19,8 @@ class GlobalSettingsNotifier extends AsyncNotifier<GlobalReadingPreferences> {
     final global = await repo.loadGlobal() ?? kBuiltinReadingSettings;
     return GlobalReadingPreferences(
       typography: global,
-      themeId: await repo.loadThemeId());
+      themeId: await repo.loadThemeId(),
+    );
   }
 
   Future<void> change(ReadingSettings Function(ReadingSettings) update) =>
@@ -25,8 +29,12 @@ class GlobalSettingsNotifier extends AsyncNotifier<GlobalReadingPreferences> {
         final next = update(await repo.loadGlobal() ?? kBuiltinReadingSettings);
         await repo.saveGlobal(next);
         if (ref.mounted) {
-          state = AsyncData(GlobalReadingPreferences(
-            typography: next, themeId: await repo.loadThemeId()));
+          state = AsyncData(
+            GlobalReadingPreferences(
+              typography: next,
+              themeId: await repo.loadThemeId(),
+            ),
+          );
         }
       });
 
@@ -34,8 +42,27 @@ class GlobalSettingsNotifier extends AsyncNotifier<GlobalReadingPreferences> {
     final repo = ref.read(readingSettingsRepositoryProvider);
     await repo.saveThemeId(themeId);
     if (ref.mounted) {
-      state = AsyncData(GlobalReadingPreferences(
-        typography: state.requireValue.typography, themeId: themeId));
+      state = AsyncData(
+        GlobalReadingPreferences(
+          typography: state.requireValue.typography,
+          themeId: themeId,
+        ),
+      );
+    }
+  });
+
+  /// 与普通设置修改串行，避免删除字体时把刚调整的字号或字重覆盖掉。
+  Future<void> resetFontFamily(String family) => _enqueue(() async {
+    final repo = ref.read(readingSettingsRepositoryProvider);
+    await repo.resetFontFamily(family);
+    final current = state.requireValue;
+    if (ref.mounted && current.typography.fontFamily == family) {
+      state = AsyncData(
+        GlobalReadingPreferences(
+          typography: current.typography.copyWith(fontFamily: 'sans-serif'),
+          themeId: current.themeId,
+        ),
+      );
     }
   });
 

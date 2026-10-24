@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart' show mapEquals;
 import 'package:flutter/material.dart';
 
 import '../../../../domain/models/reading_settings.dart';
+import '../../../../core/diagnostics/reader_recovery_diagnostics.dart';
 import 'fold_frames.dart';
 import 'original_host_controller.dart';
 import 'original_preload_gate.dart';
@@ -79,7 +80,8 @@ class OriginalCurlAreaState extends State<OriginalCurlArea> {
   int _turn = 0;
   bool _failed = false;
   final _pages = <_PageKey, ui.Image>{};
-  final _paintedPages = <(_PageKey, Object?, Color, bool, bool, Size), ui.Image>{};
+  final _paintedPages =
+      <(_PageKey, Object?, Color, bool, bool, Size), ui.Image>{};
   final _nativeInformationVersions = <_PageKey, Object>{};
   final _directions = <(_PageKey, bool), OriginalTurnTarget>{};
   (OriginalHostController, int)? _knownPage;
@@ -165,7 +167,12 @@ class OriginalCurlAreaState extends State<OriginalCurlArea> {
     if (!mounted || _active) throw StateError('页面仍在翻动');
     final host = widget.host!;
     final size = context.size!;
-    final image = await _pageImage(host, await host.page, widget.information, size);
+    final image = await _pageImage(
+      host,
+      await host.page,
+      widget.information,
+      size,
+    );
     if (!mounted) {
       image.dispose();
       throw StateError('阅读页已关闭');
@@ -194,7 +201,9 @@ class OriginalCurlAreaState extends State<OriginalCurlArea> {
       image.dispose();
     }
     _pages.clear();
-    for (final image in _paintedPages.values) { image.dispose(); }
+    for (final image in _paintedPages.values) {
+      image.dispose();
+    }
     _paintedPages.clear();
     _nativeInformationVersions.clear();
     _directions.clear();
@@ -231,7 +240,12 @@ class OriginalCurlAreaState extends State<OriginalCurlArea> {
             return;
           }
           _knownPage = (host, page);
-          final image = await _pageImage(host, page, widget.information, context.size!);
+          final image = await _pageImage(
+            host,
+            page,
+            widget.information,
+            context.size!,
+          );
           if (!mounted || generation != _generation) {
             image.dispose();
             return;
@@ -314,7 +328,12 @@ class OriginalCurlAreaState extends State<OriginalCurlArea> {
     final size = context.size!;
     try {
       if (previewed) await (_presentTarget = _showTarget(host, page, target));
-      (await _pageImage(target.host, target.page, target.information, size)).dispose();
+      (await _pageImage(
+        target.host,
+        target.page,
+        target.information,
+        size,
+      )).dispose();
       captured = true;
       if (mounted && generation == _generation) {
         _directions[(_pageKey(host, page), backward)] = target;
@@ -384,6 +403,19 @@ class OriginalCurlAreaState extends State<OriginalCurlArea> {
         !_active && oldWidget.positionRevision != widget.positionRevision;
     // 本次翻页把预载宿主接到前台时，正文截图仍有效，不能重新截图章首页。
     final handedOver = _active && _target?.host == widget.host;
+    if (ReaderRecoveryDiagnostics.observing &&
+        (oldWidget.captureRevision != widget.captureRevision ||
+            positionChanged ||
+            oldWidget.host != widget.host)) {
+      ReaderRecoveryDiagnostics.record('turnCacheRevision', {
+        'active': _active,
+        'captureChanged': oldWidget.captureRevision != widget.captureRevision,
+        'positionChanged': positionChanged,
+        'hostChanged': oldWidget.host != widget.host,
+        'handedOver': handedOver,
+        'cachedPages': _pages.length,
+      });
+    }
     if (oldWidget.captureRevision != widget.captureRevision ||
         (oldWidget.host != widget.host && !handedOver) ||
         positionChanged) {
@@ -418,6 +450,13 @@ class OriginalCurlAreaState extends State<OriginalCurlArea> {
   }
 
   Future<FoldFrames?> _prepare(PageTurnDirection direction) async {
+    ReaderRecoveryDiagnostics.record('turnPrepare', {
+      'direction': direction.name,
+      'cachedPages': _pages.length,
+      'paintedPages': _paintedPages.length,
+      'generation': _generation,
+      'host': widget.host == null ? null : identityHashCode(widget.host!),
+    });
     widget.preload?.hold(this);
     final backward = direction == PageTurnDirection.backward;
     _wantedBackward = backward;
@@ -463,10 +502,16 @@ class OriginalCurlAreaState extends State<OriginalCurlArea> {
       _knownPage = (host, page);
       if (!mounted || generation != _generation) return null;
       final size = context.size!;
-      current = await traceTurnStep<ui.Image>('prepare current-image',
-        () => _pageImage(host, page, widget.information, size));
+      current = await traceTurnStep<ui.Image>(
+        'prepare current-image',
+        () => _pageImage(host, page, widget.information, size),
+      );
       if (!mounted || generation != _generation) return null;
-      final hot = _hasPage(destination.host, destination.page, destination.information);
+      final hot = _hasPage(
+        destination.host,
+        destination.page,
+        destination.information,
+      );
       _cover?.dispose();
       setState(() => _cover = current!.clone());
       // 缓存命中时先只画两张图，避免网页切页的Android/GPU绘制与动画争抢时间。
@@ -476,14 +521,24 @@ class OriginalCurlAreaState extends State<OriginalCurlArea> {
         if (!mounted || generation != _generation) return;
         await _showTarget(host, page, destination);
       }
+
       _presentTarget = null;
       _pendingPresentation = hot ? presentation : null;
       if (!hot) {
-        await traceTurnStep('prepare target-presentation',
-          () => _presentTarget = presentation());
+        await traceTurnStep(
+          'prepare target-presentation',
+          () => _presentTarget = presentation(),
+        );
       }
-      next = await traceTurnStep<ui.Image>('prepare target-image',
-        () => _pageImage(destination.host, destination.page, destination.information, size));
+      next = await traceTurnStep<ui.Image>(
+        'prepare target-image',
+        () => _pageImage(
+          destination.host,
+          destination.page,
+          destination.information,
+          size,
+        ),
+      );
       if (!mounted || generation != _generation) return null;
       _target = destination;
       _landing = next.clone();
@@ -601,15 +656,15 @@ class OriginalCurlAreaState extends State<OriginalCurlArea> {
     traceLabel: 'original',
     currentPage: (_cover ?? _warmCover) == null
         ? widget.effect == PageTurnEffect.slide
-          ? const SizedBox.expand()
-          : CustomPaint(
-            painter: _InformationPainter(
-              widget.information,
-              widget.paper,
-              widget.bookEdges,
-              widget.spread,
-            ),
-          )
+              ? const SizedBox.expand()
+              : CustomPaint(
+                  painter: _InformationPainter(
+                    widget.information,
+                    widget.paper,
+                    widget.bookEdges,
+                    widget.spread,
+                  ),
+                )
         : RawImage(image: _cover ?? _warmCover, fit: BoxFit.fill),
     previousPage: const SizedBox.expand(),
     nextPage: const SizedBox.expand(),

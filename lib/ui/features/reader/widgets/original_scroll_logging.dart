@@ -41,6 +41,12 @@ extension _OriginalScrollLogging on OriginalScrollAreaState {
   Future<Object?> _tracedScrollMessage(Map<String, dynamic> raw) async {
     final trace = _scrollLog;
     final type = raw['type'];
+    if (ReaderRecoveryDiagnostics.observing) {
+      ReaderRecoveryDiagnostics.record('scrollWebMessage', {
+        ...ReaderRecoveryDiagnostics.webFields(raw),
+        'currentChapter': widget.session.chapterIndex,
+      });
+    }
     if (trace != null &&
         trace.endUs == null &&
         (type == 'position' || type == 'settled')) {

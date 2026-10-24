@@ -43,11 +43,15 @@ class LocalBookFiles(private val activity: Activity, engine: FlutterEngine) {
                                     roots().map { entry(it, false) }
                                 }
                                 "list" -> {
+                                    val extensions = call.argument<List<String>>("extensions")?.toSet()
+                                        ?: setOf("txt", "epub", "mobi", "azw3", "pdf")
+                                    require(extensions.isNotEmpty() && extensions.all {
+                                        it in setOf("txt", "epub", "mobi", "azw3", "pdf", "ttf", "otf", "ttc") })
                                     val dir = checkedFile(call.argument<String>("path")!!)
                                     val children = dir.listFiles()
                                         ?: error("无法读取这个文件夹，请检查权限或重新选择")
-                                    children.filter { supported(it) }.map {
-                                        entry(it, call.argument<Boolean>("counts") == true)
+                                    children.filter { supported(it, extensions) }.map {
+                                        entry(it, call.argument<Boolean>("counts") == true, extensions)
                                     }
                                 }
                                 "delete" -> {
@@ -119,9 +123,9 @@ class LocalBookFiles(private val activity: Activity, engine: FlutterEngine) {
         return file
     }
 
-    private fun supported(file: File): Boolean =
+    private fun supported(file: File, extensions: Set<String> = setOf("txt", "epub", "mobi", "azw3", "pdf")): Boolean =
         (file.isDirectory && !privateDirectory(file) ||
-            file.isFile && file.extension.lowercase() in setOf("txt", "epub", "mobi", "azw3", "pdf")) &&
+            file.isFile && file.extension.lowercase() in extensions) &&
             file.canonicalPath == file.absolutePath
 
     private fun privateDirectory(file: File): Boolean = roots().any { root ->
@@ -131,7 +135,8 @@ class LocalBookFiles(private val activity: Activity, engine: FlutterEngine) {
         }
     }
 
-    private fun entry(file: File, counts: Boolean): Map<String, Any> {
+    private fun entry(file: File, counts: Boolean,
+        extensions: Set<String> = setOf("txt", "epub", "mobi", "azw3", "pdf")): Map<String, Any> {
         // One stat reads type, bytes and timestamp together. Keep millisecond API units.
         // A file may disappear between enumeration and metadata lookup, just as with File APIs.
         val info = try { Os.stat(file.absolutePath) } catch (_: ErrnoException) { null }
@@ -145,7 +150,8 @@ class LocalBookFiles(private val activity: Activity, engine: FlutterEngine) {
             "directory" to directory, "size" to (info?.st_size ?: 0L),
             "modified" to modified, "sortName" to sortName,
             "count" to if (counts && directory)
-                (file.listFiles()?.count { supported(it) } ?: -1) else -1)
+                (file.listFiles()?.count { supported(it, extensions) &&
+                    (extensions.none { ext -> ext in setOf("ttf", "otf", "ttc") } || it.isFile) } ?: -1) else -1)
     }
 
     companion object { private const val REQUEST = 0x6704 }

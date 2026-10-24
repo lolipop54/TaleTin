@@ -18,9 +18,9 @@
 /android/app/profile
 /android/app/release
 
-android/key.properties                 你的签名配置，包含密码
-android/app/gtreader-release.jks        你的正式签名密钥
-android/local.properties               本机 SDK 路径
+android/key.properties
+android/app/gtreader-release.jks
+android/local.properties
 android/.gradle/
 android/.kotlin/
 android/build/
@@ -35,3 +35,13 @@ android/build/
 # 本地插件的 Gradle 缓存与构建报告
 /third_party/flutter_inappwebview_android/android/.gradle/
 /third_party/flutter_inappwebview_android/android/build/
+
+# 私人文档、本机工程资料和签名不公开。
+/docs/*
+!/docs/内置字体维护说明.md
+/AGENTS.md
+*.iml
+*.jks
+*.keystore
+/readme/视频素材/
+/readme/视频素材2/

@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../app/di/app_providers.dart';
 import '../../../../app/di/device_status_providers.dart';
+import '../../../../app/di/reading_controls_providers.dart';
 import '../../../../domain/models/reading_settings.dart';
 import '../../../../domain/services/toc_entry_index.dart';
 import '../../../core/theme/reading_theme.dart';
@@ -40,6 +41,8 @@ PageInformation readerInformation(
             )]
             .title;
   final menu = ref.watch(searchMenuAppearanceProvider(session.book.id));
+  final showNavigationBar =
+      ref.watch(readingControlsProvider).value?.navigationBar ?? true;
   return PageInformation(
     bookmarked: bookmarked,
     bookEdges: settings.bookEdges,
@@ -57,10 +60,11 @@ PageInformation readerInformation(
     clock:
         '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}',
     battery: ref.watch(batteryLevelProvider).value,
-    inset: settings.horizontalPadding + (settings.bookEdges ? bookEdgeWidth : 0),
-    // 正文区在 Scaffold 里，底部的系统栏留白已经被 Scaffold 扣掉了；
-    // 这里用 paddingOf 拿到的是扣完的值（键盘弹出时同样稳定）
-    bottomInset: MediaQuery.paddingOf(context).bottom,
+    inset:
+        settings.horizontalPadding + (settings.bookEdges ? bookEdgeWidth : 0),
+    // 显示导航栏时由外层 SafeArea 消耗占位；隐藏时，Home 手势仍可能让
+    // 系统短暂回报底部 padding。它不属于正文，不能触发重排并改写页首位置。
+    bottomInset: showNavigationBar ? MediaQuery.paddingOf(context).bottom : 0,
     color: theme.secondary,
     scaler: MediaQuery.textScalerOf(context),
     visible: ref.watch(statusInfoVisibleProvider).value ?? true,

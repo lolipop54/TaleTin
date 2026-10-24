@@ -1,5 +1,11 @@
 import 'package:flutter/material.dart';
 
+import '../../../../core/diagnostics/app_errors.dart';
+import '../../../../app/di/imported_font_providers.dart';
+import '../../../../app/di/app_font_providers.dart';
+import '../../../../platform/channels/imported_fonts.dart';
+import '../../../../platform/channels/reading_fonts.dart';
+
 import '../../../core/widgets/frame_fade.dart';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -20,31 +26,41 @@ import '../widgets/local_file_header.dart';
 import '../widgets/local_file_list.dart';
 
 class LocalFilesView extends ConsumerStatefulWidget {
-  const LocalFilesView({super.key, this.selectionOnly = false});
+  const LocalFilesView({
+    super.key,
+    this.selectionOnly = false,
+    this.purpose = LocalFilePurpose.books,
+  });
   final bool selectionOnly;
+  final LocalFilePurpose purpose;
   @override
   ConsumerState<LocalFilesView> createState() => _LocalFilesViewState();
 }
 
 class _LocalFilesViewState extends ConsumerState<LocalFilesView> {
   bool _searching = false, _submitting = false;
+  bool get _fonts => widget.purpose == LocalFilePurpose.fonts;
+  NotifierProvider<LocalFilesViewModel, LocalFilesState> get _filesProvider =>
+      _fonts ? localFontFilesProvider : localFilesProvider;
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
-        ref.read(localFilesProvider.notifier).load(LocalFilesMode.smart);
+        ref.read(_filesProvider.notifier).load(LocalFilesMode.smart);
       }
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    final state = ref.watch(localFilesProvider);
-    final vm = ref.read(localFilesProvider.notifier);
-    ref.listen(libraryBooksProvider, (_, next) {
-      if (next.hasValue) vm.refreshImported();
-    });
+    final state = ref.watch(_filesProvider);
+    final vm = ref.read(_filesProvider.notifier);
+    if (!_fonts) {
+      ref.listen(libraryBooksProvider, (_, next) {
+        if (next.hasValue) vm.refreshImported();
+      });
+    }
     return PopScope(
       canPop:
           !_submitting &&
@@ -125,7 +141,7 @@ class _LocalFilesViewState extends ConsumerState<LocalFilesView> {
                               children: [
                                 Text(
                                   state.message == null
-                                      ? '没有找到 TXT、EPUB、MOBI、AZW3、PDF 文件'
+                                      ? widget.purpose.emptyMessage
                                       : state.message!,
                                 ),
                                 GtButton(
@@ -138,11 +154,13 @@ class _LocalFilesViewState extends ConsumerState<LocalFilesView> {
                           )
                         : LocalFileList(
                             state: state,
-                            importing: {
-                              for (final item
-                                  in ref.watch(importProvider).items)
-                                if (!item.stage.isFinished) item.key,
-                            },
+                            importing: _fonts
+                                ? const {}
+                                : {
+                                    for (final item
+                                        in ref.watch(importProvider).items)
+                                      if (!item.stage.isFinished) item.key,
+                                  },
                             onImport: (entry) => _import(single: entry),
                             onTap: (entry) => entry.directory
                                 ? vm.load(
@@ -164,8 +182,9 @@ class _LocalFilesViewState extends ConsumerState<LocalFilesView> {
             allSelected: vm.allSelected,
             busy: (state.busy && state.scanning) || _submitting,
             onAll: vm.toggleAll,
-            onDelete: _delete,
+            onDelete: _fonts ? null : _delete,
             onImport: () => _import(),
+            importLabel: _fonts ? '导入字体' : '加入书架',
           ),
         ),
       ),
@@ -202,6 +221,10 @@ class _LocalFilesViewState extends ConsumerState<LocalFilesView> {
   }
 
   Future<void> _import({LocalBookEntry? single}) async {
+    if (_fonts) {
+      await _importFonts(single);
+      return;
+    }
     final state = ref.read(localFilesProvider);
     if (state.busy) return;
     final queued = {
@@ -224,5 +247,45 @@ class _LocalFilesViewState extends ConsumerState<LocalFilesView> {
     }
     ref.read(importProvider.notifier).enqueue(documents);
     context.go(AppRoutes.shelf);
+  }
+
+  Future<void> _importFonts(LocalBookEntry? single) async {
+    final state = ref.read(_filesProvider);
+    if (state.busy || _submitting) return;
+    final entries = (single == null ? state.selected.values : [single])
+        .where((e) => !e.directory && !state.imported.contains(e.path))
+        .toList();
+    if (entries.isEmpty) return;
+    setState(() => _submitting = true);
+    var failed = 0;
+    try {
+      final store = ref.read(importedFontStoreProvider);
+      for (final entry in entries) {
+        try {
+          await store.importFile(entry.path, prepare: ImportedFonts.prepare);
+        } catch (error, stack) {
+          failed++;
+          AppErrors.report(error, stack, operation: '导入字体失败');
+        }
+      }
+      // 这里只更新可选名单，不调用全局设置或单书设置的写入入口。
+      await ReadingFonts.refreshImported();
+      if (!mounted) return;
+      ref.invalidate(fontFamilyNamesProvider);
+      ref.invalidate(currentTypographyFontsProvider);
+      await ref.read(fontFamilyNamesProvider.future);
+      if (!mounted) return;
+      if (failed == 0) {
+        Navigator.pop(context, true);
+      } else {
+        final vm = ref.read(_filesProvider.notifier);
+        await vm.refreshImported();
+        if (mounted) vm.showMessage('$failed 个字体导入失败，成功项已保存');
+      }
+    } catch (error, stack) {
+      AppErrors.report(error, stack, operation: '更新字体列表失败');
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
   }
 }

@@ -27,17 +27,33 @@ Map<String, String> readingFontChoices(
   ReadingSettings settings,
   Map<String, String?> fonts, {
   bool supportsOriginalFont = true,
-}) => {
-  if (supportsOriginalFont && settings.layoutMode.isOriginal)
-    '__original': '原书字体',
-  'sans-serif': '系统字体',
-  // 内置字体紧跟系统字体，顺序取自内置目录，不受设备返回名单顺序影响。
-  for (final id in PresetFonts.families.keys)
-    if (fonts.containsKey(id)) id: fonts[id] ?? id,
-  for (final entry in fonts.entries)
-    if (entry.key != 'sans-serif' && !entry.key.startsWith('gt-preset-'))
-      entry.key: entry.value ?? entry.key,
-};
+  List<String> order = const [],
+}) {
+  final defaults = <String, String>{
+    if (supportsOriginalFont && settings.layoutMode.isOriginal)
+      '__original': '原书字体',
+    'sans-serif': '系统字体',
+    // 内置字体紧跟系统字体，顺序取自内置目录，不受设备返回名单顺序影响。
+    for (final id in PresetFonts.families.keys)
+      if (fonts.containsKey(id)) id: fonts[id] ?? id,
+    for (final entry in fonts.entries)
+      if (entry.key != 'sans-serif' && !entry.key.startsWith('gt-preset-'))
+        entry.key: entry.value ?? entry.key,
+  };
+  return {
+    if (defaults.containsKey('__original'))
+      '__original': defaults['__original']!,
+    'sans-serif': defaults['sans-serif']!,
+    for (final id in order.toSet())
+      if (id != '__original' && id != 'sans-serif' && defaults.containsKey(id))
+        id: defaults[id]!,
+    for (final entry in defaults.entries)
+      if (entry.key != '__original' &&
+          entry.key != 'sans-serif' &&
+          !order.contains(entry.key))
+        entry.key: entry.value,
+  };
+}
 
 TextStyle fontChoiceStyle(BuildContext context, String id, bool active) =>
     GtText.body(

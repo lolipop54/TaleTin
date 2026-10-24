@@ -9,7 +9,11 @@ extension _OriginalPageImages on OriginalCurlAreaState {
     final target = _directions[(_pageKey(host, known.$2), backward)];
     if (target == null) return false;
     return _hasPage(host, known.$2, widget.information) &&
-        _hasPage(target.host, target.page, _freshInformation(target).information);
+        _hasPage(
+          target.host,
+          target.page,
+          _freshInformation(target).information,
+        );
   }
 
   // 平移保留网页自身的信息字体和书边SVG，不用Flutter重画来替换原来的外观。
@@ -66,6 +70,15 @@ extension _OriginalPageImages on OriginalCurlAreaState {
       });
     }
     final cached = _paintedPages.remove(key);
+    ReaderRecoveryDiagnostics.record('paintedPage', {
+      'page': page,
+      'host': identityHashCode(host),
+      'hit': cached != null,
+      'targetWidth': size.width,
+      'targetHeight': size.height,
+      'imageWidth': cached?.width,
+      'imageHeight': cached?.height,
+    });
     if (cached != null) {
       _paintedPages[key] = cached;
       final body = _pages.remove(key.$1);
@@ -106,6 +119,15 @@ extension _OriginalPageImages on OriginalCurlAreaState {
   }) async {
     final key = _pageKey(host, page);
     final cached = _pages.remove(key);
+    ReaderRecoveryDiagnostics.record('bodyPageImage', {
+      'page': page,
+      'host': identityHashCode(host),
+      'hit': cached != null,
+      'captureVersion': key.$3,
+      'generation': _generation,
+      'imageWidth': cached?.width,
+      'imageHeight': cached?.height,
+    });
     if (cached != null) {
       traceTurn(
         'cache hit host=${identityHashCode(host)} page=$page version=${key.$3}',
@@ -118,6 +140,14 @@ extension _OriginalPageImages on OriginalCurlAreaState {
       'cache miss host=${identityHashCode(host)} page=$page version=${key.$3} preview=$preview',
     );
     final image = await (preview ? host.capturePage(page) : host.capture());
+    ReaderRecoveryDiagnostics.record('bodyPageCaptured', {
+      'page': page,
+      'host': identityHashCode(host),
+      'imageWidth': image.width,
+      'imageHeight': image.height,
+      'generation': generation,
+      'currentGeneration': _generation,
+    });
     if (mounted && generation == _generation) {
       _pages[key] = image.clone();
       // 当前页及前后页就绪后，起手直接使用图像与页序，不调用 WebView。

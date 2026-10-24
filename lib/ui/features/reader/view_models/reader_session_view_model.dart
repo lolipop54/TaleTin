@@ -13,6 +13,7 @@ import '../../../../platform/channels/reading_window.dart';
 
 import '../../../../core/diagnostics/app_errors.dart';
 import '../../../../core/diagnostics/listening_follow_diagnostics.dart';
+import '../../../../core/diagnostics/reader_recovery_diagnostics.dart';
 import '../../../../data/services/toc_index_compute.dart';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -432,6 +433,14 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
     // 多个位置上报可能紧挨着到达。串行写入并让调用方真正等到自己的写入完成，
     // 避免退出时旧写入最后完成、覆盖刚拖动或刚换章的位置。
     final token = _positionToken;
+    ReaderRecoveryDiagnostics.record('persistPosition', {
+      'chapter': session.chapterIndex,
+      'page': session.pageIndex,
+      'offset': position.locator.utf16Offset,
+      'sameCurrentPosition': position.locator.samePosition(anchor),
+      'waitingForPaint': waitingForPaint,
+      'original': _mode.isOriginal,
+    });
     await coordinator.save(
       position,
       token: token,

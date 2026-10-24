@@ -85,6 +85,22 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
         session.isReady &&
         session.viewportSignature == options.layoutSignature &&
         _options?.layoutSignature == options.layoutSignature;
+    if (!unchanged && ReaderRecoveryDiagnostics.observing) {
+      ReaderRecoveryDiagnostics.record('applyViewport', {
+        'width': options.contentWidth,
+        'height': options.contentHeight,
+        'previousWidth': _options?.contentWidth,
+        'previousHeight': _options?.contentHeight,
+        'paginate': paginate,
+        'prefetch': prefetch,
+        'chapter': session.chapterIndex,
+        'page': session.pageIndex,
+        'fontSize': options.settings.fontSize,
+        'lineHeight': options.settings.lineHeight,
+        'signatureChanged':
+            _options?.layoutSignature != options.layoutSignature,
+      });
+    }
     _options = options;
     if (unchanged || !paginate) return;
     final restored = session.currentAnchor == null

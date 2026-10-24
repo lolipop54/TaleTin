@@ -6,6 +6,8 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/services.dart';
 
 import 'preset_fonts.dart';
+import 'imported_fonts.dart';
+import '../../data/services/imported_font_store.dart';
 import '../../core/diagnostics/reader_work_trace.dart';
 
 /// 内置字体与平台确认的设备字体：预览、Flutter 正文和 WebView 共用。
@@ -19,19 +21,40 @@ abstract final class ReadingFonts {
   static final _fileDigests = <String, String>{};
   static Future<String?>? _environmentDigest;
 
+  static void configureImported(ImportedFontStore store) {
+    ImportedFonts.configure(store);
+    _names.removeWhere((key, _) => key.startsWith('gt-import-'));
+    _pending = null;
+    _layoutDigests.clear();
+  }
+
+  /// 导入不写阅读设置；完整候选准备好后，调用方再更新页面的字体名单。
+  static Future<Map<String, String?>> refreshImported() async {
+    final imported = await ImportedFonts.load();
+    _names.removeWhere((key, _) => key.startsWith('gt-import-'));
+    _names.addAll(imported);
+    _pending = Future.value({..._names});
+    _layoutDigests.clear();
+    return {..._names};
+  }
+
   /// 排版磁盘缓存只认实际已注册的字体文件；未知回退不产生可信摘要。
   static Future<String?> layoutFingerprint(String? family) async {
     final id = resolve(family);
     if (id == null) return null;
     return _layoutDigests[id] ??= () async {
       try {
-        final primary = _fileDigests[id] ?? await _presetDigest(id);
+        final primary =
+            ImportedFonts.fingerprint(id) ??
+            _fileDigests[id] ??
+            await _presetDigest(id);
         if (primary == null) return null;
         final system = await loadSystem();
         final fallback = system == id ? primary : _fileDigests[system];
         if (fallback == null) return null;
-        final environment = await (_environmentDigest ??=
-            const MethodChannel('gtreader/reading_fonts').invokeMethod<String>('environmentDigest'));
+        final environment = await (_environmentDigest ??= const MethodChannel(
+          'gtreader/reading_fonts',
+        ).invokeMethod<String>('environmentDigest'));
         if (environment == null) return null;
         final bold = PresetFonts.families[id]?.bold;
         if (bold == null) return '$primary:$fallback:$environment';
@@ -69,7 +92,9 @@ abstract final class ReadingFonts {
 
   static Future<Map<String, String?>> load() => _pending ??= () async {
     await loadSystem();
-    return {...await _load('list'), ...PresetFonts.names};
+    final imported = await ImportedFonts.load();
+    _names.addAll(imported);
+    return {...await _load('list'), ...PresetFonts.names, ...imported};
   }();
 
   /// 阅读只准备实际选择的字体；完整名单和所有预览留到字体选择页。
@@ -82,6 +107,14 @@ abstract final class ReadingFonts {
 
   static Future<String?> _loadSelected(String? family) async {
     if (family == null || family == 'sans-serif') return loadSystem();
+    if (family.startsWith('gt-import-')) {
+      if (!await ImportedFonts.loadSelected(family)) return loadSystem();
+      final item = ImportedFonts.store!.families.firstWhere(
+        (f) => f.id == family,
+      );
+      _names[family] = '${item.name}（导入）';
+      return family;
+    }
     // 升级删掉字体，或安装不带内置字体的版本时，先准备真实系统字体。
     // 保留原保存编号，之后换回包含该字体的版本仍能恢复选择。
     if (family.startsWith('gt-preset-') &&
@@ -175,10 +208,16 @@ abstract final class ReadingFonts {
 
   /// 兼容旧的 serif/KaiTi 设置；只映射平台已确认的回退关系。
   static String? resolve(String? family) {
-    final available =
+    final unavailableImport =
         family != null &&
-            family.startsWith('gt-preset-') &&
-            !PresetFonts.families.containsKey(family)
+        family.startsWith('gt-import-') &&
+        ImportedFonts.store != null &&
+        !ImportedFonts.store!.families.any((f) => f.id == family);
+    final available =
+        unavailableImport ||
+            family != null &&
+                family.startsWith('gt-preset-') &&
+                !PresetFonts.families.containsKey(family)
         ? 'sans-serif'
         : family;
     return _aliases[available ?? 'sans-serif'] ?? available;
@@ -190,12 +229,16 @@ abstract final class ReadingFonts {
     if (PresetFonts.families.containsKey(id)) {
       return PresetFonts.cssFor(id!, nativeAssets: nativeAssets);
     }
+    if (id != null && id.startsWith('gt-import-')) {
+      return ImportedFonts.cssFor(id);
+    }
     return _paths.containsKey(id)
         ? '@font-face{font-family:"$id";src:url("/__gt_fonts/$id");}'
         : '';
   }
 
   static Future<Uint8List?> bytes(String id) async {
+    if (id.startsWith('gt-import-face-')) return ImportedFonts.bytes(id);
     if (id.startsWith('gt-preset-')) return PresetFonts.bytes(id);
     final path = _paths[id];
     return path == null ? null : File(path).readAsBytes();

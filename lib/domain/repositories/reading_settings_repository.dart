@@ -19,6 +19,12 @@ abstract interface class ReadingSettingsRepository {
   /// 覆盖式写入全局阅读默认值
   Future<void> saveGlobal(ReadingSettings settings);
 
+  /// 删除导入字体时，把全局及单书中对此字体的选择改为系统字体，保留其他字段。
+  Future<void> resetFontFamily(String family);
+
+  Future<List<String>> loadFontOrder();
+  Future<void> saveFontOrder(List<String> families);
+
   /// 某本书的覆盖项；从未设置过（或已被清空）时返回 null
   Future<ReadingSettingsOverrides?> loadOverrides(String bookId);
 

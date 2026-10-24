@@ -160,9 +160,17 @@ final fontResolverProvider = Provider<FontResolver>(
 );
 
 /// 字体全部加载完成后一次返回，面板不先显示固定或重复的占位字体。
-final fontFamilyNamesProvider = FutureProvider<Map<String, String?>>(
-  (ref) => ReadingFonts.load(),
+final fontOrderProvider = FutureProvider<List<String>>(
+  (ref) => ref.watch(readingSettingsRepositoryProvider).loadFontOrder(),
 );
+
+final fontFamilyNamesProvider = FutureProvider<Map<String, String?>>((
+  ref,
+) async {
+  // 顺序也在进入字体页前准备好，避免名单先按默认顺序显示再跳动。
+  await ref.watch(fontOrderProvider.future);
+  return ReadingFonts.load();
+});
 
 final importStorageProvider = Provider<ImportStorage>(
   (ref) => FileImportStorage(),

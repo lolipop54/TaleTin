@@ -125,6 +125,7 @@ extension _OriginalBodyResources on _OriginalBodyState {
     final injection =
         '$viewport$preload$bridge'
         '<script>window.__gtReaderPerf=$readerPerformanceEnabled;'
+        'window.__gtRecovery=$readerRecoveryDiagnosticsEnabled;'
         'window.__gtImageDecodeVisible=${OpeningExperiments.visibleImageDecode};</script>'
         '<script>window.__gtDeliveryOriginal=${ReaderDeliveryExperiments.originalWindow};'
         'window.__gtContentTarget=${ReaderDeliveryExperiments.contentTarget};</script>'

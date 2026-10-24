@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 import '../../../../core/diagnostics/reader_turn_diagnostics.dart';
+import '../../../../core/diagnostics/reader_recovery_diagnostics.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show defaultTargetPlatform;

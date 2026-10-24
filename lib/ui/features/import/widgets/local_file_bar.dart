@@ -13,11 +13,14 @@ class LocalFileBar extends StatelessWidget {
     required this.onDelete,
     required this.onImport,
     this.allSelected = false,
+    this.importLabel = '加入书架',
   });
   final int count;
   final bool busy;
   final bool allSelected;
-  final VoidCallback onAll, onDelete, onImport;
+  final VoidCallback onAll, onImport;
+  final VoidCallback? onDelete;
+  final String importLabel;
   @override
   Widget build(BuildContext context) {
     final colors = context.gtColors;
@@ -47,15 +50,20 @@ class LocalFileBar extends StatelessWidget {
             const Spacer(),
             GtButton(
               onPressed: busy ? null : onAll,
-              style: TextButton.styleFrom(foregroundColor: colors.textPrimary,
-                padding: const EdgeInsets.symmetric(horizontal: 8)),
+              style: TextButton.styleFrom(
+                foregroundColor: colors.textPrimary,
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+              ),
               child: Text(allSelected ? '取消全选' : '全选'),
             ),
-            GtButton(
-              onPressed: busy || count == 0 ? null : onDelete,
-              style: TextButton.styleFrom(foregroundColor: colors.textPrimary),
-              child: const Text('删除'),
-            ),
+            if (onDelete != null)
+              GtButton(
+                onPressed: busy || count == 0 ? null : onDelete,
+                style: TextButton.styleFrom(
+                  foregroundColor: colors.textPrimary,
+                ),
+                child: const Text('删除'),
+              ),
             GtButton.filled(
               onPressed: busy || count == 0 ? null : onImport,
               style: FilledButton.styleFrom(
@@ -70,7 +78,7 @@ class LocalFileBar extends StatelessWidget {
                 ),
                 disabledForegroundColor: colors.onPrimary,
               ),
-              child: const Text('加入书架'),
+              child: Text(importLabel),
             ),
           ],
         ),

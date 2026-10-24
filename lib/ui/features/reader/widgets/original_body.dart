@@ -19,6 +19,7 @@ import '../../../../core/diagnostics/opening_experiments.dart';
 import '../../../../core/diagnostics/reader_delivery_experiments.dart';
 import '../../../../core/diagnostics/bookmark_trace.dart';
 import '../../../../core/diagnostics/reader_turn_diagnostics.dart';
+import '../../../../core/diagnostics/reader_recovery_diagnostics.dart';
 import '../../../../data/services/epub_source_repository.dart';
 import 'original_host_controller.dart';
 import 'original_font_assets.dart';
@@ -29,6 +30,7 @@ import 'turn_trace.dart';
 
 part 'original_chapter.dart';
 part 'original_body_resources.dart';
+part 'original_body_messages.dart';
 part 'original_initial_layout.dart';
 
 const String kFrameworkPathPrefix = '/__gt__/';
@@ -697,70 +699,6 @@ class _OriginalBodyState extends State<OriginalBody> {
       );
     });
     return frame.updateFlight;
-  }
-
-  Object? _onHostMessage(List<dynamic> args) {
-    if (args.isEmpty || args.first is! String) return null;
-    final envelope = (jsonDecode(args.first as String) as Map)
-        .cast<String, Object?>();
-    final matches = _frames.where(
-      (frame) =>
-          frame.slot == envelope['slot'] &&
-          frame.load == envelope['load'] &&
-          frame.chapter.ordinal == envelope['chapter'],
-    );
-    if (!mounted || matches.isEmpty) return null;
-    final frame = matches.first;
-    final event = (envelope['event'] as Map).cast<String, Object?>();
-    if (bookmarkTraceEnabled &&
-        const {
-          'bookmarkTrace',
-          'ready',
-          'paginated',
-          'relocate',
-          'page',
-        }.contains(event['type'])) {
-      traceBookmark('web-event', {
-        'chapter': frame.chapter.ordinal,
-        'slot': frame.slot,
-        'load': frame.load,
-        'host': identityHashCode(frame.host),
-        'currentChapter': widget.current,
-        if (event['type'] == 'bookmarkTrace')
-          ...event
-        else ...{
-          for (final key in [
-            'type',
-            'page',
-            'pages',
-            'fraction',
-            'width',
-            'step',
-            'columnWidth',
-            'contentWidth',
-            'scrollWidth',
-          ])
-            if (event.containsKey(key)) key: event[key],
-          'bookmarkPages': frame.host.bookmarkPages,
-        },
-      });
-    }
-    traceTurn(
-      'body event chapter=${frame.chapter.ordinal} slot=${frame.slot} load=${frame.load} web=${_controller?.getViewId()} type=${event['type']} page=${event['page']} pages=${event['pages']} stage=${event['stage']} jsMs=${event['ms']} elapsedMs=${event['elapsedMs']}'
-      '${event['stage'] == 'startup-command' || event['stage'] == 'startup-frame' ? ' detail=${jsonEncode(event)}' : ''}',
-    );
-    if (event['type'] == 'paginated') {
-      frame.paginated = true;
-      if (event['deferredImagePixels'] case final bool deferred) {
-        frame.host.deferredImagePixels = deferred;
-      }
-    }
-    if (event['type'] == 'ready' && !frame.started) {
-      frame.readyWidth = (event['width'] as num?)?.toDouble() ?? _width;
-      _syncChapters();
-    }
-    frame.chapter.onHostEvent?.call(event);
-    return null;
   }
 
   Future<void> _start(_ChapterFrame frame, double width) async {

@@ -5,6 +5,8 @@ import '../../domain/models/backup_manifest.dart';
 import '../database/app_database.dart';
 import '../repositories/book_cover_repository.dart';
 import 'backup_source_index.dart';
+import 'imported_font_store.dart';
+import '../../domain/services/library_file_gate.dart';
 
 /// 在暂存库上迁移与检查；正式库在用户确认前始终不打开也不替换。
 Future<int> validateBackupDatabase(
@@ -27,6 +29,7 @@ Future<int> validateBackupDatabase(
   }
   final db = AppDatabase.openFile(file);
   try {
+    await ImportedFontStore(Directory('${root.path}/fonts/imported'), LibraryFileGate()).validate();
     if ((await db.customSelect('PRAGMA integrity_check').getSingle())
                 .data
                 .values

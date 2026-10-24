@@ -35,6 +35,7 @@ Future<void> showReaderFontSheet(
     final settings = await container.read(
       readerSettingsProvider(bookId).future,
     );
+    final order = await container.read(fontOrderProvider.future);
     if (!context.mounted) return;
     await measureReader('font-sheet.previews', () async {
       PresetFonts.preparePreviews();
@@ -44,6 +45,7 @@ Future<void> showReaderFontSheet(
       settings.fontSettings,
       fonts,
       supportsOriginalFont: supportsOriginalFont,
+      order: order,
     );
     await showReaderOption<void>(
       context,

@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../../../core/diagnostics/reader_recovery_diagnostics.dart';
+
 /// 输入框从获得焦点到键盘收起期间，正文沿用原来的窗口尺寸与安全区。
 /// 面板是此组件的兄弟节点，仍能使用实时键盘高度向上让位。
 class ReaderContentViewport extends StatefulWidget {
@@ -15,6 +17,7 @@ class _ReaderContentViewportState extends State<ReaderContentViewport> {
   MediaQueryData? _media;
   Size? _size;
   bool _editing = false;
+  Object? _diagnosticGeometry;
 
   @override
   void initState() {
@@ -56,6 +59,35 @@ class _ReaderContentViewportState extends State<ReaderContentViewport> {
         }
         final stable = _media!;
         final size = _size!;
+        if (ReaderRecoveryDiagnostics.observing) {
+          final geometry = (
+            constraints.biggest,
+            media.size,
+            media.padding,
+            media.viewPadding,
+            media.viewInsets,
+            size,
+            stable.padding,
+            holding,
+          );
+          if (_diagnosticGeometry != geometry) {
+            _diagnosticGeometry = geometry;
+            ReaderRecoveryDiagnostics.record('contentViewport', {
+              'width': constraints.maxWidth,
+              'height': constraints.maxHeight,
+              'stableWidth': size.width,
+              'stableHeight': size.height,
+              'mediaWidth': media.size.width,
+              'mediaHeight': media.size.height,
+              'top': media.padding.top,
+              'bottom': media.padding.bottom,
+              'stableTop': stable.padding.top,
+              'stableBottom': stable.padding.bottom,
+              'keyboard': media.viewInsets.bottom,
+              'holding': holding,
+            });
+          }
+        }
         return OverflowBox(
           alignment: Alignment.topLeft,
           minWidth: size.width,

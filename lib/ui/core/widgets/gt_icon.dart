@@ -50,6 +50,7 @@ abstract final class GtIcons {
   static const notePlus = 'note-plus';
   static const highlight = 'highlight';
   static const trash = 'trash';
+  static const reorder = 'reorder';
   static const openBook = 'open-book';
 }
 

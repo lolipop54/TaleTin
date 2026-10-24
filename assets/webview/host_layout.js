@@ -13,6 +13,21 @@
   var elementCount = 0, textRectCount = 0;
   var observer = null, watching = false;
 
+  // 只读取已缓存的排版数字与窗口属性，不增加正文测量或rAF。
+  internal.recovery = function (event) {
+    if (!window.__gtRecovery) return;
+    internal.post('recovery', {event: event, ms: performance.now(),
+      page: state.page, pages: state.pages, width: state.width,
+      columnWidth: state.columnWidth, margin: state.margin,
+      contentWidth: state.contentWidth, scrollWidth: state.scrollWidth,
+      innerWidth: window.innerWidth, innerHeight: window.innerHeight,
+      visibility: document.visibilityState});
+  };
+  if (window.__gtRecovery) {
+    window.addEventListener('resize', function () { internal.recovery('windowResize'); });
+    document.addEventListener('visibilitychange', function () { internal.recovery('visibility'); });
+  }
+
   function contentChanged(records) {
     return records.some(function (record) {
       var target = record.target;
@@ -321,10 +336,12 @@
   }
 
   function setPage(page, animate, reportPosition, duration) {
+    internal.recovery('setPageBefore');
     duration = duration || 200;
     // 无动画没有 CSS 过渡，立即提交位置，不能仍等平移的 220ms 定时器。
     animate = animate !== false && turnEffect === 'slide';
     state.page = Math.max(0, Math.min(page, state.pages - 1));
+    internal.recovery('setPageAfter');
     applyTransform(animate, duration);
     if (!animate) {
       clearRelocate();
@@ -357,6 +374,7 @@
   }
 
   function relayout(preservePosition, changeGeometry, savedAnchor, savedProgress) {
+    internal.recovery('relayoutBefore');
     var anchor = savedProgress === undefined
       ? (preservePosition ? internal.dom.captureAnchor() : null)
       : savedAnchor;
@@ -376,6 +394,7 @@
     }
     applyTransform(false);
     // 字号、主题、页边距、图片就绪都会走到这里：文字位置变了，高亮要重新量一遍
+    internal.recovery('relayoutAfter');
     if (internal.highlight) internal.highlight.render();
     internal.dom.reportRelocate();
   }

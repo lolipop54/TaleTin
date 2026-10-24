@@ -19,6 +19,7 @@ class DriftReadingSettingsRepository implements ReadingSettingsRepository {
 
   /// 全局阅读默认值的键
   static const _typographyKey = 'typography';
+  static const _fontOrderKey = 'fontOrder';
 
   /// 阅读主题的键
   static const _themeKey = 'readingTheme';
@@ -44,11 +45,68 @@ class DriftReadingSettingsRepository implements ReadingSettingsRepository {
 
   @override
   Future<void> saveGlobal(ReadingSettings settings) => _writeJson(
-        scope: _globalScope,
-        scopeId: _globalScopeId,
-        key: _typographyKey,
-        json: settings.toJson(),
+    scope: _globalScope,
+    scopeId: _globalScopeId,
+    key: _typographyKey,
+    json: settings.toJson(),
+  );
+
+  @override
+  Future<void> resetFontFamily(String family) => _db.transaction(() async {
+    final rows =
+        await (_db.select(_db.preferences)..where(
+              (t) =>
+                  t.key.equals(_typographyKey) &
+                  t.scope.isIn([_globalScope, _bookScope]),
+            ))
+            .get();
+    for (final row in rows) {
+      final Map<String, dynamic> json;
+      try {
+        final value = jsonDecode(row.valueJson);
+        if (value is! Map<String, dynamic>) continue;
+        json = value;
+      } on FormatException {
+        // 沿用读取设置的规则：坏记录当作未设置，不阻止清理其他字体引用。
+        continue;
+      }
+      if (json['fontFamily'] != family) continue;
+      json['fontFamily'] = 'sans-serif';
+      await _writeJson(
+        scope: row.scope,
+        scopeId: row.scopeId,
+        key: row.key,
+        json: json,
       );
+    }
+    final order = await loadFontOrder();
+    if (order.contains(family)) {
+      await saveFontOrder(order.where((id) => id != family).toList());
+    }
+  });
+
+  @override
+  Future<List<String>> loadFontOrder() async {
+    final json = await _readJson(
+      scope: _globalScope,
+      scopeId: _globalScopeId,
+      key: _fontOrderKey,
+    );
+    return (json?['families'] as List?)?.whereType<String>().toList() ?? [];
+  }
+
+  @override
+  Future<void> saveFontOrder(List<String> families) => _writeJson(
+    scope: _globalScope,
+    scopeId: _globalScopeId,
+    key: _fontOrderKey,
+    json: {
+      'families': families
+          .where((id) => id != '__original' && id != 'sans-serif')
+          .toSet()
+          .toList(),
+    },
+  );
 
   @override
   Future<ReadingSettingsOverrides?> loadOverrides(String bookId) async {
@@ -82,29 +140,32 @@ class DriftReadingSettingsRepository implements ReadingSettingsRepository {
 
   @override
   Future<void> clearOverrides(String bookId) async {
-    await (_db.delete(_db.preferences)
-          ..where((t) =>
-              t.scope.equals(_bookScope) & t.scopeId.equals(bookId) &
-              t.key.isIn([_typographyKey, _themeKey, _brightnessKey])))
+    await (_db.delete(_db.preferences)..where(
+          (t) =>
+              t.scope.equals(_bookScope) &
+              t.scopeId.equals(bookId) &
+              t.key.isIn([_typographyKey, _themeKey, _brightnessKey]),
+        ))
         .go();
   }
 
   @override
   Future<String?> loadThemeId({String? bookId}) => _readTheme(
-        scope: bookId == null ? _globalScope : _bookScope,
-        scopeId: bookId ?? _globalScopeId,
-      );
+    scope: bookId == null ? _globalScope : _bookScope,
+    scopeId: bookId ?? _globalScopeId,
+  );
 
   @override
   Future<void> saveThemeId(String? themeId, {String? bookId}) async {
     final scope = bookId == null ? _globalScope : _bookScope;
     final scopeId = bookId ?? _globalScopeId;
     if (themeId == null) {
-      await (_db.delete(_db.preferences)
-            ..where((t) =>
+      await (_db.delete(_db.preferences)..where(
+            (t) =>
                 t.scope.equals(scope) &
                 t.scopeId.equals(scopeId) &
-                t.key.equals(_themeKey)))
+                t.key.equals(_themeKey),
+          ))
           .go();
       return;
     }
@@ -162,17 +223,21 @@ class DriftReadingSettingsRepository implements ReadingSettingsRepository {
 
   @override
   Future<void> saveStatusInfoVisible(bool visible) => _writeJson(
-        scope: _globalScope,
-        scopeId: _globalScopeId,
-        key: _statusInfoKey,
-        json: {'visible': visible},
-      );
+    scope: _globalScope,
+    scopeId: _globalScopeId,
+    key: _statusInfoKey,
+    json: {'visible': visible},
+  );
 
   Future<String?> _readTheme({
     required String scope,
     required String scopeId,
   }) async {
-    final json = await _readJson(scope: scope, scopeId: scopeId, key: _themeKey);
+    final json = await _readJson(
+      scope: scope,
+      scopeId: scopeId,
+      key: _themeKey,
+    );
     final id = json?['id'];
     return id is String && id.isNotEmpty ? id : null;
   }
@@ -186,12 +251,14 @@ class DriftReadingSettingsRepository implements ReadingSettingsRepository {
     required String scopeId,
     required String key,
   }) async {
-    final row = await (_db.select(_db.preferences)
-          ..where((t) =>
-              t.scope.equals(scope) &
-              t.scopeId.equals(scopeId) &
-              t.key.equals(key)))
-        .getSingleOrNull();
+    final row =
+        await (_db.select(_db.preferences)..where(
+              (t) =>
+                  t.scope.equals(scope) &
+                  t.scopeId.equals(scopeId) &
+                  t.key.equals(key),
+            ))
+            .getSingleOrNull();
     if (row == null) return null;
     try {
       final decoded = jsonDecode(row.valueJson);
@@ -207,7 +274,9 @@ class DriftReadingSettingsRepository implements ReadingSettingsRepository {
     required String key,
     required Map<String, Object?> json,
   }) async {
-    await _db.into(_db.preferences).insertOnConflictUpdate(
+    await _db
+        .into(_db.preferences)
+        .insertOnConflictUpdate(
           PreferencesCompanion.insert(
             scope: scope,
             scopeId: scopeId,

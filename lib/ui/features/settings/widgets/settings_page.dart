@@ -82,9 +82,21 @@ class SettingsChoices<T> extends ConsumerStatefulWidget {
     required this.save,
     this.optionStyle,
     this.leading,
+    this.actions,
+    this.optionTrailing,
+    this.enabled = true,
+    this.onSavingChanged,
+    this.onReorder,
   });
   final String title;
   final Widget? leading;
+  final List<Widget>? actions;
+  final Widget? Function(T, bool)? optionTrailing;
+  final bool enabled;
+  final ValueChanged<bool>? onSavingChanged;
+
+  /// 索引只包含选项，不包含页面顶部的其他设置行。
+  final ReorderCallback? onReorder;
   final List<T> options;
   final String Function(T) label;
   final T Function(WidgetRef) selected;
@@ -104,37 +116,64 @@ class _SettingsChoicesState<T> extends ConsumerState<SettingsChoices<T>> {
     // 在页面本身订阅主题。列表构建回调里的 context 属于 Sliver，
     // 仅在那里读取颜色，不会保证已经创建的选项随主题重新构建。
     final colors = context.gtColors;
-    return Scaffold(
-      appBar: GtAppBar(title: Text(widget.title)),
-      body: SafeArea(
-        child: ListView.separated(
-          padding: const EdgeInsets.symmetric(horizontal: GtSpacing.s5),
-          itemCount: widget.options.length + (widget.leading == null ? 0 : 1),
-          separatorBuilder: (_, _) => const Divider(),
-          itemBuilder: (context, index) {
-            if (widget.leading != null && index == 0) return widget.leading!;
-            final option =
-                widget.options[index - (widget.leading == null ? 0 : 1)];
-            final active = option == selected;
-            return GtListButton(
-              selected: active,
-              contentPadding: EdgeInsets.zero,
-              minTileHeight: 48,
-              title: Text(
-                widget.label(option),
-                style:
-                    widget.optionStyle?.call(option, active) ??
-                    GtText.body(
-                      active ? colors.actionPrimary : colors.textPrimary,
-                    ),
-              ),
-              trailing: active
+    final offset = widget.leading == null ? 0 : 1;
+    Widget item(BuildContext context, int index) {
+      final Widget row;
+      final Key key;
+      if (index < offset) {
+        key = const ValueKey('settings-leading');
+        row = widget.leading!;
+      } else {
+        final option = widget.options[index - offset];
+        key = ValueKey(option);
+        final active = option == selected;
+        row = GtListButton(
+          selected: active,
+          contentPadding: EdgeInsets.zero,
+          minTileHeight: 48,
+          title: Text(
+            widget.label(option),
+            style:
+                widget.optionStyle?.call(option, active) ??
+                GtText.body(active ? colors.actionPrimary : colors.textPrimary),
+          ),
+          trailing:
+              widget.optionTrailing?.call(option, active) ??
+              (active
                   ? GtIcon(GtIcons.check, size: 20, color: colors.actionPrimary)
-                  : null,
-              onPressed: _saving ? null : () => _select(option),
-            );
-          },
-        ),
+                  : null),
+          onPressed: _saving || !widget.enabled ? null : () => _select(option),
+        );
+      }
+      return Column(
+        key: key,
+        children: [
+          row,
+          if (index < widget.options.length + offset - 1) const Divider(),
+        ],
+      );
+    }
+
+    return Scaffold(
+      appBar: GtAppBar(title: Text(widget.title), actions: widget.actions),
+      body: SafeArea(
+        child: widget.onReorder != null
+            ? ReorderableListView.builder(
+                padding: const EdgeInsets.symmetric(horizontal: GtSpacing.s5),
+                itemCount: widget.options.length + offset,
+                buildDefaultDragHandles: false,
+                onReorderItem: (oldIndex, newIndex) {
+                  if (!_saving && widget.enabled && oldIndex >= offset) {
+                    widget.onReorder!(oldIndex - offset, newIndex - offset);
+                  }
+                },
+                itemBuilder: item,
+              )
+            : ListView.builder(
+                padding: const EdgeInsets.symmetric(horizontal: GtSpacing.s5),
+                itemCount: widget.options.length + offset,
+                itemBuilder: item,
+              ),
       ),
     );
   }
@@ -142,15 +181,22 @@ class _SettingsChoicesState<T> extends ConsumerState<SettingsChoices<T>> {
   Future<void> _select(T option) async {
     if (option == widget.selected(ref)) return;
     setState(() => _saving = true);
+    widget.onSavingChanged?.call(true);
     try {
       await widget.save(ref, option);
     } catch (appError, appStack) {
-      AppErrors.report(appError, appStack, operation: '设置未保存，请重试', notify: false);
+      AppErrors.report(
+        appError,
+        appStack,
+        operation: '设置未保存，请重试',
+        notify: false,
+      );
       if (mounted) {
         AppErrors.report(appError, appStack, operation: '设置未保存，请重试');
       }
     } finally {
       if (mounted) setState(() => _saving = false);
+      if (mounted) widget.onSavingChanged?.call(false);
     }
   }
 }

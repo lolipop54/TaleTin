@@ -9,6 +9,8 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/services.dart';
 import '../platform/channels/reading_window.dart';
+import '../platform/channels/reading_fonts.dart';
+import '../data/services/imported_font_store.dart';
 
 import '../platform/channels/original_webview_warmup.dart';
 import '../ui/features/reader/widgets/original_font_assets.dart';
@@ -253,6 +255,9 @@ Future<BootstrapResult> prepareApp({
     achievements = AchievementService(DriftAchievementRepository(database));
     await achievements.initialize();
     final fileGate = LibraryFileGate();
+    // 恢复备份后重新读取目录，不能沿用上一套书库的字体名单或文件路径。
+    ReadingFonts.configureImported(ImportedFontStore(
+      Directory(p.join(supportDir.path, 'fonts', 'imported')), fileGate));
     final appTheme = await DriftAppThemeRepository(database).load();
     final migration = SourceContentMigration(
       libraryRoot: libraryRoot,

@@ -33,6 +33,7 @@ object ReadingWindow {
     }
     fun pause() { volumeKeys = false }
     fun register(activity: Activity, engine: FlutterEngine) {
+        ReaderRecoveryLog.register(activity, engine)
         channel = MethodChannel(engine.dartExecutor.binaryMessenger, "gtreader/reading_window")
         channel!!.setMethodCallHandler { call, result ->
                 val flag = WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON

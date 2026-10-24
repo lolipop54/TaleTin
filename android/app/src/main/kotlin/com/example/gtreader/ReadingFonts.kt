@@ -22,7 +22,16 @@ object ReadingFonts {
         MethodChannel(messenger, "gtreader/reading_fonts",
             io.flutter.plugin.common.StandardMethodCodec.INSTANCE,
             messenger.makeBackgroundTaskQueue()).setMethodCallHandler { call, result ->
-            if (call.method == "environmentDigest") {
+            if (call.method == "validateImported") {
+                try {
+                    val file = File(call.argument<String>("path")!!).canonicalFile
+                    val root = File(context.filesDir, "fonts/imported").canonicalFile
+                    require(file.parentFile == root && Regex("[a-f0-9]{64}\\.ttf").matches(file.name))
+                    Typeface.createFromFile(file)
+                    result.success(null)
+                } catch (error: Exception) { result.error("FONTS", "字体无法解码：${error.message}", null) }
+            }
+            else if (call.method == "environmentDigest") {
                 try { result.success(environmentDigest()) }
                 catch (error: Exception) { result.error("FONTS", error.message, null) }
             }

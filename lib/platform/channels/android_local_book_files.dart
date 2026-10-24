@@ -13,8 +13,15 @@ class AndroidLocalBookFiles implements LocalBookFiles {
   @override
   Future<List<LocalBookEntry>> roots() => _entries('roots');
   @override
-  Future<List<LocalBookEntry>> list(String path, {bool counts = true}) =>
-      _entries('list', {'path': path, 'counts': counts});
+  Future<List<LocalBookEntry>> list(
+    String path, {
+    bool counts = true,
+    Set<String> extensions = const {'txt', 'epub', 'mobi', 'azw3', 'pdf'},
+  }) => _entries('list', {
+    'path': path,
+    'counts': counts,
+    'extensions': extensions.toList(),
+  });
   @override
   Future<void> delete(String path) =>
       _channel.invokeMethod<void>('delete', {'path': path});

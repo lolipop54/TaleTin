@@ -15,6 +15,7 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import '../../../../core/diagnostics/opening_experiments.dart';
 import '../../../../core/diagnostics/reader_delivery_experiments.dart';
 import '../../../../core/diagnostics/reader_turn_diagnostics.dart';
+import '../../../../core/diagnostics/reader_recovery_diagnostics.dart';
 import 'turn_trace.dart';
 import 'original_tap_target.dart';
 export 'original_tap_target.dart';
@@ -710,17 +711,45 @@ class OriginalHostController {
   }
 
   Future<void> _call(String script) async {
+    if (ReaderRecoveryDiagnostics.observing) {
+      final command = script.split('(').first;
+      if (const {
+        '__gt.resize',
+        '__gt.information',
+        '__gt.applyStyle',
+        '__gt.previewPage',
+        '__gt.commitPage',
+        '__gt.next',
+        '__gt.prev',
+        '__gt.relayout',
+        '__gt.goToFraction',
+        '__gt.settle',
+      }.contains(command)) {
+        ReaderRecoveryDiagnostics.record('hostCommand', {
+          'command': command,
+          'host': identityHashCode(this),
+          'knownPages': knownPageCount,
+          'pages': pageCount,
+          'heldPage': _heldPage,
+        });
+      }
+    }
     if (_queueStartup(script)) return;
     if (_testCommand != null) return _testCommand!(script);
     final diagnostic = _turnDiagnosticTrace;
     final sequence = diagnostic != null && diagnostic.endUs == null
-        ? diagnostic.commandBegin(script.split('(').first, hostToken: identityHashCode(this)) : 0;
+        ? diagnostic.commandBegin(
+            script.split('(').first,
+            hostToken: identityHashCode(this),
+          )
+        : 0;
     try {
-      final observed = sequence == 0 ? script
+      final observed = sequence == 0
+          ? script
           : '(window.gtReaderTurnDiagnostics ? '
-            'window.gtReaderTurnDiagnostics.run(${jsonEncode(diagnostic!.id)},'
-            // 分页动画由Flutter页图完成，不用诊断rAF驱动静止的底层网页。
-            '$sequence,function(){return ($script);},false) : ($script))';
+                'window.gtReaderTurnDiagnostics.run(${jsonEncode(diagnostic!.id)},'
+                // 分页动画由Flutter页图完成，不用诊断rAF驱动静止的底层网页。
+                '$sequence,function(){return ($script);},false) : ($script))';
       // 换章瞬间命令可能打到还没跑起 host.js 的新文档上。
       await traceTurnStep(
         'web=${_webView?.getViewId()} command=${script.split('(').first}',

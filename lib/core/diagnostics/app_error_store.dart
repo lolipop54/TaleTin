@@ -41,6 +41,9 @@ class AppErrorStore {
   Future<void> appendListeningFollow(Map<String, Object?> event) =>
       _serial(() => _append(event, 'listening-follow', exitMaxBytes));
 
+  Future<void> appendReaderRecovery(Map<String, Object?> event) =>
+      _serial(() => _append(event, 'reader-recovery', 1048576));
+
   Future<void> _append(
     Map<String, Object?> event,
     String name,
@@ -88,6 +91,8 @@ class AppErrorStore {
       'reader-exit.jsonl',
       'listening-follow.previous.jsonl',
       'listening-follow.jsonl',
+      'reader-recovery.previous.jsonl',
+      'reader-recovery.jsonl',
     ]) {
       final file = await _file(name);
       if (await file.exists()) {
