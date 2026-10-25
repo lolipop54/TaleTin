@@ -9,13 +9,16 @@ import android.os.Build
 import android.os.Environment
 import android.os.storage.StorageManager
 import android.provider.Settings
+import android.provider.MediaStore
 import android.system.Os
 import android.system.OsConstants
 import android.system.ErrnoException
+import android.system.StructStat
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.util.concurrent.Executors
+import java.security.MessageDigest
 
 /** 仅枚举共享存储；文件内容仍交给原来的分块导入通道。 */
 class LocalBookFiles(private val activity: Activity, engine: FlutterEngine) {
@@ -37,7 +40,7 @@ class LocalBookFiles(private val activity: Activity, engine: FlutterEngine) {
                     worker.execute {
                         try {
                             check(hasAccess()) { "请先允许访问手机文件" }
-                            val value: Any = when (call.method) {
+                            val value: Any? = when (call.method) {
                                 "roots" -> {
                                     storageRoots = discoverRoots()
                                     roots().map { entry(it, false) }
@@ -60,6 +63,8 @@ class LocalBookFiles(private val activity: Activity, engine: FlutterEngine) {
                                     check(file.delete()) { "删除失败，文件可能已移动或没有写入权限" }
                                     true
                                 }
+                                "inspect" -> inspect(call.argument<List<String>>("paths")!!)
+                                "indexStamp" -> indexStamp(call.argument<List<String>>("extensions")!!)
                                 else -> error("未知文件操作")
                             }
                             activity.runOnUiThread { result.success(value) }
@@ -149,9 +154,76 @@ class LocalBookFiles(private val activity: Activity, engine: FlutterEngine) {
         return mapOf("path" to file.absolutePath, "name" to file.name,
             "directory" to directory, "size" to (info?.st_size ?: 0L),
             "modified" to modified, "sortName" to sortName,
+            "stamp" to (info?.let { stamp(it) } ?: ""),
             "count" to if (counts && directory)
                 (file.listFiles()?.count { supported(it, extensions) &&
                     (extensions.none { ext -> ext in setOf("ttf", "otf", "ttc") } || it.isFile) } ?: -1) else -1)
+    }
+
+    /** 只核验指定路径，不遍历目录。缺失与暂时不可读分开，避免拔卡/权限变化清空缓存。 */
+    private fun inspect(paths: List<String>): Map<String, Any> {
+        storageRoots = discoverRoots()
+        val entries = mutableListOf<Map<String, Any>>()
+        val missing = mutableListOf<String>()
+        val unavailable = mutableListOf<String>()
+        for (path in paths) {
+            try {
+                val file = checkedFile(path)
+                val info = Os.stat(file.path)
+                if (!file.canRead()) { unavailable.add(path); continue }
+                if (!OsConstants.S_ISREG(info.st_mode) && !OsConstants.S_ISDIR(info.st_mode)) {
+                    missing.add(path); continue
+                }
+                // 不做拼音转换或目录数量统计，检查几千个目录时只读取系统属性。
+                val modified = if (Build.VERSION.SDK_INT >= 27)
+                    info.st_mtim.tv_sec * 1000 + info.st_mtim.tv_nsec / 1_000_000
+                    else file.lastModified()
+                entries.add(mapOf("path" to path, "name" to file.name,
+                    "directory" to OsConstants.S_ISDIR(info.st_mode), "size" to info.st_size,
+                    "modified" to modified, "sortName" to file.name, "count" to -1,
+                    "stamp" to stamp(info)))
+            } catch (e: ErrnoException) {
+                // 上次列目录后可能已经拔卡，整个存储卷失联不等于单个文件被删除。
+                val volumeGone = roots().none { root ->
+                    (path == root.path || path.startsWith(root.path + File.separator)) && root.isDirectory }
+                if (!volumeGone && (e.errno == OsConstants.ENOENT || e.errno == OsConstants.ENOTDIR))
+                    missing.add(path) else unavailable.add(path)
+            } catch (_: Exception) { unavailable.add(path) }
+        }
+        return mapOf("entries" to entries, "missing" to missing, "unavailable" to unavailable)
+    }
+
+    private fun stamp(info: StructStat): String {
+        val times = if (Build.VERSION.SDK_INT >= 27)
+            "${info.st_mtim.tv_sec}:${info.st_mtim.tv_nsec}:${info.st_ctim.tv_sec}:${info.st_ctim.tv_nsec}"
+            else "${info.st_mtime}:${info.st_ctime}"
+        return "${info.st_dev}:${info.st_ino}:${info.st_mode}:${info.st_size}:$times"
+    }
+
+    /** 系统索引可能缺项或滞后；这里只生成独立标记，绝不把索引数量当成真实文件总数。 */
+    private fun indexStamp(extensions: List<String>): String? {
+        require(extensions.isNotEmpty() && extensions.all {
+            it in setOf("txt", "epub", "mobi", "azw3", "pdf", "ttf", "otf", "ttc") })
+        return try {
+            val columns = arrayOf("_id", "_data", "_size", "date_modified", "_display_name")
+            val selection = extensions.joinToString(" OR ") { "LOWER(_display_name) LIKE ?" }
+            val digest = MessageDigest.getInstance("SHA-256")
+            var count = 0L
+            activity.contentResolver.query(MediaStore.Files.getContentUri("external"), columns,
+                selection, extensions.map { "%.$it" }.toTypedArray(), "_id ASC")?.use { cursor ->
+                while (cursor.moveToNext()) {
+                    val path = cursor.getString(1) ?: continue
+                    if (privateDirectory(File(path)) || roots().none {
+                        path.startsWith(it.path + File.separator) }) continue
+                    for (column in columns.indices) {
+                        digest.update((cursor.getString(column) ?: "").toByteArray(Charsets.UTF_8))
+                        digest.update(0.toByte())
+                    }
+                    count++
+                }
+                "$count:" + digest.digest().joinToString("") { "%02x".format(it) }
+            }
+        } catch (_: Exception) { null } // 部分系统不提供文档索引，目录检查仍继续。
     }
 
     companion object { private const val REQUEST = 0x6704 }

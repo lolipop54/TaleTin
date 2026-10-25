@@ -17,10 +17,12 @@ class LocalFileHeader extends StatelessWidget {
     required this.onQuery,
     required this.onSort,
     required this.onUp,
+    required this.onRescan,
   });
   final LocalFilesState state;
   final bool searching;
   final VoidCallback onBack, onSearch, onUp;
+  final VoidCallback onRescan;
   final ValueChanged<LocalFilesMode> onMode;
   final ValueChanged<String> onQuery;
   final ValueChanged<LocalFilesSort> onSort;
@@ -75,6 +77,13 @@ class LocalFileHeader extends StatelessWidget {
                 ),
               ),
               GtButton.icon(
+                key: const ValueKey('local-files-rescan'),
+                tooltip: '重新扫描',
+                onPressed: state.busy ? null : onRescan,
+                // 循环图标的笔画范围比搜索/排序更满，略缩小以保持视觉大小一致。
+                icon: const GtIcon(GtIcons.cycle, size: 22),
+              ),
+              GtButton.icon(
                 onPressed: state.busy ? null : onSearch,
                 icon: const GtIcon(GtIcons.search),
               ),
@@ -82,10 +91,7 @@ class LocalFileHeader extends StatelessWidget {
                 enabled: !state.busy,
                 tooltip: '文件排序',
                 onSelected: onSort,
-                icon: GtIcon(
-                  GtIcons.filter,
-                  color: colors.textPrimary,
-                ),
+                icon: GtIcon(GtIcons.filter, color: colors.textPrimary),
                 itemBuilder: (_) => [
                   for (final sort in LocalFilesSort.values)
                     CheckedPopupMenuItem(

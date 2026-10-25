@@ -3,6 +3,7 @@ import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'dart:async';
 
 import '../../../../data/services/local_files_compute.dart';
+import '../../../../data/services/local_file_scan_cache.dart';
 import '../../../../domain/services/local_files_order.dart';
 export '../../../../domain/services/local_files_order.dart';
 
@@ -30,6 +31,9 @@ class LocalFilesState {
     this.imported = const {},
     this.scanning = false,
     this.visibleEntries,
+    this.needsRescan = false,
+    this.scanIncomplete = false,
+    this.accessDenied = false,
   });
   final LocalFilesMode mode;
   final String? path;
@@ -48,6 +52,7 @@ class LocalFilesState {
   final Set<String> imported;
   final bool scanning;
   final List<LocalBookEntry>? visibleEntries;
+  final bool needsRescan, scanIncomplete, accessDenied;
   List<LocalBookEntry> get visible =>
       visibleEntries ??
       entries
@@ -67,6 +72,9 @@ class LocalFilesState {
     Set<String>? imported,
     bool? scanning,
     List<LocalBookEntry>? visibleEntries,
+    bool? needsRescan,
+    bool? scanIncomplete,
+    bool? accessDenied,
   }) => LocalFilesState(
     mode: mode ?? this.mode,
     path: clearPath ? null : path ?? this.path,
@@ -79,6 +87,9 @@ class LocalFilesState {
     visited: visited ?? this.visited,
     imported: imported ?? this.imported,
     scanning: scanning ?? this.scanning,
+    needsRescan: needsRescan ?? this.needsRescan,
+    scanIncomplete: scanIncomplete ?? this.scanIncomplete,
+    accessDenied: accessDenied ?? this.accessDenied,
     visibleEntries:
         visibleEntries ??
         (entries == null && query == null ? this.visibleEntries : null),
@@ -101,8 +112,9 @@ class LocalFilesViewModel extends Notifier<LocalFilesState> {
   final LocalFilePurpose purpose;
   int _request = 0, _presentation = 0;
   List<LocalBookEntry> _roots = [];
-  List<LocalBookEntry> _smartEntries = [];
-  Set<String> _smartImported = {};
+  bool _checking = false;
+  LocalFileScanCache get _cache =>
+      ref.read(localFileScanCacheProvider(purpose));
   @override
   LocalFilesState build() {
     ref.onDispose(() {
@@ -153,7 +165,10 @@ class LocalFilesViewModel extends Notifier<LocalFilesState> {
   }
 
   void toggle(LocalBookEntry entry) {
-    if (state.busy || state.imported.contains(entry.path) || _queued(entry)) {
+    if (state.busy ||
+        state.accessDenied ||
+        state.imported.contains(entry.path) ||
+        _queued(entry)) {
       return;
     }
     final selected = {...state.selected};
@@ -170,7 +185,7 @@ class LocalFilesViewModel extends Notifier<LocalFilesState> {
   }
 
   void toggleAll() {
-    if (state.busy) return;
+    if (state.busy || state.accessDenied) return;
     final files = state.visible
         .where(
           (e) =>
@@ -192,28 +207,43 @@ class LocalFilesViewModel extends Notifier<LocalFilesState> {
   void cancel() {
     _request++;
     _presentation++;
-    state = state.copy(busy: false, message: '已取消，保留上次列表');
+    state = state.copy(busy: false, scanning: false, message: '已取消，保留上次列表');
   }
 
   /// 查询期间只更新进度，不清空旧目录或旧扫描结果。
-  Future<void> load(LocalFilesMode mode, {String? path}) async {
+  Future<void> load(
+    LocalFilesMode mode, {
+    String? path,
+    bool rescan = false,
+  }) async {
     final request = ++_request;
     final files = ref.read(localBookFilesProvider);
+    final cache = _cache;
+    final cached = cache.snapshot;
+    final scanning = mode == LocalFilesMode.smart && (rescan || cached == null);
+    // 使刷新前已开始的变化检查失效，但不删除上一份可用结果。
+    if (scanning) cache.revision++;
     // 切到智能导入立即显示该模式；目录内部导航仍保留旧目录直到读完。
-    final switchToSmart = mode == LocalFilesMode.smart && state.mode != mode;
+    final switchToSmart = scanning && state.mode != mode;
     state = state.copy(
       busy: true,
       visited: 0,
-      scanning: mode == LocalFilesMode.smart,
+      scanning: scanning,
       mode: switchToSmart ? mode : null,
       clearPath: switchToSmart,
-      entries: switchToSmart ? _smartEntries : null,
-      imported: switchToSmart ? _smartImported : null,
+      entries: switchToSmart ? cached?.entries ?? [] : null,
+      imported: switchToSmart ? {} : null,
     );
     try {
       if (!await files.hasAccess() && !await files.requestAccess()) {
         if (request == _request) {
-          state = state.copy(busy: false, message: '未授权，无法读取手机文件');
+          cache.uncertain = true;
+          state = state.copy(
+            busy: false,
+            scanning: false,
+            accessDenied: true,
+            message: '未授权，无法读取手机文件',
+          );
         }
         return;
       }
@@ -221,42 +251,28 @@ class LocalFilesViewModel extends Notifier<LocalFilesState> {
       _roots = await files.roots();
       if (request != _request) return;
       var entries = <LocalBookEntry>[];
-      var skipped = 0;
+      LocalFileScanSnapshot? scanned;
       if (mode == LocalFilesMode.folders) {
         entries.addAll(
           path == null
               ? _roots
               : await files.list(path, extensions: purpose.extensions),
         );
+      } else if (!scanning) {
+        entries.addAll(cached!.entries);
       } else {
-        final pending = _roots.map((e) => e.path).toList();
-        final seen = <String>{};
-        while (pending.isNotEmpty && request == _request) {
-          final directory = pending.removeLast();
-          if (!seen.add(directory)) continue;
-          try {
-            for (final entry in await files.list(
-              directory,
-              counts: false,
-              extensions: purpose.extensions,
-            )) {
-              if (entry.directory) {
-                pending.add(entry.path);
-              } else if (purpose.extensions.contains(entry.extension)) {
-                entries.add(entry);
-              }
-            }
-          } catch (_) {
-            skipped++;
-          }
-          if (request == _request && seen.length % 20 == 0) {
-            state = state.copy(busy: true, visited: seen.length);
-          }
-        }
-        // 授权在扫描中途被撤销时不能把不完整结果当成扫描成功。
-        if (request == _request && !await files.hasAccess()) {
-          throw StateError('文件访问权限已关闭');
-        }
+        scanned = await scanLocalFiles(
+          files,
+          purpose.extensions,
+          _roots,
+          previous: cached,
+          cancelled: () => request != _request,
+          onProgress: (visited) {
+            if (request == _request) state = state.copy(visited: visited);
+          },
+        );
+        if (scanned == null) return;
+        entries.addAll(scanned.entries);
       }
       if (request != _request) return;
       entries.removeWhere(
@@ -273,10 +289,21 @@ class LocalFilesViewModel extends Notifier<LocalFilesState> {
       }
       _presentation++;
       entries = prepared.entries;
-      if (mode == LocalFilesMode.smart) {
-        _smartEntries = entries;
-        _smartImported = imported;
+      if (!await files.hasAccess()) throw StateError('文件访问权限已关闭');
+      if (request != _request) return;
+      if (scanned != null) {
+        cache.publish(
+          LocalFileScanSnapshot(
+            entries: entries,
+            directories: scanned.directories,
+            roots: scanned.roots,
+            indexStamp: scanned.indexStamp,
+            unreadable: scanned.unreadable,
+            changedDuringScan: scanned.changedDuringScan,
+          ),
+        );
       }
+      final byPath = {for (final e in entries) e.path: e};
       state = state.copy(
         mode: mode,
         path: path,
@@ -284,15 +311,35 @@ class LocalFilesViewModel extends Notifier<LocalFilesState> {
         entries: entries,
         visibleEntries: prepared.visible,
         imported: imported,
-        selected: {...state.selected}
-          ..removeWhere((path, _) => imported.contains(path)),
+        selected: {
+          for (final e in state.selected.values)
+            if (!imported.contains(e.path) &&
+                !_queued(byPath[e.path] ?? e) &&
+                (mode != LocalFilesMode.smart || byPath.containsKey(e.path)))
+              e.path: byPath[e.path] ?? e,
+        },
         busy: false,
-        message: skipped > 0 ? '扫描完成，$skipped 个目录无法读取，已跳过' : null,
+        scanning: false,
+        accessDenied: false,
+        needsRescan: cache.changed,
+        scanIncomplete: cache.uncertain,
+        message: scanned != null && scanned.unreadable.isNotEmpty
+            ? '${scanned.unreadable.length} 个目录暂时无法读取，保留已有记录'
+            : null,
       );
+      if (mode == LocalFilesMode.smart && !scanning) {
+        unawaited(checkForChanges());
+      }
     } catch (appError, appStack) {
       AppErrors.report(appError, appStack, operation: '扫描本地文件失败');
       if (request == _request) {
-        state = state.copy(busy: false, message: '读取失败，请检查文件权限后重试');
+        cache.uncertain = true;
+        state = state.copy(
+          busy: false,
+          scanning: false,
+          scanIncomplete: true,
+          message: '读取失败，请检查文件权限后重试',
+        );
       }
     }
   }
@@ -305,6 +352,173 @@ class LocalFilesViewModel extends Notifier<LocalFilesState> {
           .any(
             (item) => item.key == entry.document.uri && !item.stage.isFinished,
           );
+
+  /// 每次进入及从后台回来时检查；短时间重复请求合并，检查不锁住列表。
+  Future<void> checkForChanges({bool force = false}) async {
+    if (_checking || state.busy) return;
+    final cache = _cache, snapshot = _cache.snapshot;
+    if (snapshot == null) return;
+    if (!force &&
+        cache.checkedAt != null &&
+        DateTime.now().difference(cache.checkedAt!) <
+            const Duration(seconds: 3)) {
+      return;
+    }
+    final request = _request, revision = cache.revision;
+    bool cancelled() =>
+        !ref.mounted || request != _request || revision != cache.revision;
+    _checking = true;
+    try {
+      final files = ref.read(localBookFilesProvider);
+      if (!await files.hasAccess()) {
+        if (!cancelled()) {
+          cache.uncertain = true;
+          state = state.copy(
+            accessDenied: true,
+            scanIncomplete: true,
+            message: '文件访问权限已关闭，请恢复权限后重新扫描',
+          );
+        }
+        return;
+      }
+      if (cancelled()) return;
+      final result = await checkLocalFileChanges(
+        files,
+        purpose.extensions,
+        snapshot,
+        cancelled: cancelled,
+      );
+      if (cancelled()) return;
+      cache.changed |= result.changed;
+      cache.uncertain |= result.uncertain;
+      cache.checkedAt = DateTime.now();
+      state = state.copy(
+        needsRescan: cache.changed,
+        scanIncomplete: cache.uncertain,
+        accessDenied: false,
+      );
+    } catch (error, stack) {
+      AppErrors.report(error, stack, operation: '检查本地文件变化失败');
+      if (!cancelled()) {
+        cache.uncertain = true;
+        state = state.copy(scanIncomplete: true);
+      }
+    } finally {
+      _checking = false;
+    }
+  }
+
+  /// 缓存只供展示。提交前重新读取选中文件的属性，部分失效不阻断有效文件。
+  Future<List<LocalBookEntry>> validateForImport(
+    List<LocalBookEntry> entries,
+  ) async {
+    if (state.busy || entries.isEmpty) return [];
+    final request = ++_request;
+    final files = ref.read(localBookFilesProvider), cache = _cache;
+    state = state.copy(busy: true, scanning: false);
+    try {
+      if (!await files.hasAccess()) {
+        if (request == _request) {
+          cache.uncertain = true;
+          state = state.copy(
+            busy: false,
+            accessDenied: true,
+            scanIncomplete: true,
+            message: '文件访问权限已关闭，请恢复权限后重新扫描',
+          );
+        }
+        return [];
+      }
+      final current = <String, LocalBookEntry>{};
+      final missing = <String>{}, unavailable = <String>{};
+      for (var at = 0; at < entries.length; at += 256) {
+        if (request != _request) return [];
+        final result = await files.inspect(
+          entries.skip(at).take(256).map((e) => e.path).toList(),
+        );
+        for (final e in result.entries) {
+          if (!e.directory && purpose.extensions.contains(e.extension)) {
+            current[e.path] = e;
+          } else {
+            missing.add(e.path);
+          }
+        }
+        missing.addAll(result.missing);
+        unavailable.addAll(result.unavailable);
+      }
+      if (!await files.hasAccess()) throw StateError('文件访问权限已关闭');
+      if (request != _request) return [];
+      cache.remove(missing);
+      final failed = entries.length - current.length;
+      if (failed > 0 || entries.any((e) => current[e.path]?.stamp != e.stamp)) {
+        cache.changed = true;
+      }
+      cache.uncertain |= unavailable.isNotEmpty;
+      final updated = state.entries.where((e) => !missing.contains(e.path)).map(
+        (e) {
+          final fresh = current[e.path];
+          if (fresh == null) return e;
+          return LocalBookEntry(
+            path: fresh.path,
+            name: fresh.name,
+            directory: false,
+            size: fresh.size,
+            modified: fresh.modified,
+            sortName: e.sortName,
+            stamp: fresh.stamp,
+          );
+        },
+      ).toList();
+      // 跨目录保留的选择也要查重，不能只检查当前显示目录中的文件。
+      final imported = await _findImported([
+        ...updated,
+        ...current.values,
+      ], request);
+      if (request != _request) return [];
+      final prepared = await prepareLocalFiles(
+        updated,
+        state.sort,
+        state.query,
+      );
+      if (request != _request) return [];
+      _presentation++;
+      state = state.copy(
+        busy: false,
+        accessDenied: false,
+        entries: prepared.entries,
+        visibleEntries: prepared.visible,
+        imported: imported,
+        selected: {...state.selected}
+          ..removeWhere(
+            (path, entry) =>
+                missing.contains(path) ||
+                imported.contains(path) ||
+                _queued(entry),
+          ),
+        needsRescan: cache.changed,
+        scanIncomplete: cache.uncertain,
+        message: failed > 0 ? '$failed 个文件已失效或暂时无法读取，有效文件可继续导入' : null,
+      );
+      return [
+        for (final e in entries)
+          if (current.containsKey(e.path) &&
+              !imported.contains(e.path) &&
+              !_queued(e))
+            current[e.path]!,
+      ];
+    } catch (error, stack) {
+      AppErrors.report(error, stack, operation: '核验待导入文件失败');
+      if (request == _request) {
+        cache.uncertain = true;
+        state = state.copy(
+          busy: false,
+          scanIncomplete: true,
+          message: '无法核验文件，请检查权限后重试',
+        );
+      }
+      return [];
+    }
+  }
 
   Future<Set<String>> _findImported(
     List<LocalBookEntry> entries,
@@ -356,6 +570,17 @@ class LocalFilesViewModel extends Notifier<LocalFilesState> {
     final files = ref.read(localBookFilesProvider);
     final request = ++_request;
     state = state.copy(busy: true);
+    if (!await files.hasAccess()) {
+      if (request == _request) {
+        state = state.copy(
+          busy: false,
+          accessDenied: true,
+          message: '文件访问权限已关闭，无法删除源文件',
+        );
+      }
+      return;
+    }
+    if (request != _request) return;
     final removed = <String>{};
     for (final path in state.selected.keys) {
       if (request != _request) return;
@@ -370,10 +595,12 @@ class LocalFilesViewModel extends Notifier<LocalFilesState> {
     if (request != _request) return;
     final remaining = {...state.selected}
       ..removeWhere((key, _) => removed.contains(key));
+    _cache.remove(removed);
     state = state.copy(
       busy: false,
       entries: state.entries.where((e) => !removed.contains(e.path)).toList(),
       selected: remaining,
+      needsRescan: _cache.changed,
       message: remaining.isEmpty
           ? '已删除 ${removed.length} 个源文件'
           : '${remaining.length} 个文件删除失败，仍保留选中',

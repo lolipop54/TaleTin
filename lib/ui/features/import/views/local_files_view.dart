@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../../../core/diagnostics/app_errors.dart';
@@ -37,7 +39,8 @@ class LocalFilesView extends ConsumerStatefulWidget {
   ConsumerState<LocalFilesView> createState() => _LocalFilesViewState();
 }
 
-class _LocalFilesViewState extends ConsumerState<LocalFilesView> {
+class _LocalFilesViewState extends ConsumerState<LocalFilesView>
+    with WidgetsBindingObserver {
   bool _searching = false, _submitting = false;
   bool get _fonts => widget.purpose == LocalFilePurpose.fonts;
   NotifierProvider<LocalFilesViewModel, LocalFilesState> get _filesProvider =>
@@ -45,11 +48,25 @@ class _LocalFilesViewState extends ConsumerState<LocalFilesView> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
         ref.read(_filesProvider.notifier).load(LocalFilesMode.smart);
       }
     });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && !_submitting) {
+      unawaited(ref.read(_filesProvider.notifier).checkForChanges(force: true));
+    }
   }
 
   @override
@@ -97,6 +114,8 @@ class _LocalFilesViewState extends ConsumerState<LocalFilesView> {
                   onQuery: (query) => vm.filter(query: query),
                   onSort: vm.sortBy,
                   onUp: vm.up,
+                  onRescan: () =>
+                      vm.load(state.mode, path: state.path, rescan: true),
                 ),
               ),
               if ((state.busy && state.scanning) ||
@@ -119,10 +138,38 @@ class _LocalFilesViewState extends ConsumerState<LocalFilesView> {
                         GtButton(onPressed: vm.cancel, child: const Text('取消')),
                       if (!state.busy && !_submitting)
                         GtButton(
-                          onPressed: () =>
-                              vm.load(state.mode, path: state.path),
+                          onPressed: () => vm.load(
+                            state.mode,
+                            path: state.path,
+                            rescan: true,
+                          ),
                           child: const Text('重试'),
                         ),
+                    ],
+                  ),
+                ),
+              if (state.needsRescan || state.scanIncomplete)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: GtSpacing.s5),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          state.needsRescan
+                              ? '手机中的文件有变化，请重新扫描'
+                              : '部分文件暂时无法确认，可重新扫描',
+                        ),
+                      ),
+                      GtButton(
+                        onPressed: state.busy || _submitting
+                            ? null
+                            : () => vm.load(
+                                state.mode,
+                                path: state.path,
+                                rescan: true,
+                              ),
+                        child: const Text('重新扫描'),
+                      ),
                     ],
                   ),
                 ),
@@ -131,8 +178,8 @@ class _LocalFilesViewState extends ConsumerState<LocalFilesView> {
                   revision: state.sort,
                   child: AbsorbPointer(
                     absorbing: _submitting || state.busy,
-                    // 智能扫描期间只保留进度提示，旧结果不展示为不可点击的列表。
-                    child: state.busy && state.scanning
+                    // 首次扫描没有旧结果；重新扫描保留原列表和滚动位置。
+                    child: state.busy && state.entries.isEmpty
                         ? const SizedBox.expand()
                         : !state.busy && state.visible.isEmpty
                         ? Center(
@@ -145,8 +192,11 @@ class _LocalFilesViewState extends ConsumerState<LocalFilesView> {
                                       : state.message!,
                                 ),
                                 GtButton(
-                                  onPressed: () =>
-                                      vm.load(state.mode, path: state.path),
+                                  onPressed: () => vm.load(
+                                    state.mode,
+                                    path: state.path,
+                                    rescan: true,
+                                  ),
                                   child: const Text('重新读取'),
                                 ),
                               ],
@@ -226,39 +276,59 @@ class _LocalFilesViewState extends ConsumerState<LocalFilesView> {
       return;
     }
     final state = ref.read(localFilesProvider);
-    if (state.busy) return;
-    final queued = {
-      for (final item in ref.read(importProvider).items)
-        if (!item.stage.isFinished) item.key,
-    };
-    // 点击书名只取该书，不能把已有多选一起带入队列。
-    final documents = (single == null ? state.selected.values : [single])
-        .where(
-          (e) =>
-              !state.imported.contains(e.path) &&
-              !queued.contains(e.document.uri),
-        )
-        .map((e) => e.document)
-        .toList();
-    if (documents.isEmpty) return;
-    if (widget.selectionOnly) {
-      Navigator.pop<List<PickedDocument>>(context, documents);
-      return;
+    if (state.busy || _submitting) return;
+    setState(() => _submitting = true);
+    try {
+      final vm = ref.read(localFilesProvider.notifier);
+      final entries = await vm.validateForImport(
+        (single == null ? state.selected.values : [single]).toList(),
+      );
+      if (!mounted) return;
+      final checked = ref.read(localFilesProvider);
+      final queued = {
+        for (final item in ref.read(importProvider).items)
+          if (!item.stage.isFinished) item.key,
+      };
+      // 点击书名只取该书，不能把已有多选一起带入队列。
+      final documents = entries
+          .where(
+            (e) =>
+                !checked.imported.contains(e.path) &&
+                !queued.contains(e.document.uri),
+          )
+          .map((e) => e.document)
+          .toList();
+      if (documents.isEmpty) return;
+      if (checked.message != null) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(checked.message!)));
+      }
+      if (widget.selectionOnly) {
+        Navigator.pop<List<PickedDocument>>(context, documents);
+        return;
+      }
+      ref.read(importProvider.notifier).enqueue(documents);
+      context.go(AppRoutes.shelf);
+    } finally {
+      if (mounted) setState(() => _submitting = false);
     }
-    ref.read(importProvider.notifier).enqueue(documents);
-    context.go(AppRoutes.shelf);
   }
 
   Future<void> _importFonts(LocalBookEntry? single) async {
     final state = ref.read(_filesProvider);
     if (state.busy || _submitting) return;
-    final entries = (single == null ? state.selected.values : [single])
+    final selected = (single == null ? state.selected.values : [single])
         .where((e) => !e.directory && !state.imported.contains(e.path))
         .toList();
-    if (entries.isEmpty) return;
+    if (selected.isEmpty) return;
     setState(() => _submitting = true);
     var failed = 0;
     try {
+      final entries = await ref
+          .read(_filesProvider.notifier)
+          .validateForImport(selected);
+      if (!mounted || entries.isEmpty) return;
+      failed = selected.length - entries.length;
       final store = ref.read(importedFontStoreProvider);
       for (final entry in entries) {
         try {
