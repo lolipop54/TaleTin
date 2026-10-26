@@ -67,6 +67,16 @@ h1, h2, h3, h4, h5, h6, [role="heading"] {
   overflow-wrap: anywhere !important;
 }
 
+/* 原书常用多层嵌套的引用表示缩进（《希腊三部曲Ⅱ》作者简介页连套 6 层）。
+   浏览器给每层左右各 40px 外边距，层数一多，正文列里算出来的可用宽度会变成 0：
+   文字只能一个字一行，字形横向溢出压到后面的图片和正文上，多栏分页的高度也算乱。
+   这里只保留第一层的缩进，第二层起不再累加、也不占右侧空间，
+   任何嵌套深度都至少留下「列宽 - 80px」的可用宽度。 */
+body :is(blockquote, ul, ol, dl) :is(blockquote, ul, ol, dl) {
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+}
+
 /* 四个方向分别标记：向上/向下越界和左右扩背景都收回，正值留白不变。 */
 [data-gt-heading-margins~="top"] {
   margin-top: 0 !important;
