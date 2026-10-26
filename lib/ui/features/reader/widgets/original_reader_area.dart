@@ -661,14 +661,7 @@ class _OriginalReaderAreaState extends ConsumerState<OriginalReaderArea>
                             _page,
                           ),
                           onCenterTap: widget.onCenterTap,
-                          onError: (message) {
-                            AppErrors.report(
-                              StateError(message),
-                              StackTrace.current,
-                              operation: '原书翻页图像准备失败',
-                            );
-                            _notice(message);
-                          },
+                          onError: _notice,
                         )
                       : ReaderDragDetector(
                           onTapUp: (details) => _runPlainInput(

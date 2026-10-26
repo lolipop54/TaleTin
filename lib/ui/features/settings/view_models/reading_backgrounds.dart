@@ -117,8 +117,10 @@ class ReadingBackgrounds extends AsyncNotifier<ReadingBackgroundCatalog> {
         while (true) {
           final chunk = await platform.readChunk(session, 1024 * 1024);
           if (chunk == null || chunk.isEmpty) break;
-          if (bytes.length + chunk.length > 8 * 1024 * 1024) {
-            throw const FormatException('图片超过8 MB，请选择较小的图片');
+          // 手机高像素照片常有9～12MiB；原图按封面相同的32MiB上限读取，
+          // 随后解码到最多2048像素，持久保存的仍是处理后的背景图。
+          if (bytes.length + chunk.length > 32 * 1024 * 1024) {
+            throw const FormatException('图片超过32 MB，请选择较小的图片');
           }
           bytes.add(chunk);
         }

@@ -2,12 +2,13 @@ import '../../../../core/diagnostics/app_errors.dart';
 import '../../../../data/services/epub_source_repository.dart';
 
 final _localFontDenied = RegExp(
-  r'^Not allowed to load local resource: ((?:file|res):///.*\.(?:ttf|otf|ttc|woff2?)(?:[?#]\S*)?)$',
+  r'^Not allowed to load local resource: ((?:file|res)://.+\.(?:ttf|otf|ttc|woff2?)(?:[?#]\S*)?)$',
   caseSensitive: false,
 );
 final _deviceFontCors = RegExp(
-  "^Access to font at '((?:file|res):///[^']+)' "
+  "^Access to font at '((?:file|res)://[^']+\\.(?:ttf|otf|ttc|woff2?)(?:[?#][^']*)?)' "
   "from origin 'https://$kEpubSourceHost' has been blocked by CORS policy:",
+  caseSensitive: false,
 );
 final _sandboxDenied = RegExp(
   "^Blocked script execution in '([^']+)' because the document's frame "
@@ -24,6 +25,8 @@ void reportOriginalConsoleError(
   // 有些书同时列出 Kindle、多看等设备的本地字体。当前手机无法读取时，
   // 浏览器按原有字体栈回退；书内字体及阅读器字体仍由虚拟 HTTPS 地址提供。
   // 这不是应用故障，直接跳过，避免大量字体候选挤掉真正需要排查的记录。
+  // Chromium 会把 res:///fonts/kt.ttf 规范成 res://fonts/kt.ttf；
+  // 两种写法都属于设备字体候选，不能只认带三个斜杠的原始地址。
   if (_localFontDenied.hasMatch(message) || _deviceFontCors.hasMatch(message)) {
     return;
   }

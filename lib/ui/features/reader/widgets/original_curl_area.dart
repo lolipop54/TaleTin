@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart' show mapEquals;
 import 'package:flutter/material.dart';
 
 import '../../../../domain/models/reading_settings.dart';
+import '../../../../core/diagnostics/app_errors.dart';
 import '../../../../core/diagnostics/reader_recovery_diagnostics.dart';
 import '../../../../core/diagnostics/reader_turn_state_diagnostics.dart';
 import 'fold_frames.dart';
@@ -303,8 +304,10 @@ class OriginalCurlAreaState extends State<OriginalCurlArea> {
     Future<OriginalTurnTarget?> Function() resolve,
   ) async {
     final generation = _generation;
+    final originKey = _pageKey(host, page);
     final target = await resolve();
     if (target == null || !mounted || generation != _generation) return;
+    final targetKey = _pageKey(target.host, target.page);
     // 查询目标期间可能已有手指按下；在取下一张后台截图之前再确认一次。
     if (_interruptPriming ||
         _active ||
@@ -336,8 +339,11 @@ class OriginalCurlAreaState extends State<OriginalCurlArea> {
         size,
       )).dispose();
       captured = true;
-      if (mounted && generation == _generation) {
-        _directions[(_pageKey(host, page), backward)] = target;
+      if (mounted &&
+          generation == _generation &&
+          _isCurrentPageKey(originKey) &&
+          _isCurrentPageKey(targetKey)) {
+        _directions[(originKey, backward)] = target;
       }
     } finally {
       if (previewed) {
@@ -450,12 +456,19 @@ class OriginalCurlAreaState extends State<OriginalCurlArea> {
       _clearPages();
       unawaited(_cancelTurn());
     }
+    final versionsChanged = !mapEquals(
+      oldWidget.captureVersions,
+      widget.captureVersions,
+    );
+    if (versionsChanged) {
+      _discardStalePageImages(oldWidget.captureVersions);
+    }
     if (oldWidget.captureRevision != widget.captureRevision ||
         oldWidget.host != widget.host ||
         (oldWidget.information == null && widget.information != null) ||
         (!oldWidget.prefetchEnabled && widget.prefetchEnabled) ||
         positionChanged ||
-        !mapEquals(oldWidget.captureVersions, widget.captureVersions)) {
+        versionsChanged) {
       _prime();
     }
   }
@@ -592,10 +605,13 @@ class OriginalCurlAreaState extends State<OriginalCurlArea> {
       current = null;
       next = null;
       return frames;
-    } catch (error) {
+    } catch (error, stack) {
       traceTurn('prepare error type=${error.runtimeType}');
       _failed = true;
       if (mounted && generation == _generation) {
+        // 保留截图／绘制真正抛出的异常，不能在上层用提示语重建StateError，
+        // 否则导出的日志只剩“准备失败”，无法定位快速翻页的实际故障。
+        AppErrors.report(error, stack, operation: '原书翻页图像准备失败');
         widget.onError('页面图像准备失败，请重试翻页');
       }
       return null;

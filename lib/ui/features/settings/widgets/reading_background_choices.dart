@@ -39,6 +39,17 @@ class _ReadingBackgroundChoicesState
     }
   }
 
+  Future<void> _import() => _run(() async {
+    try {
+      await ref.read(readingBackgroundsProvider.notifier).import();
+    } on FormatException catch (error, stack) {
+      // 文件大小等输入限制直接告诉用户原因；详细堆栈仍进日志，
+      // 不再用只有错误编号和代码位置的通用提示盖住实际原因。
+      AppErrors.report(error, stack, operation: '阅读背景导入失败', notify: false);
+      await SystemToast.show(error.message);
+    }
+  });
+
   Future<void> _delete(ReadingBackground item) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -210,11 +221,7 @@ class _ReadingBackgroundChoicesState
                           if (full) {
                             SystemToast.show('已达到导入上限，长按删除其一后可继续添加');
                           } else {
-                            _run(
-                              () => ref
-                                  .read(readingBackgroundsProvider.notifier)
-                                  .import(),
-                            );
+                            _import();
                           }
                         },
                 ),

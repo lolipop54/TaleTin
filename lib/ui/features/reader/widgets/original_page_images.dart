@@ -3,6 +3,34 @@ part of 'original_curl_area.dart';
 /// 正文原图与带信息的整页图分开保留，分钟／书签变化只重画信息。
 /// 最多各三张；起手命中时直接克隆已准备的GPU图像，避免再次整页栅格化。
 extension _OriginalPageImages on OriginalCurlAreaState {
+  bool _isCurrentPageKey(_PageKey key) =>
+      (widget.captureVersions.isEmpty && key.$3 == 0) ||
+      widget.captureVersions[key.$1] == key.$3;
+
+  void _discardStalePageImages(
+    Map<OriginalHostController, int> previousVersions,
+  ) {
+    // 章节移出三章窗口后可能用新控制器重新加载。起点页仍在缓存，
+    // 不代表它指向的邻章仍存在；只移除失效项，保留当前页和有效来路。
+    _pages.removeWhere((key, image) {
+      if (_isCurrentPageKey(key)) return false;
+      image.dispose();
+      return true;
+    });
+    _paintedPages.removeWhere((key, image) {
+      if (_isCurrentPageKey(key.$1)) return false;
+      image.dispose();
+      return true;
+    });
+    _nativeInformationVersions.removeWhere((key, _) => !_isCurrentPageKey(key));
+    _directions.removeWhere(
+      (key, target) =>
+          !_isCurrentPageKey(key.$1) ||
+          !widget.captureVersions.containsKey(target.host) ||
+          previousVersions[target.host] != widget.captureVersions[target.host],
+    );
+  }
+
   bool _hasTurnImages(bool backward) {
     final host = widget.host, known = _knownPage;
     if (host == null || known == null || known.$1 != host) return false;
@@ -91,7 +119,7 @@ extension _OriginalPageImages on OriginalCurlAreaState {
       information,
       size,
     );
-    if (mounted && generation == _generation) {
+    if (mounted && generation == _generation && _isCurrentPageKey(key.$1)) {
       if (widget.effect == PageTurnEffect.slide) {
         _nativeInformationVersions[key.$1] = _nativeInformationKey(
           host,
@@ -148,7 +176,7 @@ extension _OriginalPageImages on OriginalCurlAreaState {
       'generation': generation,
       'currentGeneration': _generation,
     });
-    if (mounted && generation == _generation) {
+    if (mounted && generation == _generation && _isCurrentPageKey(key)) {
       _pages[key] = image.clone();
       // 当前页及前后页就绪后，起手直接使用图像与页序，不调用 WebView。
       while (_pages.length > 3) {
