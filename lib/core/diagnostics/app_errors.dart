@@ -16,6 +16,7 @@ import '../../engine/layout/scroll_chapter.dart'
 import '../../platform/channels/system_toast.dart';
 import 'app_error_store.dart';
 import 'reader_turn_diagnostics.dart';
+import 'reader_turn_state_diagnostics.dart';
 
 /// 正常撤销任务不作为错误；不能按错误文本猜测取消，以免漏掉真实故障。
 bool isExpectedAppCancellation(Object error) =>
@@ -267,6 +268,7 @@ abstract final class AppErrors {
   }
 
   static Future<String> exportText() async {
+    await ReaderTurnStateDiagnostics.flush();
     await ReaderTurnDiagnostics.flush(force: true);
     final complete = await reporter.flush();
     final text = await store.exportText();
@@ -284,8 +286,11 @@ abstract final class AppErrors {
     }
     var slide = '';
     try {
-      slide = await channel.invokeMethod<String>('readerTurnLog')
-          .timeout(const Duration(seconds: 3)) ?? '';
+      slide =
+          await channel
+              .invokeMethod<String>('readerTurnLog')
+              .timeout(const Duration(seconds: 3)) ??
+          '';
     } on MissingPluginException {
       // 非Android或较旧原生层仍导出其他已取得的日志。
     } catch (error) {

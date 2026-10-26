@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -71,6 +73,16 @@ class ShelfSelectionBar extends ConsumerWidget {
       );
     }
 
+    // 手势导航的手机常常不报底部 viewPadding（Home 手势区不占布局），
+    // 只按 viewPadding 会让四个按钮贴着屏幕底边。手势区有值时用它，
+    // 两者都为 0 时也至少留出 24dp，和系统底部导航区的高度相当。
+    final bottomInset = math.max(
+      math.max(
+        MediaQuery.viewPaddingOf(context).bottom,
+        MediaQuery.systemGestureInsetsOf(context).bottom,
+      ),
+      GtSpacing.s6,
+    );
     return TweenAnimationBuilder<double>(
       tween: Tween(begin: 1, end: 0),
       duration: MediaQuery.disableAnimationsOf(context)
@@ -85,9 +97,7 @@ class ShelfSelectionBar extends ConsumerWidget {
           border: Border(top: BorderSide(color: colors.borderSubtle)),
         ),
         child: Padding(
-          padding: EdgeInsets.only(
-            bottom: MediaQuery.viewPaddingOf(context).bottom,
-          ),
+          padding: EdgeInsets.only(bottom: bottomInset),
           child: Row(
             children: [
               action(

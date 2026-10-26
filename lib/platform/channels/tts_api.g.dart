@@ -578,10 +578,49 @@ class TtsHostApi {
     ;
   }
 
-  /// 停止发声并丢弃未播内容。原生没有真正的 pause，暂停也走这里。
+  /// 停止发声并丢弃未播内容。用户主动暂停也走这里。
   /// 只释放引擎，不销毁线程：之后还能再 [initialize]（在 Dart 侧就是停止听书后重新开始）。
   Future<void> stop() async {
     final pigeonVar_channelName = 'dev.flutter.pigeon.gtreader.TtsHostApi.stop$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(null);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    _extractReplyValueOrThrow(
+        pigeonVar_replyList,
+        pigeonVar_channelName,
+        isNullValid: true,
+    )
+    ;
+  }
+
+  /// 提示音等短暂抢占期间按住发声：暂停当前音频但保留播放位置，
+  /// 不改正文、不丢合成结果，等 [resumeSpeech] 从同一帧继续。
+  Future<void> holdSpeech() async {
+    final pigeonVar_channelName = 'dev.flutter.pigeon.gtreader.TtsHostApi.holdSpeech$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(null);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    _extractReplyValueOrThrow(
+        pigeonVar_replyList,
+        pigeonVar_channelName,
+        isNullValid: true,
+    )
+    ;
+  }
+
+  /// 从 [holdSpeech] 停住的位置继续发声；没有按住的音频时什么也不做。
+  Future<void> resumeSpeech() async {
+    final pigeonVar_channelName = 'dev.flutter.pigeon.gtreader.TtsHostApi.resumeSpeech$pigeonVar_messageChannelSuffix';
     final pigeonVar_channel = BasicMessageChannel<Object?>(
       pigeonVar_channelName,
       pigeonChannelCodec,

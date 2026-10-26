@@ -1,6 +1,6 @@
 # TaleTin 图标库
 
-本目录只保留当前界面使用的 38 个 SVG。底部主导航使用 `assets/icons_used/` 中的 WebP，成就勋章使用 `assets/achievements/` 中的 WebP。
+本目录只保留当前界面使用的 SVG。底部主导航使用 `assets/icons_used/` 中的 WebP，成就勋章使用 `assets/achievements/` 中的 WebP。
 
 ## 视觉规范
 
@@ -18,7 +18,7 @@
 - 阅读控制：`bookmark`、`toc`、`brightness`、`headphones`、`auto-read`、`settings`。
 - 播放与听书：`play`、`pause`、`skip-previous`、`skip-next`。
 - 选中文字：`palette`、`note`、`note-plus`、`highlight`、`trash`。
-- 状态与阅读统计：`check-circle`、`alert-circle`、`lock`、`open-book`。
+- 状态与阅读统计：`circle`、`check-circle`、`alert-circle`、`lock`、`open-book`；书架列表多选用空心圆表示未选中，圆内打勾表示选中。
 
 ## Flutter 接入约定
 

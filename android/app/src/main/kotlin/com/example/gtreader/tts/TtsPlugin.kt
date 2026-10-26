@@ -78,6 +78,10 @@ class TtsPlugin : FlutterPlugin, TtsHostApi {
 
     override fun stop() = engine.stop()
 
+    override fun holdSpeech() = engine.hold()
+
+    override fun resumeSpeech() = engine.resume()
+
     override fun elapsedRealtime(): Long = android.os.SystemClock.elapsedRealtime()
 
     override fun setSleepDeadline(version: Long, deadlineMs: Long?) =

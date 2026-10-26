@@ -305,7 +305,7 @@ internal class NativeTtsEngine(
         handler.post { speakLocked(utteranceId, text) }
     }
 
-    /** 停止发声并丢弃未播内容。原生没有真正的 pause，暂停也走这里。 */
+    /** 停止发声并丢弃未播内容。用户主动暂停也走这里。 */
     fun stop() {
         handler.post {
             audioPlayer.activeId?.let { id -> emit("onStopped") { events.onStopped(id, false) } }
@@ -313,6 +313,15 @@ internal class NativeTtsEngine(
             audioPlayer.stop()
         }
     }
+
+    /**
+     * 提示音等短暂抢占期间按住发声：只暂停输出，不改任务、不丢合成结果，
+     * 也不清按住状态以外的任何东西（和 [stop] 的区别就在这里）。
+     */
+    fun hold() = audioPlayer.hold()
+
+    /** 系统交还焦点后从按住的位置继续；没有按住时什么也不做。 */
+    fun resume() = audioPlayer.resume()
 
     /**
      * 释放引擎但保留线程：停止听书后再点开始要能重新初始化。

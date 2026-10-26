@@ -99,6 +99,11 @@ class NativeTtsChannel {
 
   Future<void> stop() => _hostApi.stop();
 
+  /// 提示音等短暂抢占期间按住发声；续播从同一帧继续。
+  Future<void> holdSpeech() => _hostApi.holdSpeech();
+
+  Future<void> resumeSpeech() => _hostApi.resumeSpeech();
+
   Future<void> shutdown() => _hostApi.shutdown();
 
   /// 引擎单次可接受的最大文本长度（UTF-16 单元）。

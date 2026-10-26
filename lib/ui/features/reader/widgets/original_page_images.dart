@@ -180,6 +180,7 @@ extension _OriginalPageImages on OriginalCurlAreaState {
         edges: widget.bookEdges,
         spread: widget.spread,
         decorationOnly: true,
+        backgroundImage: widget.information?.backgroundImage,
       ).paint(canvas, size);
     }
     // 返回进度／搜索面板必须在书脊装饰上面，截图和静止页使用同一顺序。

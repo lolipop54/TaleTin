@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 
 import '../../../../domain/models/reading_settings.dart';
 import '../../../../core/diagnostics/reader_recovery_diagnostics.dart';
+import '../../../../core/diagnostics/reader_turn_state_diagnostics.dart';
 import 'fold_frames.dart';
 import 'original_host_controller.dart';
 import 'original_preload_gate.dart';
@@ -385,6 +386,7 @@ class OriginalCurlAreaState extends State<OriginalCurlArea> {
         spread: now.spread,
         spreadSide: now.spreadSide,
         paper: now.paper,
+        backgroundImage: now.backgroundImage,
       ),
     );
   }
@@ -392,6 +394,29 @@ class OriginalCurlAreaState extends State<OriginalCurlArea> {
   @override
   void initState() {
     super.initState();
+    ReaderTurnStateDiagnostics.attach(
+      this,
+      'originalTurn',
+      () => {
+        'mounted': mounted,
+        'active': _active,
+        'failed': _failed,
+        'generation': _generation,
+        'priming': _priming != null,
+        'restoring': _restoring != null,
+        'presentTargetStored': _presentTarget != null,
+        'presentationStored': _pendingPresentation != null,
+        'held': _held != null,
+        'cover': _cover != null,
+        'landing': _landing != null,
+        'warmCover': _warmCover != null,
+        'cachedPages': _pages.length,
+        'paintedPages': _paintedPages.length,
+        'targetPage': _target?.page,
+        'targetChapter': _target?.chapter,
+        'knownPage': _knownPage?.$2,
+      },
+    );
     widget.preload?.addListener(resumePrefetch);
     _prime();
   }
@@ -552,6 +577,7 @@ class OriginalCurlAreaState extends State<OriginalCurlArea> {
               size,
               backward: backward,
               paper: widget.paper,
+              backgroundImage: widget.information?.backgroundImage,
               edges: widget.bookEdges,
             )
           : FoldFrames.images(
@@ -560,6 +586,7 @@ class OriginalCurlAreaState extends State<OriginalCurlArea> {
               size,
               backward: backward,
               paper: widget.paper,
+              backgroundImage: widget.information?.backgroundImage,
               bookEdges: widget.bookEdges,
             );
       current = null;
@@ -638,6 +665,7 @@ class OriginalCurlAreaState extends State<OriginalCurlArea> {
 
   @override
   void dispose() {
+    ReaderTurnStateDiagnostics.detach(this);
     unawaited(_restoreHeld());
     widget.preload?.removeListener(resumePrefetch);
     widget.preload?.release(this);
@@ -731,6 +759,7 @@ class _InformationPainter extends CustomPainter {
         edges: edges,
         spread: spread,
         decorationOnly: true,
+        backgroundImage: information?.backgroundImage,
       ).paint(canvas, size);
     }
     information?.paint(canvas, size);

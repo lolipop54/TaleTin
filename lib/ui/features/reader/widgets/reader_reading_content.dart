@@ -175,6 +175,9 @@ class _ReadingContentState extends ConsumerState<_ReadingContent> {
                         : settings.settings.layoutMode,
                     onReadable: ReaderPageReady.of(context),
                     onPresented: () {
+                      ref
+                          .read(readerSettingsProvider(bookId).notifier)
+                          .releaseUnusedBackgrounds();
                       if (ReaderDeliveryExperiments.incremental) {
                         ref
                             .read(readerSessionProvider(bookId).notifier)
@@ -220,9 +223,12 @@ class _ReadingContentState extends ConsumerState<_ReadingContent> {
                         'bookEdges': settings.settings.bookEdges,
                         'landscape': settings.settings.landscape,
                         'spreadEnabled': settings.settings.spreadEnabled,
-                        'spreadActive': settings.settings.spreadEnabled &&
-                            settings.settings.pageTurnEffect != PageTurnEffect.scroll &&
-                            MediaQuery.sizeOf(context).width > MediaQuery.sizeOf(context).height,
+                        'spreadActive':
+                            settings.settings.spreadEnabled &&
+                            settings.settings.pageTurnEffect !=
+                                PageTurnEffect.scroll &&
+                            MediaQuery.sizeOf(context).width >
+                                MediaQuery.sizeOf(context).height,
                         'fontFamily': settings.settings.fontFamily,
                         'fontSize': settings.settings.fontSize,
                         'fontWeight': settings.settings.fontWeight,

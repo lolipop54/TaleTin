@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.2.1+56
+version: 1.2.2+57
 
 environment:
   sdk: ^3.13.2
@@ -125,12 +125,17 @@ flutter:
     - assets/pics/覆盖翻页.webp
     - assets/pics/仿真翻页.webp
     - assets/pics/滚动.webp
+    - assets/pics/阅读背景/旧报纸.jpg
+    - assets/pics/阅读背景/羊皮纸.jpg
+    - assets/pics/阅读背景/孤舟.jpg
+    - assets/pics/阅读背景/山水.png
     - assets/achievements/
     - assets/hyphenation/
     - assets/licenses/
     - assets/fonts/reading_quote/OFL.txt
     # 原书排版模式的框架页（host.css / host.js），由 WebView 拦截器按虚拟地址提供
     - assets/webview/
+
 
   fonts:
     # 明确字重：部分 Bold 文件的内部标签仍是 400，以文件夹配对为准。

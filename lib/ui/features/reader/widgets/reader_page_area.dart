@@ -32,12 +32,16 @@ class _PageAreaState extends ConsumerState<_PageArea> {
   final _pointerWorkOwner = Object(), _motionWorkOwner = Object();
   Object? _windowKey;
   Timer? _textPreparationTimer;
-  final _neighborMaterials = <PreparedPage>[];
+  final _pageMaterials = PreparedPageCache();
+  PreparedPage? _currentMaterial;
+  final _materialOwner = Object();
+  late final ChapterContentRepository _materialRepository;
   final _presentationOwner = Object();
   ReaderSessionNotifier? _presenter;
   @override
   void initState() {
     super.initState();
+    _materialRepository = ref.read(chapterContentRepositoryProvider);
     if (ReaderDeliveryExperiments.incremental) {
       final presenter = ref.read(readerSessionProvider(widget.bookId).notifier);
       presenter.attachVisualPresenter(_presentationOwner);
@@ -60,9 +64,15 @@ class _PageAreaState extends ConsumerState<_PageArea> {
     _textPreparationTimer?.cancel();
     LayoutWorkGate.release(_pointerWorkOwner);
     LayoutWorkGate.release(_motionWorkOwner);
-    for (final page in _neighborMaterials) {
-      page.dispose();
-    }
+    _pageMaterials.dispose();
+    _currentMaterial?.dispose();
+    unawaited(
+      _materialRepository.retainReadingChapters(
+        widget.bookId,
+        _materialOwner,
+        const [],
+      ),
+    );
     _textCache.dispose();
     _rasterCache.dispose();
     super.dispose();
@@ -399,6 +409,12 @@ class _PageAreaState extends ConsumerState<_PageArea> {
     ];
 
     PageCanvas content(ChapterLayout source, int index) => PageCanvas(
+      onPrepared: source.samePageAs(layout, index, session.pageIndex)
+          ? (prepared) {
+              _currentMaterial?.dispose();
+              _currentMaterial = prepared.clone();
+            }
+          : null,
       onReady: source.samePageAs(layout, index, session.pageIndex)
           ? () {
               if (!ReaderDeliveryExperiments.incremental) {
@@ -470,6 +486,24 @@ class _PageAreaState extends ConsumerState<_PageArea> {
     final peekPrevious = ref
         .read(readerSessionProvider(bookId).notifier)
         .peekPrevious();
+
+    // 同一轮resolve和动画共用目标任务。已解码的邻页直接使用，避免PDF命中后
+    // 仍重新排队检查文件；尚未准备好时继续走仓库补图与失败恢复。
+    final adjacentTasks = <bool, Future<SpreadPageRef?>>{};
+    Future<SpreadPageRef?> adjacent(bool forward) =>
+        adjacentTasks.putIfAbsent(forward, () {
+          final target = forward ? peekNext : peekPrevious;
+          if (target != null &&
+              _pageMaterials.contains(
+                content(target.layout, target.pageIndex),
+                createLocalImageConfiguration(context),
+              )) {
+            return Future.value(target);
+          }
+          return ref
+              .read(readerSessionProvider(bookId).notifier)
+              .prepareAdjacent(forward);
+        });
 
     final manual = PageTurnArea(
       key: _inputKey,
@@ -572,24 +606,29 @@ class _PageAreaState extends ConsumerState<_PageArea> {
         return false;
       },
       resolvePage: (direction) async {
-        final target = await ref
-            .read(readerSessionProvider(bookId).notifier)
-            .prepareAdjacent(direction == PageTurnDirection.forward);
-        if (!mounted || target == null) return null;
+        final target = await adjacent(direction == PageTurnDirection.forward);
+        if (!mounted || target == null) {
+          adjacentTasks.remove(direction == PageTurnDirection.forward);
+          return null;
+        }
         return page(target.layout, target.pageIndex);
       },
       prepareFold: (direction) async {
-        final target = await ref
-            .read(readerSessionProvider(bookId).notifier)
-            .prepareAdjacent(direction == PageTurnDirection.forward);
-        if (!mounted) return null;
-        if (target == null) return null;
-        return FoldFrames.load(
-          content(layout, session.pageIndex),
-          content(target.layout, target.pageIndex),
-          createLocalImageConfiguration(context),
-          rasterCache: _rasterCache,
-        );
+        final forward = direction == PageTurnDirection.forward;
+        try {
+          final target = await adjacent(forward);
+          if (!mounted || target == null) return null;
+          return await FoldFrames.load(
+            content(layout, session.pageIndex),
+            content(target.layout, target.pageIndex),
+            createLocalImageConfiguration(context),
+            rasterCache: _rasterCache,
+            materialCache: _pageMaterials,
+          );
+        } finally {
+          // 只合并本轮解析与动画；取消或图片失败后的新手势必须可以重新补图。
+          adjacentTasks.remove(forward);
+        }
       },
       // 翻页动画期间暂停菜单与手柄触摸，手柄外观已在书页画布中。
       traceLabel: 'simplified',
@@ -709,77 +748,4 @@ class _PageAreaState extends ConsumerState<_PageArea> {
       },
     );
   }
-
-  /// 拖动点超出正文盒子上下沿时，算出要往前/往后跳几页（0 表示在盒子内）
-  int _pageOffsetFor(Offset point, Size contentSize) {
-    if (point.dy < 0) {
-      return -(1 + (-point.dy / contentSize.height).ceil());
-    }
-    if (point.dy > contentSize.height) {
-      return 1 + ((point.dy - contentSize.height) / contentSize.height).floor();
-    }
-    return 0;
-  }
-
-  /// 长按/拖动：把页面坐标换算到正文盒子坐标，再问引擎落在哪个字上
-  Future<void> _onLongPress(
-    Offset localPosition,
-    BoxConstraints area,
-    Size contentSize,
-  ) async {
-    await ref.read(automaticReadingProvider(widget.bookId).notifier).discard();
-    if (!mounted) return;
-    final session = widget.session;
-    final layout = session.layout;
-    if (layout == null) return;
-    final info = readerInformation(
-      context,
-      ref,
-      session,
-      widget.settings.settings,
-      widget.settings.theme,
-      session.chapterIndex,
-      session.chapterProgress,
-    );
-    // 起选位置与整页画布中的正文原点一致。
-    final origin = Offset(
-      (area.maxWidth - contentSize.width) / 2,
-      (area.maxHeight - contentSize.height + info.top - info.bottom) / 2,
-    );
-    final engine = ref.read(readerEngineProvider);
-    final point = localPosition - origin;
-    final vm = ref.read(readerProvider.notifier);
-    // 还没起选，或现在这段选区是「点已有高亮」选出来的：都按新选文开始，
-    // 不在旧高亮的范围上接着延伸（用户口径：改范围要重新选文字）
-    if (widget.state.selection == null || widget.state.selectionFromMark) {
-      final sentence = engine.sentenceRangeAtPoint(
-        layout,
-        session.pageIndex,
-        point,
-      );
-      if (sentence == null) return;
-      vm.startSelection(sentence.start, sentence.end);
-      return;
-    }
-    // 拖出页面下沿/上沿：按拖出的距离整页整页地往后/往前选（原型口径）
-    final beyond = _pageOffsetFor(point, contentSize);
-    if (beyond != 0) {
-      final target = (session.pageIndex + beyond)
-          .clamp(0, math.max(0, layout.pageCount - 1))
-          .toInt();
-      final edge = pageEdgeLocator(
-        layout: layout,
-        pageIndex: target,
-        atEnd: beyond > 0,
-      );
-      if (edge != null) vm.extendSelection(edge);
-      return;
-    }
-    final locator = engine.locatorAtPoint(layout, session.pageIndex, point);
-    if (locator == null) return;
-    vm.extendSelection(locator);
-  }
-
-  void _showNotice(String message) =>
-      ref.read(readerProvider.notifier).showNotice(message);
 }

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
+
 import '../../../../core/diagnostics/reader_turn_diagnostics.dart';
 import '../../../../core/diagnostics/reader_recovery_diagnostics.dart';
 
@@ -325,7 +326,12 @@ class OriginalScrollAreaState extends ConsumerState<OriginalScrollArea>
         _stableHeight = box.maxHeight;
       }
       final height = _stableHeight ?? box.maxHeight;
-      final left = math.max(0.0, (box.maxWidth - (settings.landscape ? box.maxWidth : GtSize.readingMaxWidth)) / 2);
+      final left = math.max(
+        0.0,
+        (box.maxWidth -
+                (settings.landscape ? box.maxWidth : GtSize.readingMaxWidth)) /
+            2,
+      );
       _bodyBounds = Rect.fromLTWH(
         left,
         info.top,
@@ -335,7 +341,9 @@ class OriginalScrollAreaState extends ConsumerState<OriginalScrollArea>
       final options = <String, Object?>{
         'fontSizePx': MediaQuery.textScalerOf(context)
             .scale(settings.fontSize.toDouble()),
-        'marginPx': settings.horizontalPadding + (settings.bookEdges ? bookEdgeWidth : 0),
+        'marginPx':
+            settings.horizontalPadding +
+            (settings.bookEdges ? bookEdgeWidth : 0),
         'indent': settings.indent,
         'fontFamily': settings.useOriginalFont
             ? ''
@@ -345,6 +353,9 @@ class OriginalScrollAreaState extends ConsumerState<OriginalScrollArea>
         'paragraphGapEm': settings.paragraphGapEm,
         'colors': {
           'bg': hexOf(widget.settings.theme.background),
+          if (widget.settings.theme.texture != null)
+            'backgroundImage': widget.settings.theme.texture!.url,
+          'scrollBackground': 'true',
           'text': hexOf(widget.settings.theme.primary),
           'link': hexOf(readingLinkColor(widget.settings.theme)),
         },
@@ -364,12 +375,34 @@ class OriginalScrollAreaState extends ConsumerState<OriginalScrollArea>
       }
       return Stack(
         children: [
+          Positioned.fill(
+            child: CustomPaint(
+              painter: ReadingBackgroundPainter(
+                widget.settings.theme.background,
+                widget.settings.theme.texture?.image,
+              ),
+            ),
+          ),
           if (_assets != null)
             Positioned(
               top: info.top,
               bottom: info.bottom,
-              left: math.max(0, (box.maxWidth - (settings.landscape ? box.maxWidth : GtSize.readingMaxWidth)) / 2),
-              right: math.max(0, (box.maxWidth - (settings.landscape ? box.maxWidth : GtSize.readingMaxWidth)) / 2),
+              left: math.max(
+                0,
+                (box.maxWidth -
+                        (settings.landscape
+                            ? box.maxWidth
+                            : GtSize.readingMaxWidth)) /
+                    2,
+              ),
+              right: math.max(
+                0,
+                (box.maxWidth -
+                        (settings.landscape
+                            ? box.maxWidth
+                            : GtSize.readingMaxWidth)) /
+                    2,
+              ),
               child: ScrollSelectionLayer(
                 key: _selectionKey,
                 bookId: widget.bookId,
@@ -381,17 +414,17 @@ class OriginalScrollAreaState extends ConsumerState<OriginalScrollArea>
                     if (readerTurnDiagnosticsEnabled) _traceScrollDown(event);
                   },
                   child: OriginalScrollWebView(
-                  preparedView: _preparedView,
-                  source: widget.original.source,
-                  assets: _assets!,
-                  onController: (value) => host = value,
-                  onLoaded: () {
-                    if (mounted) setState(() => _loaded = true);
-                  },
-                  onMessage: _tracedScrollMessage,
-                  onScroll: () {
-                    if (_ready) _scrollFrames.motion();
-                  },
+                    preparedView: _preparedView,
+                    source: widget.original.source,
+                    assets: _assets!,
+                    onController: (value) => host = value,
+                    onLoaded: () {
+                      if (mounted) setState(() => _loaded = true);
+                    },
+                    onMessage: _tracedScrollMessage,
+                    onScroll: () {
+                      if (_ready) _scrollFrames.motion();
+                    },
                   ),
                 ),
               ),
@@ -407,9 +440,20 @@ class OriginalScrollAreaState extends ConsumerState<OriginalScrollArea>
           if (settings.bookEdges)
             // 页叠和书脊不随正文滚动，单独保留绘制层，避免一起重画渐变。
             // 仍用原画法和原尺寸；主题或视口变化会正常重画。
-            Positioned.fill(child: IgnorePointer(child: RepaintBoundary(
-              child: CustomPaint(isComplex: true, painter:
-                BookPaperPainter(widget.settings.theme.background, decorationOnly: true))))),
+            Positioned.fill(
+              child: IgnorePointer(
+                child: RepaintBoundary(
+                  child: CustomPaint(
+                    isComplex: true,
+                    painter: BookPaperPainter(
+                      widget.settings.theme.background,
+                      backgroundImage: widget.settings.theme.texture?.image,
+                      decorationOnly: true,
+                    ),
+                  ),
+                ),
+              ),
+            ),
           Positioned.fill(
             child: IgnorePointer(
               child: CustomPaint(painter: ScrollInformationPainter(info)),

@@ -4,6 +4,49 @@ part of 'reader_session_view_model.dart';
 mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
   StreamSubscription<ChapterLayout>? _layoutUpdates;
   ChapterLayout? _observedLayout;
+  final _neighborPreparations = <Object, Future<ChapterLayout>>{};
+
+  /// 预取和用户翻页同时请求同一邻章时，共用正文准备与排版任务。
+  Future<ChapterLayout> _prepareNeighborChapter(
+    ReaderSession session,
+    int index,
+    LayoutOptions options, {
+    bool atEnd = false,
+    bool full = false,
+  }) {
+    final version = _tokenVersion;
+    final key = (
+      version,
+      session.chapters[index].id,
+      options.layoutSignature,
+      atEnd,
+      full,
+    );
+    return _neighborPreparations.putIfAbsent(key, () async {
+      try {
+        final chapter = session.chapters[index];
+        final content = await ref
+            .read(chapterContentRepositoryProvider)
+            .chapter(bookId, chapter);
+        if (!ref.mounted || _tokenVersion != version) {
+          throw const LayoutCancelled();
+        }
+        final request = LayoutRequest(
+          bookId: bookId,
+          contentVersion: session.book.contentVersion,
+          chapter: chapter,
+          content: content,
+          options: options,
+        );
+        final engine = ref.read(readerEngineProvider);
+        return await (full
+            ? engine.layoutChapter(request)
+            : engine.layoutWindow(request, atEnd: atEnd));
+      } finally {
+        _neighborPreparations.remove(key);
+      }
+    });
+  }
 
   void _watchLayout(ChapterLayout layout) {
     _observedLayout?.task?.pauseBackground();
@@ -159,6 +202,13 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
     final cached = forward ? peekNext() : peekPrevious();
     final session = state.value, options = _options;
     if (session == null || options == null) return null;
+    final version = _tokenVersion;
+    bool current() =>
+        ref.mounted &&
+        _tokenVersion == version &&
+        state.value?.chapterIndex == session.chapterIndex &&
+        state.value?.pageIndex == session.pageIndex &&
+        _options?.layoutSignature == options.layoutSignature;
     if (cached != null) {
       if (session.book.format == BookFormat.pdf) {
         // 排版还在内存中，不代表可重建的扫描图片仍在磁盘缓存中。
@@ -170,41 +220,32 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
             .read(chapterContentRepositoryProvider)
             .chapter(bookId, chapter);
       }
-      return cached;
+      return current() ? cached : null;
     }
     if (forward && !session.layout!.isComplete) {
       final layout = await session.layout!.ensurePage(session.pageIndex + 1);
+      if (!current()) return null;
       if (session.pageIndex + 1 < layout.pageCount) {
         return (layout: layout, pageIndex: session.pageIndex + 1);
       }
     }
     final index = session.chapterIndex + (forward ? 1 : -1);
     if (index < 0 || index >= session.chapters.length) return null;
-    final chapter = session.chapters[index];
-    final content = await ref
-        .read(chapterContentRepositoryProvider)
-        .chapter(bookId, chapter);
-    final layout = await ref
-        .read(readerEngineProvider)
-        .layoutWindow(
-          LayoutRequest(
-            bookId: bookId,
-            contentVersion: session.book.contentVersion,
-            chapter: chapter,
-            content: content,
-            options: options,
-          ),
-          atEnd: !forward,
-        );
-    if (ref.mounted &&
-        state.value?.chapterIndex == session.chapterIndex &&
-        _options?.layoutSignature == options.layoutSignature) {
+    final layout = await _prepareNeighborChapter(
+      session,
+      index,
+      options,
+      atEnd: !forward,
+    );
+    if (current()) {
       // 动画和落页共用这一份页片段，不能在提交时重新生成另一份排版。
       if (forward) {
         _nextChapterLayout = layout;
       } else {
         _previousChapterLayout = layout;
       }
+    } else {
+      return null;
     }
     return (layout: layout, pageIndex: forward ? 0 : layout.pageCount - 1);
   }
@@ -403,25 +444,15 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
       _nextChapterLayout = null;
       return;
     }
-    final chapter = session.chapters[nextIndex];
     final signature = options.layoutSignature;
     final version = _tokenVersion;
     unawaited(() async {
       try {
-        final content = await ref
-            .read(chapterContentRepositoryProvider)
-            .chapter(bookId, chapter);
-        final layout = await ref
-            .read(readerEngineProvider)
-            .layoutWindow(
-              LayoutRequest(
-                bookId: bookId,
-                contentVersion: session.book.contentVersion,
-                chapter: chapter,
-                content: content,
-                options: options,
-              ),
-            );
+        final layout = await _prepareNeighborChapter(
+          session,
+          nextIndex,
+          options,
+        );
         // 参数或书变了就丢弃这份预取
         final latest = state.value;
         if (_tokenVersion != version ||
@@ -468,20 +499,13 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
     final version = _tokenVersion;
     unawaited(() async {
       try {
-        final content = await ref
-            .read(chapterContentRepositoryProvider)
-            .chapter(bookId, chapter);
-        final layout = await ref
-            .read(readerEngineProvider)
-            .layoutChapter(
-              LayoutRequest(
-                bookId: bookId,
-                contentVersion: session.book.contentVersion,
-                chapter: chapter,
-                content: content,
-                options: options,
-              ),
-            );
+        final layout = await _prepareNeighborChapter(
+          session,
+          previousIndex,
+          options,
+          atEnd: true,
+          full: session.book.format != BookFormat.pdf,
+        );
         // 参数或书变了就丢弃这份预取
         final latest = state.value;
         if (_tokenVersion != version ||

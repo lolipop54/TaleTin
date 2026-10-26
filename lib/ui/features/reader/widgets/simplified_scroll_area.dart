@@ -277,11 +277,17 @@ class SimplifiedScrollAreaState extends ConsumerState<SimplifiedScrollArea>
         _stableHeight = box.maxHeight;
       }
       final height = _stableHeight ?? box.maxHeight;
-      final width = math.min(box.maxWidth, settings.landscape ? box.maxWidth : GtSize.readingMaxWidth);
+      final width = math.min(
+        box.maxWidth,
+        settings.landscape ? box.maxWidth : GtSize.readingMaxWidth,
+      );
       final options = LayoutOptions(
         settings: settings,
         contentSize: Size(
-          width - 2 * (settings.horizontalPadding + (settings.bookEdges ? bookEdgeWidth : 0)),
+          width -
+              2 *
+                  (settings.horizontalPadding +
+                      (settings.bookEdges ? bookEdgeWidth : 0)),
           height - info.top - info.bottom - 48,
         ),
         textScaler: MediaQuery.textScalerOf(context),
@@ -290,6 +296,14 @@ class SimplifiedScrollAreaState extends ConsumerState<SimplifiedScrollArea>
       if (_window.options == null) return const Center(child: BookLoading());
       return Stack(
         children: [
+          Positioned.fill(
+            child: CustomPaint(
+              painter: ReadingBackgroundPainter(
+                widget.settings.theme.background,
+                widget.settings.theme.texture?.image,
+              ),
+            ),
+          ),
           Positioned.fill(
             top: info.top + 24,
             bottom: info.bottom + 24,
@@ -393,8 +407,17 @@ class SimplifiedScrollAreaState extends ConsumerState<SimplifiedScrollArea>
             ),
           ),
           if (settings.bookEdges)
-            Positioned.fill(child: IgnorePointer(child: CustomPaint(painter:
-              BookPaperPainter(widget.settings.theme.background, decorationOnly: true)))),
+            Positioned.fill(
+              child: IgnorePointer(
+                child: CustomPaint(
+                  painter: BookPaperPainter(
+                    widget.settings.theme.background,
+                    backgroundImage: widget.settings.theme.texture?.image,
+                    decorationOnly: true,
+                  ),
+                ),
+              ),
+            ),
           Positioned.fill(
             child: IgnorePointer(
               child: CustomPaint(painter: ScrollInformationPainter(info)),

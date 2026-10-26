@@ -168,14 +168,17 @@ class _ReaderSpreadAreaState extends ConsumerState<_ReaderSpreadArea> {
     required bool current,
   }) {
     final half = Size(size.width / 2, size.height);
-    canvas.drawRect(
-      Offset.zero & size,
-      Paint()..color = widget.settings.theme.background,
+    paintReadingBackground(
+      canvas,
+      size,
+      widget.settings.theme.background,
+      widget.settings.theme.texture?.image,
     );
     pages[0].paint(
       canvas,
       half,
       appearance: _canvas(pair.left, 0, current: current),
+      paintBackground: false,
     );
     if (pair.right != null) {
       canvas.save();
@@ -184,6 +187,7 @@ class _ReaderSpreadAreaState extends ConsumerState<_ReaderSpreadArea> {
         canvas,
         half,
         appearance: _canvas(pair.right!, 1, current: current),
+        paintBackground: false,
       );
       canvas.restore();
     } else {
@@ -206,6 +210,7 @@ class _ReaderSpreadAreaState extends ConsumerState<_ReaderSpreadArea> {
     }
     BookPaperPainter(
       widget.settings.theme.background,
+      backgroundImage: widget.settings.theme.texture?.image,
       spread: true,
       edges: widget.settings.settings.bookEdges,
       decorationOnly: true,

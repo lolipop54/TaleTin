@@ -35,7 +35,6 @@ class PanelTts extends ConsumerWidget {
     final canPlay = all?.voice != null;
     return ReaderSheet(
       title: '听书',
-      maxHeightFactor: 0.78,
       onClose: vm.closePanel,
       child: !ready
           ? const SizedBox.shrink()

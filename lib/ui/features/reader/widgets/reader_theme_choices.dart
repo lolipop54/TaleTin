@@ -35,14 +35,14 @@ class ReaderThemeChoices extends ConsumerWidget {
                           color: theme.background,
                           borderRadius: BorderRadius.circular(GtRadius.control),
                           border: Border.all(
-                            width: settings.theme == theme ? 2 : 1,
-                            color: settings.theme == theme
+                            width: settings.theme.name == theme.name ? 2 : 1,
+                            color: settings.theme.name == theme.name
                                 ? colors.actionPrimary
                                 : colors.borderSubtle,
                           ),
                         ),
                       ),
-                      if (settings.theme == theme)
+                      if (settings.theme.name == theme.name)
                         Positioned(
                           bottom: 3,
                           right: 3,

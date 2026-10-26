@@ -7,7 +7,6 @@ import '../../../../app/router/main_pages_ready.dart';
 import '../../../../app/export_error_log.dart';
 import '../../../../app/di/theme_providers.dart';
 import '../../../../app/di/reading_controls_providers.dart';
-import '../../../../app/di/app_font_providers.dart';
 import '../../../../app/di/statistics_settings_providers.dart';
 import '../../../../domain/repositories/app_theme_repository.dart';
 
@@ -27,6 +26,7 @@ import '../view_models/backup_view_model.dart';
 import '../../achievements/view_models/notes_providers.dart';
 import '../../../core/widgets/state_views.dart';
 import 'global_typography_view.dart';
+import '../view_models/reading_backgrounds.dart';
 import 'statistics_settings_view.dart';
 import 'storage_view.dart';
 import 'about_view.dart';
@@ -132,7 +132,7 @@ class SettingsView extends ConsumerWidget {
               onTap: () => openSettingsPage(
                 context,
                 const GlobalTypographyView(),
-                ready: currentTypographyFontsProvider.future,
+                ready: globalTypographyReadyProvider.future,
               ),
             ),
             SettingsRow(

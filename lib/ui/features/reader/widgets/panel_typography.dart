@@ -73,7 +73,6 @@ class PanelTypography extends ConsumerWidget {
 
     return ReaderSheet(
       title: '设置',
-      maxHeightFactor: 0.9,
       onClose: () => ref.read(readerProvider.notifier).closePanel(),
       child: SingleChildScrollView(
         padding: const EdgeInsets.symmetric(horizontal: GtSpacing.s5),

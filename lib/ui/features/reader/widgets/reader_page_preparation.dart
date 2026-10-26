@@ -26,9 +26,21 @@ extension _ReaderPagePreparation on _PageAreaState {
     List<PageCanvas> neighbors, {
     required PageCanvas current,
   }) {
+    final configuration = createLocalImageConfiguration(context);
+    _pageMaterials.retain([current, ...neighbors], configuration);
+    if (_currentMaterial case final prepared?) {
+      if (prepared.page.layout.samePageAs(
+        source,
+        prepared.page.pageIndex,
+        index,
+      )) {
+        _pageMaterials.remember(prepared, configuration);
+      }
+    }
     // 当前页不变时，增量分页仍可能刚刚提供了邻页，不能漏掉这次准备。
     final key = (
       source.page(index),
+      configuration,
       widget.settings.theme,
       widget.settings.settings.pageTurnEffect,
       current.information?.paintingKey,
@@ -43,22 +55,25 @@ extension _ReaderPagePreparation on _PageAreaState {
     _windowKey = key;
     _textPreparationTimer?.cancel();
     unawaited(() async {
-      final prepared = await Future.wait([
+      if (widget.session.book.format == BookFormat.pdf) {
+        final ids = {
+          source.chapterId,
+          for (final page in neighbors) page.layout.chapterId,
+        };
+        await _materialRepository.retainReadingChapters(
+          widget.bookId,
+          _materialOwner,
+          widget.session.chapters
+              .where((chapter) => ids.contains(chapter.id))
+              .toList(),
+        );
+      }
+      if (!mounted || _windowKey != key) return;
+      await Future.wait([
         for (final page in neighbors)
-          PreparedPage.load(page, createLocalImageConfiguration(context)),
+          _pageMaterials.prepare(page, configuration),
       ]);
-      if (!mounted || _windowKey != key) {
-        for (final page in prepared) {
-          page.dispose();
-        }
-        return;
-      }
-      for (final page in _neighborMaterials) {
-        page.dispose();
-      }
-      _neighborMaterials
-        ..clear()
-        ..addAll(prepared);
+      if (!mounted || _windowKey != key) return;
       _preparedLayout = source;
       _preparedPage = index;
       // 首屏当前及邻页材料齐备后才允许无关补排，触摸和动画仍可暂停它。
@@ -132,10 +147,10 @@ extension _ReaderPagePreparation on _PageAreaState {
           _prepareRasterWindow(key, pages, source, index);
           return;
         }
-        final prepared = await PreparedPage.load(
-          pages[index],
-          createLocalImageConfiguration(context),
-        );
+        final configuration = createLocalImageConfiguration(context);
+        final prepared =
+            _pageMaterials.find(pages[index], configuration) ??
+            await PreparedPage.load(pages[index], configuration);
         try {
           if (!mounted || _windowKey != key) return;
           if (busy()) {

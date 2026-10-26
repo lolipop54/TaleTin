@@ -10,6 +10,9 @@ library;
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/theme/reading_background_texture.dart';
+import '../../settings/view_models/reading_backgrounds.dart';
+
 import '../../../../app/di/app_providers.dart';
 import '../../../../app/di/app_font_providers.dart';
 import '../../../../domain/models/reading_settings.dart';
@@ -92,6 +95,76 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
   /// 全局阅读默认值（构建时读入，之后只作合并用）
   ReadingSettings _global = kBuiltinReadingSettings;
   bool _pdf = false;
+  final _backgroundTextures = <String, ReadingBackgroundTexture>{};
+  String? _pendingBackgroundId;
+
+  Future<ReadingTheme> _appearance(ReadingTheme theme, {String? id}) async {
+    final repo = ref.read(readingBackgroundRepositoryProvider);
+    final catalog = await ref.read(readingBackgroundsProvider.future);
+    id ??= await repo.selection(bookId: bookId) ?? catalog.globalId;
+    final choice = catalog.find(id);
+    _pendingBackgroundId = choice.id;
+    if (choice.id == 'solid') return theme.base;
+    final texture = _backgroundTextures[choice.id] ??=
+        await ReadingBackgroundTexture.load(
+          choice,
+          ref.read(libraryRootPathProvider),
+        );
+    if (!ref.mounted) {
+      _backgroundTextures.remove(choice.id)?.dispose();
+      throw StateError('阅读页已关闭');
+    }
+    return theme.withBackground(texture);
+  }
+
+  /// 新画面交接完成后再释放旧背景，旧页面与截图准备阶段仍能安全绘制。
+  void releaseUnusedBackgrounds() {
+    final current = state.value?.theme.texture;
+    _backgroundTextures.removeWhere((_, texture) {
+      if (identical(texture, current) || texture.id == _pendingBackgroundId) {
+        return false;
+      }
+      texture.dispose();
+      return true;
+    });
+  }
+
+  Future<void> setBackground(String id) => _save(() async {
+    final current = state.value;
+    if (current == null) return;
+    final theme = await _appearance(current.theme, id: id);
+    await ref
+        .read(readingBackgroundRepositoryProvider)
+        .select(id, bookId: bookId);
+    if (ref.mounted) {
+      state = AsyncData(
+        ReaderSettingsState(
+          pdf: _pdf,
+          settings: current.fontSettings,
+          theme: theme,
+          brightness: current.brightness,
+          customBrightness: current.customBrightness,
+        ),
+      );
+    }
+  });
+
+  Future<void> _refreshBackground() => _save(() async {
+    final current = state.value;
+    if (current == null) return;
+    final theme = await _appearance(current.theme);
+    if (ref.mounted && theme != current.theme) {
+      state = AsyncData(
+        ReaderSettingsState(
+          pdf: _pdf,
+          settings: current.fontSettings,
+          theme: theme,
+          brightness: current.brightness,
+          customBrightness: current.customBrightness,
+        ),
+      );
+    }
+  });
 
   /// 本书的覆盖项：只放用户在这一本书里真正改过的项
   ReadingSettingsOverrides _overrides = const ReadingSettingsOverrides();
@@ -99,6 +172,15 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
   @override
   Future<ReaderSettingsState> build() async {
     final repository = ref.watch(readingSettingsRepositoryProvider);
+    ref.onDispose(() {
+      for (final texture in _backgroundTextures.values) {
+        texture.dispose();
+      }
+      _backgroundTextures.clear();
+    });
+    ref.listen(readingBackgroundsProvider, (previous, next) {
+      if (previous?.hasValue == true && next.hasValue) _refreshBackground();
+    });
     _global = await repository.loadGlobal() ?? kBuiltinReadingSettings;
     _overrides =
         await repository.loadOverrides(bookId) ??
@@ -118,7 +200,7 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
     return ReaderSettingsState(
       pdf: _pdf,
       settings: _global.mergeOver(_overrides),
-      theme: readingThemeOf(themeId),
+      theme: await _appearance(readingThemeOf(themeId)),
       brightness: await repository.loadBrightness(bookId),
       customBrightness: await repository.loadCustomBrightness(bookId),
     );
@@ -295,7 +377,7 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
       ReaderSettingsState(
         pdf: _pdf,
         settings: current.fontSettings,
-        theme: theme,
+        theme: theme.withBackground(current.theme.texture),
         brightness: current.brightness,
         customBrightness: current.customBrightness,
       ),
@@ -330,7 +412,10 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
     final repository = ref.read(readingSettingsRepositoryProvider);
     final global = await repository.loadGlobal() ?? kBuiltinReadingSettings;
     await _prepareFont(global);
-    final theme = readingThemeOf(await repository.loadThemeId());
+    final theme = await _appearance(
+      readingThemeOf(await repository.loadThemeId()),
+      id: (await ref.read(readingBackgroundsProvider.future)).globalId,
+    );
     // 仓库一次删除排版、主题和亮度覆盖，保留本书想法草稿。
     await repository.clearOverrides(bookId);
     if (!ref.mounted) return;

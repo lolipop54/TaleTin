@@ -9,6 +9,7 @@ import '../view_models/reader_settings_view_model.dart';
 import '../view_models/reader_view_model.dart';
 import 'reader_sheet.dart';
 import 'reader_theme_choices.dart';
+import '../../settings/widgets/reading_background_choices.dart';
 import '../view_models/pdf_book_provider.dart';
 import '../../settings/widgets/settings_slider.dart';
 
@@ -36,7 +37,6 @@ class PanelBrightness extends ConsumerWidget {
 
     return ReaderSheet(
       title: '亮度',
-      maxHeightFactor: 0.55,
       onClose: () => ref.read(readerProvider.notifier).closePanel(),
       child: SingleChildScrollView(
         padding: const EdgeInsets.symmetric(horizontal: GtSpacing.s5),
@@ -88,12 +88,22 @@ class PanelBrightness extends ConsumerWidget {
               ),
             ),
             if (!ref.watch(pdfModeProvider(bookId))) ...[
-            const SizedBox(height: GtSpacing.s4),
-            Container(height: 1, color: colors.borderSubtle),
-            const SizedBox(height: GtSpacing.s3),
-            Text('阅读主题', style: GtText.body(colors.textSecondary).copyWith(fontSize: 14)),
-            const SizedBox(height: GtSpacing.s3),
-            if (!ref.watch(pdfModeProvider(bookId))) ReaderThemeChoices(bookId: bookId),
+              const SizedBox(height: GtSpacing.s4),
+              Container(height: 1, color: colors.borderSubtle),
+              const SizedBox(height: GtSpacing.s3),
+              Text(
+                '阅读主题',
+                style: GtText.body(colors.textSecondary).copyWith(fontSize: 14),
+              ),
+              const SizedBox(height: GtSpacing.s3),
+              ReaderThemeChoices(bookId: bookId),
+              const SizedBox(height: GtSpacing.s3),
+              Text(
+                '阅读背景',
+                style: GtText.body(colors.textSecondary).copyWith(fontSize: 14),
+              ),
+              const SizedBox(height: GtSpacing.s3),
+              ReadingBackgroundChoices(bookId: bookId),
             ],
             const SizedBox(height: GtSpacing.s4),
           ],

@@ -14,6 +14,7 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 import '../../../../platform/channels/reading_fonts.dart';
+import '../../../core/theme/reading_background_texture.dart';
 import '../../../../platform/channels/original_webview_warmup.dart';
 import '../../../../core/diagnostics/opening_experiments.dart';
 import '../../../../core/diagnostics/reader_delivery_experiments.dart';

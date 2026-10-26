@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'turn_trace.dart';
+import '../../../../core/diagnostics/reader_turn_state_diagnostics.dart';
 import '../../../../engine/layout/layout_work_gate.dart';
 
 import 'dart:ui' as ui;
@@ -129,6 +130,23 @@ class _ReaderDisplayTransitionState extends State<ReaderDisplayTransition>
     // 路由负责开书加载层的淡出，内层首屏不重复播放第二段淡化。
     _loading = widget.loadingBackground != null && !widget.ready();
     _opening = _loading;
+    ReaderTurnStateDiagnostics.attach(
+      this,
+      'display',
+      () => {
+        'mounted': mounted,
+        'capturing': _capturing,
+        'loading': _loading,
+        'revealing': _revealing,
+        'opening': _opening,
+        'cover': _cover != null,
+        'checking': _check != null,
+        'completionStored': _finished != null,
+        'version': _version,
+        'animating': _opacity.isAnimating,
+        'animationValue': _opacity.value,
+      },
+    );
     _smooth = _loading;
     if (_loading) LayoutWorkGate.hold(_layoutWorkOwner);
     if (_loading) widget.onWorkChanged?.call(true);
@@ -265,6 +283,7 @@ class _ReaderDisplayTransitionState extends State<ReaderDisplayTransition>
           _scheduleReady();
           return;
         }
+        ReaderTurnStateDiagnostics.record('display.ready');
         traceTurn('load display-readable ${widget.display}');
         unawaited(_reveal());
       });
@@ -275,6 +294,7 @@ class _ReaderDisplayTransitionState extends State<ReaderDisplayTransition>
   Future<void> _reveal() async {
     if (_revealing) return;
     _revealing = true;
+    ReaderTurnStateDiagnostics.record('display.reveal.begin');
     final version = _version;
     final cover = _cover;
     if (_smooth &&
@@ -301,6 +321,7 @@ class _ReaderDisplayTransitionState extends State<ReaderDisplayTransition>
       cover?.dispose();
       finished?.complete();
       if (mounted && version == _version) {
+        ReaderTurnStateDiagnostics.record('display.reveal.end');
         widget.onPresented?.call();
         widget.onReadable?.call();
         LayoutWorkGate.release(_layoutWorkOwner);
@@ -351,6 +372,7 @@ class _ReaderDisplayTransitionState extends State<ReaderDisplayTransition>
 
   @override
   void dispose() {
+    ReaderTurnStateDiagnostics.detach(this);
     LayoutWorkGate.release(_layoutWorkOwner);
     ++_version;
     _check?.cancel();

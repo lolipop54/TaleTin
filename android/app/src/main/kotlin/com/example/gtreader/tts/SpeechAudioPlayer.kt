@@ -31,22 +31,52 @@ internal class SpeechAudioPlayer(
     }
     private var audio: Audio? = null
     private var prepared: Audio? = null
+
+    /**
+     * 提示音等待期间按住发声。按住只影响「出声」，
+     * 不删合成结果、不推进队列，所以续播仍是同一段音频的同一帧。
+     */
+    private var held = false
     private val reportRange = Runnable { reportPlaybackRange() }
     val activeId: String? get() = audio?.id
 
     fun prepare(id: String): File {
-        stop()
+        // 不能用 stop()：那会清掉按住状态，提示音还没放完就会出声。
+        stopCurrent()
+        releasePrepared()
         val file = File.createTempFile("gt-speech-", ".wav", context.cacheDir)
         audio = Audio(id, file)
         return file
     }
 
     fun prepareNext(id: String, text: String): File {
-        prepared?.output?.release()
-        prepared?.file?.delete()
+        releasePrepared()
         val file = File.createTempFile("gt-speech-", ".wav", context.cacheDir)
         prepared = Audio(id, file, text)
         return file
+    }
+
+    /** 暂停当前音频并停下进度上报；之后合成的下一段也等解除按住才发声。 */
+    fun hold() {
+        handler.post {
+            held = true
+            handler.removeCallbacks(reportRange)
+            try {
+                audio?.output?.takeIf { it.isPlaying }?.pause()
+            } catch (_: Exception) {
+                // 播放器已在结束/错误状态时 pause 会抛；按住失败最多和提示音同时响，不影响后续。
+            }
+        }
+    }
+
+    /** 系统交还焦点后从同一帧继续；没有按住或没有可播音频时什么也不做。 */
+    fun resume() {
+        handler.post {
+            if (!held) return@post
+            held = false
+            val current = audio ?: return@post
+            if (current.outputReady) start(current)
+        }
     }
 
     /** 缓存只在 Dart 真正提交同一段时使用，合成完成不能自行推进播放。 */
@@ -112,6 +142,8 @@ internal class SpeechAudioPlayer(
     }
 
     private fun start(current: Audio) {
+        // 提示音期间即使合成已完成，也不许自己出声。
+        if (held) return
         try {
             val output = current.output ?: return
             output.start()
@@ -149,10 +181,11 @@ internal class SpeechAudioPlayer(
     }
 
     fun stop() {
+        // 用户暂停/停止、换章、到时都走这里：按住状态一并清掉，
+        // 之后迟到的焦点归还不能再让它开口。
+        held = false
         stopCurrent()
-        prepared?.output?.release()
-        prepared?.file?.delete()
-        prepared = null
+        releasePrepared()
     }
 
     private fun stopCurrent() {
@@ -161,5 +194,11 @@ internal class SpeechAudioPlayer(
         audio = null
         previous?.output?.release()
         previous?.file?.delete()
+    }
+
+    private fun releasePrepared() {
+        prepared?.output?.release()
+        prepared?.file?.delete()
+        prepared = null
     }
 }

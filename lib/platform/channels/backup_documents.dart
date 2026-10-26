@@ -8,6 +8,10 @@ class BackupDocuments {
 
   /// 打开系统相册，只请求用户选中的一张图片。
   Future<String?> pickImage() => _channel.invokeMethod<String>('pickImage');
+
+  Future<List<String>> pickImages(int limit) async =>
+      await _channel.invokeListMethod<String>('pickImages', {'limit': limit}) ??
+      [];
   Future<String?> create(String name, String mime) =>
       _channel.invokeMethod<String>('create', {'name': name, 'mime': mime});
   Future<void> open(String uri) => _channel.invokeMethod('open', {'uri': uri});

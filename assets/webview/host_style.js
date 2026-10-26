@@ -1,6 +1,7 @@
 /* WebView 宿主页内部的字体、主题与首次显示能力。 */
 (function () {
   'use strict';
+  var backgroundUrl = '', backgroundImage = null, backgroundReady = Promise.resolve();
   var internal = window.__gtHost = window.__gtHost || {};
   var state = internal.state;
   var scaledElements = [];
@@ -306,7 +307,20 @@
     var colors = options.colors;
     if (colors) {
       if (colors.bg) {
-        css += 'html, body { background: ' + colors.bg + ' !important; }\n';
+        if (colors.backgroundImage) {
+          css += 'html { background: ' + (colors.scrollBackground ? 'transparent' :
+            colors.bg + ' url(' + JSON.stringify(colors.backgroundImage) + ') center / 100% 100% no-repeat fixed') + ' !important; }\n';
+          css += 'body { background: transparent !important; }\n';
+        } else css += 'html, body { background: ' + colors.bg + ' !important; }\n';
+        var nextBackground = colors.scrollBackground ? '' : (colors.backgroundImage || '');
+        if (backgroundUrl !== nextBackground) {
+          backgroundUrl = nextBackground;
+          backgroundImage = nextBackground ? new Image() : null;
+          if (backgroundImage) {
+            backgroundImage.src = nextBackground;
+            backgroundReady = backgroundImage.decode();
+          } else backgroundReady = Promise.resolve();
+        }
       }
       if (colors.text) {
         css += 'body { color: ' + colors.text + ' !important; }\n';
@@ -367,6 +381,7 @@
       window.__gtImageDecodeVisible = pixels >= 6 * 1024 * 1024;
     }
     var waits = [];
+    if (backgroundImage) waits.push(backgroundReady);
     try {
       if (document.fonts && document.fonts.ready) {
         waits.push(document.fonts.ready);
@@ -399,6 +414,7 @@
   function prepareImagesRect(left, top, right, bottom) {
     if (!window.__gtImageDecodeVisible) return Promise.resolve();
     var waits = [];
+    if (backgroundImage) waits.push(backgroundReady);
     Array.prototype.slice.call(document.images).forEach(function (image) {
       if (!image.decode) return;
       var rect = image.getBoundingClientRect();
@@ -458,6 +474,7 @@
       return JSON.stringify([appliedFontSize,appliedFamily,appliedFontWeight,
         appliedIndent,appliedLineHeight,appliedParagraphGap,state.margin]);
     },
+    backgroundReady: function () { return backgroundReady; },
     prepareFont: prepareFont
   };
 })();

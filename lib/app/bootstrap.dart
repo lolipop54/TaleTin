@@ -216,7 +216,9 @@ Future<BootstrapResult> prepareApp({
       final ttsChannel = NativeTtsChannel();
       final speechContents = contents;
       final focus = await ListeningAudioFocus.create(
-        () async => listeningHandler.service?.pause(),
+        pause: () async => listeningHandler.service?.pause(),
+        hold: listeningHandler.holdForInterruption,
+        resume: listeningHandler.resumeAfterInterruption,
       );
       listeningHandler.attachController(
         ListeningController(

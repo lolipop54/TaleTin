@@ -16,11 +16,20 @@ import 'turn_trace.dart';
 /// 一页内容的绘制材料。只解码正文图片，不对整页抓图。
 /// 调用方须等 load 完成再展示，并在替换或丢弃过期结果时 dispose。
 class PreparedPage {
-  PreparedPage._(this.page, this._images);
+  PreparedPage._(this.page, this._images, {ui.Image? background})
+    : backgroundImage = background ?? page.theme.texture?.image.clone();
+
+  // 页图、邻页缓存各自持有图片句柄，切换背景释放设置层引用时不影响在途绘制。
+  final ui.Image? backgroundImage;
 
   final PageCanvas page;
   final Map<String, ImageInfo?> _images;
   bool get hasFailedImages => _images.values.any((image) => image == null);
+  int get imageBytes => _images.values.fold(
+    0,
+    (sum, info) =>
+        sum + (info == null ? 0 : info.image.width * info.image.height * 4),
+  );
 
   /// ImageInfo.clone产生独立句柄；比较底层像素身份，避免误用重新加载的图片。
   bool sameImagesAs(PreparedPage other) =>
@@ -35,6 +44,11 @@ class PreparedPage {
 
   /// 动画交给静态页时共享已解码图片，各自持有可独立释放的引用。
   PreparedPage clone() => PreparedPage._(page, {
+    for (final entry in _images.entries) entry.key: entry.value?.clone(),
+  }, background: backgroundImage?.clone());
+
+  /// 复用图片像素，重新绑定本次翻页的外观；不能把预取时的信息行一起冻住。
+  PreparedPage cloneFor(PageCanvas appearance) => PreparedPage._(appearance, {
     for (final entry in _images.entries) entry.key: entry.value?.clone(),
   });
 
@@ -54,6 +68,7 @@ class PreparedPage {
     PageCanvas page,
     ImageConfiguration configuration,
   ) async {
+    final background = page.theme.texture?.image.clone();
     final paths = <String>{
       for (final fragment in page.layout.page(page.pageIndex)?.fragments ?? [])
         if (fragment.block.kind == BlockKind.image &&
@@ -65,20 +80,31 @@ class PreparedPage {
     final label =
         'simplified images chapter=${page.layout.chapterId} '
         'page=${page.pageIndex} count=${paths.length}';
-    final images = await traceTurnStep(
-      label,
-      () => Future.wait(
-        paths.map(
-          (path) => traceTurnStep(
-            '$label image=${paths.toList().indexOf(path)} '
-            'svg=${path.toLowerCase().endsWith('.svg')}',
-            () =>
-                _loadPageImage(File(page.resolveResource(path)), configuration),
+    try {
+      final images = await traceTurnStep(
+        label,
+        () => Future.wait(
+          paths.map(
+            (path) => traceTurnStep(
+              '$label image=${paths.toList().indexOf(path)} '
+              'svg=${path.toLowerCase().endsWith('.svg')}',
+              () => _loadPageImage(
+                File(page.resolveResource(path)),
+                configuration,
+              ),
+            ),
           ),
         ),
-      ),
-    );
-    return PreparedPage._(page, Map.fromIterables(paths, images));
+      );
+      return PreparedPage._(
+        page,
+        Map.fromIterables(paths, images),
+        background: background,
+      );
+    } catch (_) {
+      background?.dispose();
+      rethrow;
+    }
   }
 
   /// SVG 也先生成固定图像，避免扫描中出现占位后补图。
@@ -154,14 +180,31 @@ class PreparedPage {
   }
 
   /// size 是包含页边距的整页尺寸；正文仍按排版时的尺寸居中，不能重新断行。
-  void paint(Canvas canvas, Size size, {PageCanvas? appearance}) {
+  void paint(
+    Canvas canvas,
+    Size size, {
+    PageCanvas? appearance,
+    bool paintBackground = true,
+  }) {
     final page = appearance ?? this.page;
     final content = page.layout.contentSize;
+    final background = identical(page.theme.texture, this.page.theme.texture)
+        ? backgroundImage
+        : page.theme.texture?.image;
     canvas.save();
     canvas.clipRect(Offset.zero & size);
-    canvas.drawRect(Offset.zero & size, Paint()..color = page.theme.background);
-    if (page.information?.bookEdges == true && page.information?.spreadSide == null) {
-      paintBookPaper(canvas, size, page.theme.background);
+    if (paintBackground) {
+      paintReadingBackground(canvas, size, page.theme.background, background);
+    }
+    if (paintBackground &&
+        page.information?.bookEdges == true &&
+        page.information?.spreadSide == null) {
+      paintBookPaper(
+        canvas,
+        size,
+        page.theme.background,
+        backgroundImage: background,
+      );
     }
     page.information?.paint(canvas, size, paintMenu: false);
     canvas.translate(
@@ -232,6 +275,7 @@ class PreparedPage {
   }
 
   void dispose() {
+    backgroundImage?.dispose();
     for (final image in _images.values) {
       image?.dispose();
     }

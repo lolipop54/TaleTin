@@ -8,6 +8,7 @@ import '../../../../core/diagnostics/reader_work_trace.dart';
 
 import '../widgets/completion_prompt.dart';
 import '../widgets/reader_performance.dart';
+import '../widgets/reader_turn_state_boundary.dart';
 import '../widgets/reader_source_changed_page.dart';
 import '../widgets/source_book_opening.dart';
 import '../view_models/reader_source_change.dart';
@@ -73,6 +74,8 @@ import '../widgets/reader_information.dart';
 import '../widgets/fold_frames.dart';
 import '../widgets/page_raster_cache.dart';
 import '../widgets/prepared_page.dart';
+import '../widgets/prepared_page_cache.dart';
+import '../../../../domain/repositories/chapter_content_repository.dart';
 import '../widgets/automatic_scan_area.dart';
 import '../widgets/timed_page_turn.dart';
 import '../widgets/scan_frames.dart';
@@ -112,6 +115,7 @@ part '../widgets/reader_page_area.dart';
 part '../widgets/reader_spread_area.dart';
 part '../widgets/spread_page_content.dart';
 part '../widgets/reader_page_preparation.dart';
+part '../widgets/reader_page_selection.dart';
 part '../widgets/reader_top_bar.dart';
 part '../widgets/reader_bottom_controls.dart';
 part '../widgets/reader_notice.dart';
@@ -167,6 +171,7 @@ class _ReaderScopeState extends ConsumerState<_ReaderScope> {
     _landscape = value;
     unawaited(_window.setReaderLandscape(_orientationOwner, value));
   }
+
   late final AppLifecycleListener _lifecycle;
   late final bool _previousResampling;
   late final Duration _previousSamplingOffset;
@@ -240,7 +245,11 @@ class _ReaderScopeState extends ConsumerState<_ReaderScope> {
   @override
   Widget build(BuildContext context) {
     ref.watch(automaticReadingProvider(widget.bookId));
-    final orientation = ref.watch(readerSettingsProvider(widget.bookId)).value?.fontSettings.landscape;
+    final orientation = ref
+        .watch(readerSettingsProvider(widget.bookId))
+        .value
+        ?.fontSettings
+        .landscape;
     if (orientation != null) _orient(orientation);
     ref.listen(readerProvider, (_, next) {
       if (next.panel != ReaderPanel.brightness &&

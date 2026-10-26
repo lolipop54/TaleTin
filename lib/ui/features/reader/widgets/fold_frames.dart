@@ -6,6 +6,7 @@ import 'page_canvas.dart';
 import 'spread_fold.dart';
 import 'page_fold.dart';
 import 'prepared_page.dart';
+import 'prepared_page_cache.dart';
 import 'page_raster_cache.dart';
 import 'book_paper.dart';
 import '../../../../core/diagnostics/reader_work_trace.dart';
@@ -16,13 +17,15 @@ class FoldFrames {
     : _current = current,
       _target = target,
       bookEdges = current.page.information?.bookEdges ?? false,
-      paper = current.page.theme.background;
+      paper = current.page.theme.background,
+      backgroundImage = current.backgroundImage;
   FoldFrames.spread(
     ui.Image current,
     ui.Image target,
     Size size, {
     required bool backward,
     required this.paper,
+    this.backgroundImage,
     bool edges = false,
   }) : bookEdges = false,
        _current = null,
@@ -36,6 +39,7 @@ class FoldFrames {
   PreparedPage? get preparedCurrent => _current;
   PreparedPage? get preparedTarget => _target;
   final Color paper;
+  final ui.Image? backgroundImage;
   final bool bookEdges;
   final PageRasterCache? _rasterCache;
   ui.Image? _underImage;
@@ -48,6 +52,7 @@ class FoldFrames {
     Size size, {
     required bool backward,
     required this.paper,
+    this.backgroundImage,
     this.bookEdges = false,
   }) : _current = null,
        _target = null,
@@ -151,13 +156,20 @@ class FoldFrames {
     PageCanvas target,
     ImageConfiguration configuration, {
     PageRasterCache? rasterCache,
+    PreparedPageCache? materialCache,
   }) async {
     // 空闲预备未赶上（例如立即跨章）时，也在启动动画前补齐文字指令。
     current.prepareText();
     target.prepareText();
     final pages = await Future.wait([
-      PreparedPage.load(current, configuration),
-      PreparedPage.load(target, configuration),
+      Future<PreparedPage>.value(
+        materialCache?.find(current, configuration) ??
+            PreparedPage.load(current, configuration),
+      ),
+      Future<PreparedPage>.value(
+        materialCache?.find(target, configuration) ??
+            PreparedPage.load(target, configuration),
+      ),
     ]);
     return FoldFrames(pages[0], pages[1], rasterCache);
   }
@@ -191,12 +203,30 @@ class SlideFramesPainter extends CustomPainter {
     final current = backward ? frames._underImage! : frames._turningImage!;
     final target = backward ? frames._turningImage! : frames._underImage!;
     void page(ui.Image image, double x) {
+      // 单独给每页透明边缘补同位置的背景，防止露出静止文字或纯色细线。
+      if (frames.backgroundImage != null) {
+        canvas.save();
+        canvas.translate(x, 0);
+        canvas.clipRect(Offset.zero & size, doAntiAlias: false);
+        paintReadingBackground(
+          canvas,
+          size,
+          frames.paper,
+          frames.backgroundImage,
+        );
+      }
       canvas.drawImageRect(
         image,
         Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
-        Rect.fromLTWH(x, 0, size.width, size.height),
+        Rect.fromLTWH(
+          frames.backgroundImage == null ? x : 0,
+          0,
+          size.width,
+          size.height,
+        ),
         _pagePaint,
       );
+      if (frames.backgroundImage != null) canvas.restore();
     }
 
     canvas.save();

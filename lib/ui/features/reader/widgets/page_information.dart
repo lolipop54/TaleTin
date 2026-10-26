@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
@@ -27,6 +28,7 @@ class PageInformation {
     this.spreadSide,
     this.spread = false,
     this.paper,
+    this.backgroundImage,
   });
   final String chapter, book, progress, clock;
   final int? battery;
@@ -43,6 +45,7 @@ class PageInformation {
   final int? spreadSide;
   final bool spread;
   final Color? paper;
+  final ui.Image? backgroundImage;
 
   /// 翻动页图包含的信息行；分钟、电量、书签或字号变化不能复用旧图。
   Object get paintingKey => (
@@ -64,6 +67,7 @@ class PageInformation {
     spreadSide,
     spread,
     paper,
+    backgroundImage,
   );
 
   TextPainter _text(String text, double fontSize, double width) => TextPainter(
@@ -175,7 +179,9 @@ class PageInformation {
     'bookmarkRibbonRight':
         bookmarkRibbonRight + (bookEdges ? bookEdgeWidth : 0),
     'bookEdges': bookEdges,
-    'bookPaper': bookEdges && paper != null ? bookPaperSvg(paper!) : null,
+    'bookPaper': bookEdges && paper != null
+        ? bookPaperSvg(paper!, hasBackgroundImage: backgroundImage != null)
+        : null,
     'spread': spread,
     'chapter': chapter,
     'book': book,

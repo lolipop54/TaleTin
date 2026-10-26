@@ -41,6 +41,16 @@ class AppErrorStore {
   Future<void> appendListeningFollow(Map<String, Object?> event) =>
       _serial(() => _append(event, 'listening-follow', exitMaxBytes));
 
+  /// 翻页状态批次单独轮换，不能覆盖真实异常；每次批量落盘只同步一次。
+  Future<void> appendReaderTurnState(List<Map<String, Object?>> records) =>
+      _serial(
+        () => _append(
+          {'kind': 'readerTurnStateBatch', 'records': records},
+          'reader-turn-state',
+          1048576,
+        ),
+      );
+
   Future<void> appendReaderRecovery(Map<String, Object?> event) =>
       _serial(() => _append(event, 'reader-recovery', 1048576));
 
@@ -93,6 +103,8 @@ class AppErrorStore {
       'listening-follow.jsonl',
       'reader-recovery.previous.jsonl',
       'reader-recovery.jsonl',
+      'reader-turn-state.previous.jsonl',
+      'reader-turn-state.jsonl',
     ]) {
       final file = await _file(name);
       if (await file.exists()) {

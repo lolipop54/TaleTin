@@ -9,25 +9,51 @@ class _PdfContentCache {
   final _readers = <String, IndexedChapterReader>{};
   final _preparing = <String, IndexedChapterReader>{};
 
+  IndexedChapterReader _reader(String bookId, Chapter chapter) {
+    final directory = p.dirname(chapter.contentPath);
+    final readerKey = '$bookId/$directory';
+    final reader =
+        _readers.remove(readerKey) ??
+        IndexedChapterReader.open(
+          p.join(library, bookId),
+          p.join(library, bookId, directory),
+          cacheRoot: cache,
+          cacheEpoch: epoch,
+        );
+    _readers[readerKey] = reader;
+    return reader;
+  }
+
   Future<Object?> run((String, Object?) command) async {
     final (operation, argument) = command;
+    if (operation == 'retain') {
+      final (bookId, owner, chapters) =
+          argument as (String, String, List<Chapter>);
+      final groups = <IndexedChapterReader, List<String>>{};
+      for (final chapter in chapters) {
+        groups.putIfAbsent(_reader(bookId, chapter), () => []).add(chapter.id);
+      }
+      for (final entry in _readers.entries) {
+        if (entry.key.startsWith('$bookId/')) {
+          // 直接替换，不能先释放再登记，否则LRU可能在间隙丢掉仍需要的章节。
+          entry.value.cache!.retainReadingChapters(
+            owner,
+            groups[entry.value] ?? const [],
+          );
+        }
+      }
+      return null;
+    }
     if (operation == 'start') {
       final (key, bookId, chapter) = argument as (String, String, Chapter);
-      final directory = p.dirname(chapter.contentPath);
-      final readerKey = '$bookId/$directory';
-      final reader =
-          _readers.remove(readerKey) ??
-          IndexedChapterReader.open(
-            p.join(library, bookId),
-            p.join(library, bookId, directory),
-            cacheRoot: cache,
-            cacheEpoch: epoch,
-          );
-      _readers[readerKey] = reader;
+      final reader = _reader(bookId, chapter);
       while (_readers.length > 2) {
         final idle = _readers.keys
             .where(
-              (k) => !_preparing.containsValue(_readers[k]) && k != readerKey,
+              (k) =>
+                  !_preparing.containsValue(_readers[k]) &&
+                  !_readers[k]!.cache!.hasReadingChapters &&
+                  _readers[k] != reader,
             )
             .firstOrNull;
         if (idle == null) break;

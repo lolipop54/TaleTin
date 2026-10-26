@@ -2,6 +2,28 @@ part of '../repositories/file_chapter_content_repository.dart';
 
 /// 原生句柄只在原有PDFium队列使用；文件和JSON由正文worker持有。
 extension _PdfChapterReading on FileChapterContentRepository {
+  Future<void> _retainPdfChapters(
+    String bookId,
+    Object owner,
+    List<Chapter> chapters,
+  ) async {
+    if (chapters.isEmpty && (_closed || _changing.contains(bookId))) return;
+    await _read(bookId, () async {
+      // 空窗口只释放已有worker，不为退出阅读新建后台任务。
+      if (chapters.isEmpty && _worker == null) return;
+      if (chapters.isNotEmpty &&
+          (!await _indexed(bookId, chapters.first) ||
+              !_pdfBooks.contains(bookId))) {
+        return;
+      }
+      await (await _contentWorker()).pdf('retain', (
+        bookId,
+        identityHashCode(owner).toString(),
+        chapters,
+      ));
+    });
+  }
+
   Future<PdfFile> _pdfFile(String bookId) async {
     final file =
         _pdfReaders.remove(bookId) ??

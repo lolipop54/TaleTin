@@ -161,8 +161,17 @@ abstract class TtsEngine {
   /// 提交一段文本。返回只代表请求已受理，真的开始发声以 [TtsStartedEvent] 为准。
   Future<void> speak(String id, String text);
 
-  /// 停止发声并丢弃未播内容。原生没有真正的暂停，暂停也走这里。
+  /// 停止发声并丢弃未播内容。用户主动暂停也走这里。
   Future<void> stop();
+
+  /// 暂停当前发声但保留播放位置：通知提示音等短暂抢占期间使用。
+  ///
+  /// 与 [stop] 的区别：不丢弃已合成的音频、不推进队列，
+  /// [resumeSpeech] 从同一帧继续，不用重新合成也不会重读整句。
+  Future<void> holdSpeech();
+
+  /// 从 [holdSpeech] 停住的位置继续；没有按住时什么也不做。
+  Future<void> resumeSpeech();
 
   /// 引擎单次可接受的最大文本长度（UTF-16 单元），用于长句拆分上限。
   Future<int> maxSpeechInputLength();

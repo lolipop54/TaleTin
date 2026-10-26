@@ -29,6 +29,11 @@ class _PreparedPageViewState extends State<PreparedPageView> {
   ImageConfiguration? _configuration;
   int _request = 0;
 
+  void _reportReady(PageCanvas page) {
+    page.onPrepared?.call(_ready!);
+    page.onReady?.call();
+  }
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -57,7 +62,7 @@ class _PreparedPageViewState extends State<PreparedPageView> {
     if (_sameContent(_requested, page) &&
         configuration == _configuration &&
         !canReceive) {
-      if (_sameContent(_ready?.page, page)) page.onReady?.call();
+      if (_sameContent(_ready?.page, page)) _reportReady(page);
       return;
     }
     _requested = page;
@@ -77,7 +82,7 @@ class _PreparedPageViewState extends State<PreparedPageView> {
     if (text != null) {
       _ready?.dispose();
       _ready = text;
-      page.onReady?.call();
+      _reportReady(page);
       return;
     }
     PreparedPage.load(page, configuration).then((loaded) {
@@ -88,7 +93,7 @@ class _PreparedPageViewState extends State<PreparedPageView> {
       setState(() {
         _ready?.dispose();
         _ready = loaded;
-        widget.page.onReady?.call();
+        _reportReady(widget.page);
       });
     });
   }

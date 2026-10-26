@@ -15,7 +15,7 @@ class ReaderSheet extends StatelessWidget {
     required this.onClose,
     required this.child,
     this.subtitle,
-    this.maxHeightFactor = 0.82,
+    this.maxHeightFactor = 1,
     this.footer,
     this.collapsible = true,
   });
@@ -24,6 +24,12 @@ class ReaderSheet extends StatelessWidget {
   final String? subtitle;
   final VoidCallback onClose;
   final Widget child;
+
+  /// 面板最高占可用高度的比例，默认 1（状态栏与工具栏之间全部可用）。
+  ///
+  /// 面板本身先按内容收缩，只有内容超过这个上限才在内部滚动。
+  /// 目录这类内容要自己撑满的面板才需要传更小的值，普通设置面板不要再压低，
+  /// 否则明明一屏放得下也要滚动。
   final double maxHeightFactor;
 
   /// 主工具面板向下收起；笔记编辑器仍用关闭图标。

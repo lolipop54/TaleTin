@@ -34,6 +34,7 @@ class PublicationCache {
   final _id =
       '$pid-${DateTime.now().microsecondsSinceEpoch}-${identityHashCode(Object())}';
   final _chapters = <String, Set<String>>{};
+  final _readingChapters = <String, Set<String>>{};
   final _preparing = <String>{};
   int _added = 0;
   bool _checked = false;
@@ -107,11 +108,32 @@ class PublicationCache {
   void pin(String chapter, Iterable<File> files) {
     _chapters.remove(chapter);
     _chapters[chapter] = files.map((file) => file.path).toSet();
-    while (_chapters.length > 4) {
-      _chapters.remove(_chapters.keys.first);
-    }
+    _trimChapters();
     _preparing.clear();
     _saveLease();
+  }
+
+  bool get hasReadingChapters => _readingChapters.isNotEmpty;
+
+  /// 阅读器和动画各自持有窗口，近期章节的LRU不能挤掉仍在使用的图片。
+  void retainReadingChapters(String owner, Iterable<String> chapters) {
+    final ids = chapters.toSet();
+    if (ids.isEmpty) {
+      _readingChapters.remove(owner);
+    } else {
+      _readingChapters[owner] = ids;
+    }
+    _trimChapters();
+    _saveLease();
+  }
+
+  void _trimChapters() {
+    final held = _readingChapters.values.expand((ids) => ids).toSet();
+    while (_chapters.length > 4) {
+      final idle = _chapters.keys.where((id) => !held.contains(id)).firstOrNull;
+      if (idle == null) break;
+      _chapters.remove(idle);
+    }
   }
 
   void _saveLease() {

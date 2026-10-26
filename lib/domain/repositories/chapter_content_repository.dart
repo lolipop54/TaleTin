@@ -53,6 +53,14 @@ abstract class ChapterContentRepository {
     bool textOnly = false,
   });
 
+  /// 阅读窗口持有的章节不参与图片回收；空列表释放该窗口的保护。
+  /// 文件仓库只登记已有/即将生成的资料，不在这里渲染邻页。
+  Future<void> retainReadingChapters(
+    String bookId,
+    Object owner,
+    List<Chapter> chapters,
+  ) async {}
+
   /// 目录位置是可重建资料；内存仓库可直接使用默认的无缓存实现。
   Future<List<TocProgressEntry>?> readTocProgress(
     String bookId,

@@ -33,7 +33,6 @@ class PanelAuto extends ConsumerWidget {
 
     return ReaderSheet(
       title: '自动阅读',
-      maxHeightFactor: 0.75,
       onClose: vm.closePanel,
       child: SingleChildScrollView(
         padding: const EdgeInsets.symmetric(horizontal: GtSpacing.s5),

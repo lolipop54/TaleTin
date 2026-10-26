@@ -1,3 +1,5 @@
+import 'reading_background_texture.dart';
+
 import 'package:flutter/material.dart';
 
 import '../../../domain/models/annotation.dart';
@@ -5,15 +7,70 @@ import 'gt_tokens.dart';
 
 /// 阅读主题：独立于 App 主题，不随系统深色自动覆盖单书选择。
 /// 值来源：设计文档 9.2 阅读主题表。
-enum ReadingTheme {
-  paper('纸白', Color(0xFFF1EDE7), Color(0xFF232425), Color(0xFF636669)),
-  white('明亮', Color(0xFFFCFBFA), Color(0xFF232425), Color(0xFF636669)),
-  green('护眼', Color(0xFFE5EDDF), Color(0xFF283429), Color(0xFF586650)),
-  night('夜间', Color(0xFF121314), Color(0xFFEFEBE6), Color(0xFF9EA1A4));
+class ReadingTheme {
+  const ReadingTheme(
+    this.name,
+    this.label,
+    this.background,
+    this.primary,
+    this.secondary, {
+    this.texture,
+  });
+  static const paper = ReadingTheme(
+    'paper',
+    '纸白',
+    Color(0xFFF1EDE7),
+    Color(0xFF232425),
+    Color(0xFF636669),
+  );
+  static const white = ReadingTheme(
+    'white',
+    '明亮',
+    Color(0xFFFCFBFA),
+    Color(0xFF232425),
+    Color(0xFF636669),
+  );
+  static const green = ReadingTheme(
+    'green',
+    '护眼',
+    Color(0xFFE5EDDF),
+    Color(0xFF283429),
+    Color(0xFF586650),
+  );
+  static const night = ReadingTheme(
+    'night',
+    '夜间',
+    Color(0xFF121314),
+    Color(0xFFEFEBE6),
+    Color(0xFF9EA1A4),
+  );
+  static const values = [paper, white, green, night];
+  final String name;
+  final ReadingBackgroundTexture? texture;
+  String get backgroundId => texture?.id ?? 'solid';
+  bool get isNight => name == night.name;
+  ReadingTheme get base => values.firstWhere((value) => value.name == name);
+  ReadingTheme withBackground(ReadingBackgroundTexture? image) => image == null
+      ? base
+      : ReadingTheme(
+          name,
+          label,
+          background,
+          primary,
+          secondary,
+          texture: image,
+        );
+  @override
+  bool operator ==(Object other) =>
+      other is ReadingTheme &&
+      other.name == name &&
+      identical(other.texture, texture);
+  @override
+  int get hashCode => Object.hash(name, texture);
+  @override
+  String toString() => 'ReadingTheme($name,$backgroundId)';
 
-  const ReadingTheme(this.label, this.background, this.primary, this.secondary);
-
-  /// 全局设置与书内面板共用展示顺序，枚举顺序不参与持久化变更。
+  /// 全局设置与书内面板共用展示顺序，保存名称不随展示顺序改变。
   static const displayOrder = [white, paper, green, night];
 
   /// 面板里的展示名（明亮/柔和/护眼/夜间按参考图，柔和=paper）
@@ -22,32 +79,30 @@ enum ReadingTheme {
   final Color primary;
   final Color secondary;
 
-  Color get speechHighlight => this == ReadingTheme.night
-      ? const Color(0xFF55461F)
-      : const Color(0xFFF5DF8B);
+  Color get speechHighlight =>
+      isNight ? const Color(0xFF55461F) : const Color(0xFFF5DF8B);
 
   /// 阅读页脚手架状态栏图标的亮度
   Brightness get overlayBrightness =>
-      this == ReadingTheme.night ? Brightness.dark : Brightness.light;
+      isNight ? Brightness.dark : Brightness.light;
 
   /// 面板与正文共用底色和文字色，输入区、边界保留必要的明暗区别。
-  GtColors get controlsColors => _controlPalettes[this]!;
+  GtColors get controlsColors => _controlPalettes[base]!;
 }
 
 // 四套固定颜色只生成一次，供 Material、Forui 和正文中的浮动菜单共用。
 final _controlPalettes = {
   for (final theme in ReadingTheme.values)
-    theme: (theme == ReadingTheme.night ? GtColors.dark : GtColors.light)
-        .copyWith(
-          canvas: theme.background,
-          surface: theme.background,
-          subtle: Color.lerp(theme.background, theme.primary, .07),
-          textPrimary: theme.primary,
-          textSecondary: theme.secondary,
-          textMuted: theme.secondary,
-          borderSubtle: Color.lerp(theme.background, theme.primary, .18),
-          borderControl: Color.lerp(theme.background, theme.primary, .55),
-        ),
+    theme: (theme.isNight ? GtColors.dark : GtColors.light).copyWith(
+      canvas: theme.background,
+      surface: theme.background,
+      subtle: Color.lerp(theme.background, theme.primary, .07),
+      textPrimary: theme.primary,
+      textSecondary: theme.secondary,
+      textMuted: theme.secondary,
+      borderSubtle: Color.lerp(theme.background, theme.primary, .18),
+      borderControl: Color.lerp(theme.background, theme.primary, .55),
+    ),
 };
 
 /// 阅读页 UI 参考图中的默认主题是「柔和」（纸色）。
@@ -82,9 +137,8 @@ Color pageHighlightColorOf(AnnotationColor? color) =>
 /// 正文里链接的颜色（设计文档 9.2 的 color.action.primary，浅/深两套）。
 ///
 /// 原书排版模式把它注入 WebView 覆盖原书的链接色——夜间主题下仍要看得清。
-Color readingLinkColor(ReadingTheme theme) => theme == ReadingTheme.night
-    ? GtColors.dark.actionPrimary
-    : GtColors.light.actionPrimary;
+Color readingLinkColor(ReadingTheme theme) =>
+    theme.isNight ? GtColors.dark.actionPrimary : GtColors.light.actionPrimary;
 
 /// `#RRGGBB` 形式的颜色值（注入 WebView 的 CSS 用）。
 String hexOf(Color color) =>

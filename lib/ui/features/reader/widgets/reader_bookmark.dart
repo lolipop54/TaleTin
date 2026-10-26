@@ -1,6 +1,7 @@
 import 'package:taletin/core/diagnostics/app_errors.dart';
 
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -161,6 +162,7 @@ class ReaderBookmarkLayer extends ConsumerStatefulWidget {
     required this.allowPull,
     required this.topInset,
     required this.paper,
+    this.backgroundImage,
     this.edgeToEdge = false,
   });
   final String bookId;
@@ -168,6 +170,9 @@ class ReaderBookmarkLayer extends ConsumerStatefulWidget {
   final bool allowPull;
   final double topInset;
   final Color paper;
+
+  /// 阅读背景图片；下拉时右上角的补块要和纸面用同一张图，不能画成纯色。
+  final ui.Image? backgroundImage;
   final bool edgeToEdge;
   @override
   ConsumerState<ReaderBookmarkLayer> createState() => _BookmarkLayerState();
@@ -367,33 +372,54 @@ class _BookmarkLayerState extends ConsumerState<ReaderBookmarkLayer>
               offset: Offset(0, offset),
               child: ClipRect(
                 clipper: _PaperClip(widget.topInset),
-                child: Stack(
-                  children: [
-                    widget.child,
-                    // 拖动时条带留在背后的提示区，不能跟着纸面再出现一条。
-                    if (pulling || pending)
-                      Positioned(
-                        top: widget.topInset,
-                        right: _ribbonRight - 3,
-                        width: 22,
-                        height: 31,
-                        child: ColoredBox(color: paper),
-                      ),
-                    if (scrolling && marked && !pulling)
-                      Positioned(
-                        top: widget.topInset,
-                        right: _ribbonRight,
-                        child: IgnorePointer(
-                          child: CustomPaint(
-                            size: Size(
-                              bookmarkRibbonSize.width,
-                              bookmarkRibbonSize.height,
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final pageSize = constraints.biggest;
+                    // 下拉时这块补在页角，盖住纸面自带的那条书签；尺寸要比
+                    // 固定条带略大一圈，背景图和纸面同一段，不能是纯色。
+                    const patchWidth = 22.0, patchHeight = 31.0;
+                    final patch = Rect.fromLTWH(
+                      pageSize.width - (_ribbonRight - 3) - patchWidth,
+                      widget.topInset,
+                      patchWidth,
+                      patchHeight,
+                    );
+                    return Stack(
+                      children: [
+                        widget.child,
+                        // 拖动时条带留在背后的提示区，不能跟着纸面再出现一条。
+                        if (pulling || pending)
+                          Positioned(
+                            top: widget.topInset,
+                            right: _ribbonRight - 3,
+                            width: patchWidth,
+                            height: patchHeight,
+                            child: CustomPaint(
+                              painter: BookmarkCornerPatchPainter(
+                                paper: paper,
+                                backgroundImage: widget.backgroundImage,
+                                pageSize: pageSize,
+                                patch: patch,
+                              ),
                             ),
-                            painter: const BookmarkRibbonPainter(),
                           ),
-                        ),
-                      ),
-                  ],
+                        if (scrolling && marked && !pulling)
+                          Positioned(
+                            top: widget.topInset,
+                            right: _ribbonRight,
+                            child: IgnorePointer(
+                              child: CustomPaint(
+                                size: Size(
+                                  bookmarkRibbonSize.width,
+                                  bookmarkRibbonSize.height,
+                                ),
+                                painter: const BookmarkRibbonPainter(),
+                              ),
+                            ),
+                          ),
+                      ],
+                    );
+                  },
                 ),
               ),
             ),
@@ -427,6 +453,51 @@ class _BookmarkLayerState extends ConsumerState<ReaderBookmarkLayer>
       ),
     );
   }
+}
+
+/// 下拉书签时盖住纸面旧条带的补块。
+///
+/// 它和纸面是同一层坐标：只取背景图对应的那一小块画上去，
+/// 这样换成阅读背景图片后不会在右上角露出一个纯色方块。
+class BookmarkCornerPatchPainter extends CustomPainter {
+  const BookmarkCornerPatchPainter({
+    required this.paper,
+    required this.backgroundImage,
+    required this.pageSize,
+    required this.patch,
+  });
+  final Color paper;
+  final ui.Image? backgroundImage;
+  final Size pageSize;
+  final Rect patch;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.drawRect(Offset.zero & size, Paint()..color = paper);
+    final image = backgroundImage;
+    if (image == null || pageSize.width <= 0 || pageSize.height <= 0) return;
+    // 背景图按整页拉伸；这里按补块在页面里的位置取同一段源图。
+    final sx = image.width / pageSize.width;
+    final sy = image.height / pageSize.height;
+    canvas.drawImageRect(
+      image,
+      Rect.fromLTWH(
+        patch.left * sx,
+        patch.top * sy,
+        patch.width * sx,
+        patch.height * sy,
+      ),
+      Offset.zero & size,
+      Paint()..filterQuality = FilterQuality.low,
+    );
+  }
+
+  @override
+  bool shouldRepaint(BookmarkCornerPatchPainter old) =>
+      old.paper != paper ||
+      old.backgroundImage != backgroundImage ||
+      old.pageSize != pageSize ||
+      old.patch != patch;
 }
 
 // 下拉和回弹均保持纸面直角，只裁掉顶部安全区。

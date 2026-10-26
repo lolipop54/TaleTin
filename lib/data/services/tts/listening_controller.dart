@@ -23,6 +23,7 @@ import 'tracked_listening_source.dart';
 part 'listening_event_handler.dart';
 part 'listening_window_preparation.dart';
 part 'listening_sleep_policy.dart';
+part 'listening_interruption.dart';
 
 /// 应用级播放调度。只等待提交请求，绝不等待一句读完才接收控制命令。
 class ListeningController implements ListeningService {
@@ -30,6 +31,7 @@ class ListeningController implements ListeningService {
     required this.engine,
     required ListeningSource source,
     this.eventTimeout,
+    this.promptHoldLimit = const Duration(seconds: 60),
     this.positions,
     this.audioFocus,
     this.onContentChanged,
@@ -180,7 +182,13 @@ class ListeningController implements ListeningService {
 
   /// 测试可缩短超时；正式阈值按长度和语速留出合成与朗读余量。
   final Duration? eventTimeout;
+
+  /// 提示音按住的最长时间。系统迟迟不归还焦点就转普通暂停，
+  /// 避免界面一直显示在播却没有声音。与 [eventTimeout] 一样可由测试缩短。
+  final Duration promptHoldLimit;
+
   Timer? _watchdog;
+  Timer? _promptHold;
   final _states = StreamController<ListeningState>.broadcast();
   final _diagnostics = ListeningFollowDiagnostics('playback');
   late final StreamSubscription<TtsEngineEvent> _events;
@@ -229,6 +237,10 @@ class ListeningController implements ListeningService {
 
   int _invalidate() {
     _watchdog?.cancel();
+    // 任何用户意图变化（暂停、停止、换书、翻页交接、定时到期、改设置）
+    // 都作废当前会话，按住状态随之取消：焦点迟到归还不能让它再开口。
+    _promptHold?.cancel();
+    _promptHold = null;
     _activeId = null;
     return ++_epoch;
   }
@@ -671,18 +683,7 @@ class ListeningController implements ListeningService {
         resumeLocator: listeningPosition(unit, _sentOffset),
       ),
     );
-    _watchdog?.cancel();
-    _watchdog = Timer(
-      eventTimeout ??
-          Duration(
-            seconds: 30 + (unit.text.length * 2 / snapshot.speed).ceil(),
-          ),
-      () {
-        if (_activeId == id) {
-          unawaited(_finish(TtsStatus.error, error: '语音回调超时，请重试（$id）'));
-        }
-      },
-    );
+    _armWatchdog();
     await _command(epoch, () async {
       await audioFocus?.acquire();
       // 焦点请求期间可能接到暂停/停止，旧任务不得发声。
@@ -703,6 +704,23 @@ class ListeningController implements ListeningService {
         );
       }
     }
+  }
+
+  /// 提交或续播后重新计时。提示音按住期间不计超时：
+  /// 那不是引擎没响应，不该被当成错误结束整次听书。
+  void _armWatchdog() {
+    final unit = _unit;
+    final id = _activeId;
+    if (unit == null || id == null) return;
+    _watchdog?.cancel();
+    _watchdog = Timer(
+      eventTimeout ??
+          Duration(seconds: 30 + (unit.text.length * 2 / snapshot.speed).ceil()),
+      () {
+        if (_activeId != id || _promptHold != null) return;
+        unawaited(_finish(TtsStatus.error, error: '语音回调超时，请重试（$id）'));
+      },
+    );
   }
 
   Future<void> dispose() async {

@@ -144,7 +144,12 @@ class DriftReadingSettingsRepository implements ReadingSettingsRepository {
           (t) =>
               t.scope.equals(_bookScope) &
               t.scopeId.equals(bookId) &
-              t.key.isIn([_typographyKey, _themeKey, _brightnessKey]),
+              t.key.isIn([
+                _typographyKey,
+                _themeKey,
+                _brightnessKey,
+                'readingBackground',
+              ]),
         ))
         .go();
   }

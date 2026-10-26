@@ -15,6 +15,8 @@ import '../../../core/theme/reading_theme.dart';
 import '../view_models/global_reading_settings.dart';
 import '../widgets/settings_action.dart';
 import '../widgets/typography_cards.dart';
+import '../widgets/reading_background_choices.dart';
+import '../view_models/reading_backgrounds.dart';
 import '../widgets/settings_slider.dart';
 import '../widgets/settings_row.dart';
 import '../widgets/settings_page.dart';
@@ -29,6 +31,7 @@ class GlobalTypographyView extends ConsumerWidget {
     final data = ref.watch(globalSettingsProvider);
     final fonts = ref.watch(currentTypographyFontsProvider).value;
     final current = data.value;
+    final backgrounds = ref.watch(readingBackgroundsProvider);
     final vm = ref.read(globalSettingsProvider.notifier);
     ReadingTheme themeOf(String? id) =>
         ReadingTheme.values.where((theme) => theme.name == id).firstOrNull ??
@@ -64,11 +67,14 @@ class GlobalTypographyView extends ConsumerWidget {
     return Scaffold(
       appBar: GtAppBar(title: const Text('全局字体与排版')),
       body: SafeArea(
-        child: current == null || fonts == null
+        child: current == null || fonts == null || backgrounds.value == null
             ? Center(
-                child: data.hasError
+                child: data.hasError || backgrounds.hasError
                     ? GtButton(
-                        onPressed: () => ref.invalidate(globalSettingsProvider),
+                        onPressed: () {
+                          ref.invalidate(globalSettingsProvider);
+                          ref.invalidate(readingBackgroundsProvider);
+                        },
                         child: const Text('读取失败，点击重试'),
                       )
                     : const SizedBox.shrink(),
@@ -76,7 +82,7 @@ class GlobalTypographyView extends ConsumerWidget {
             : ListView.separated(
                 padding: const EdgeInsets.all(20),
                 separatorBuilder: (context, index) => SizedBox(height: 8),
-                itemCount: 12,
+                itemCount: 13,
                 itemBuilder: (context, index) => SizedBox(
                   height: index >= 2 && index <= 6 ? typographyRowHeight : null,
                   child: [
@@ -247,6 +253,19 @@ class GlobalTypographyView extends ConsumerWidget {
                           onSelect: (v) =>
                               saveSetting(context, () => vm.theme(v.name)),
                         ),
+                      ],
+                    ),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const SizedBox(height: 12),
+                        Text(
+                          '阅读背景',
+                          style: GtText.body(context.gtColors.textPrimary)
+                              .copyWith(fontSize: 14),
+                        ),
+                        const SizedBox(height: 8),
+                        const ReadingBackgroundChoices(),
                       ],
                     ),
                   ][index],

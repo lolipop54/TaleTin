@@ -271,138 +271,165 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
             // 键盘不压缩阅读页：正文与上下信息区都不跟着动，
             // 面板自己按键盘高度让位（ReaderSheet 处理），也不会触发整章重排
             resizeToAvoidBottomInset: false,
-            body: Stack(
-              children: [
-                CompletionPromptHost(bookId: bookId),
-                if (!ref.watch(pdfModeProvider(bookId)))
-                  BookSearchPageHost(
-                    key: ValueKey('search-host-$bookId'),
-                    bookId: bookId,
-                  ),
-                ReaderContentViewport(
-                  child: Builder(
-                    builder: (context) => ReaderBookmarkLayer(
+            body: ReaderTurnStateBoundary(
+              details: {
+                'layout': pageSettings.settings.layoutMode.name,
+                'effect': pageSettings.settings.pageTurnEffect.name,
+                'format': session?.book.format.name,
+                'background':
+                    [
+                      'solid',
+                      'newspaper',
+                      'parchment',
+                      'boat',
+                      'landscape',
+                    ].contains(theme.backgroundId)
+                    ? theme.backgroundId
+                    : 'custom',
+                'backgroundDisposed': theme.texture?.disposed,
+                'controls': state.controlsVisible,
+                'panel': state.panel.name,
+                'selection': state.selection != null,
+                'note': state.note != null,
+                'chapter': session?.chapterIndex,
+                'page': session?.pageIndex,
+                'settingsReady': loaded != null,
+                'sourceChanged': sourceChanged,
+              },
+              child: Stack(
+                children: [
+                  CompletionPromptHost(bookId: bookId),
+                  if (!ref.watch(pdfModeProvider(bookId)))
+                    BookSearchPageHost(
+                      key: ValueKey('search-host-$bookId'),
                       bookId: bookId,
-                      paper: theme.background,
-                      edgeToEdge: edgeToEdge,
-                      allowPull:
-                          !scrolling &&
-                          !state.controlsVisible &&
-                          state.selection == null &&
-                          state.note == null,
-                      topInset: showStatusBar
-                          ? MediaQuery.paddingOf(context).top
-                          : 0,
-                      child: _ReadingContent(
-                        state: state,
+                    ),
+                  ReaderContentViewport(
+                    child: Builder(
+                      builder: (context) => ReaderBookmarkLayer(
                         bookId: bookId,
-                        theme: theme,
-                        settings: pageSettings,
+                        paper: theme.background,
+                        backgroundImage: theme.texture?.image,
                         edgeToEdge: edgeToEdge,
-                        // 设置就绪即可在加载层下准备原书网页，真实章名仍参与最终显示条件。
-                        settingsReady:
-                            loaded != null &&
-                            (ReaderDeliveryExperiments.originalParallelOpen ||
-                                !progressTitles.isLoading),
-                        titlesReady: !progressTitles.isLoading,
+                        allowPull:
+                            !scrolling &&
+                            !state.controlsVisible &&
+                            state.selection == null &&
+                            state.note == null,
+                        topInset: showStatusBar
+                            ? MediaQuery.paddingOf(context).top
+                            : 0,
+                        child: _ReadingContent(
+                          state: state,
+                          bookId: bookId,
+                          theme: theme,
+                          settings: pageSettings,
+                          edgeToEdge: edgeToEdge,
+                          // 设置就绪即可在加载层下准备原书网页，真实章名仍参与最终显示条件。
+                          settingsReady:
+                              loaded != null &&
+                              (ReaderDeliveryExperiments.originalParallelOpen ||
+                                  !progressTitles.isLoading),
+                          titlesReady: !progressTitles.isLoading,
+                        ),
                       ),
                     ),
                   ),
-                ),
-                if (state.panel == ReaderPanel.none && !state.controlsVisible)
-                  SearchReturnBar(
-                    bookId: bookId,
-                    theme: theme,
-                    edgeToEdge: edgeToEdge,
-                    paintMenu: scrolling,
-                  ),
-                // 控制层：顶部栏 + 底部工具栏
-                if (controlsState != null) ...[
-                  // 控制栏打开时，正文任意空白处只负责收起，不能把点击透传成翻页。
-                  Positioned.fill(
-                    child: GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onTap: () =>
-                          ref.read(readerProvider.notifier).toggleControls(),
-                    ),
-                  ),
-                  if (controlsState.panel == ReaderPanel.none)
-                    _TopBar(
-                      visible: state.controlsVisible,
-                      state: controlsState,
-                      theme: theme,
+                  if (state.panel == ReaderPanel.none && !state.controlsVisible)
+                    SearchReturnBar(
                       bookId: bookId,
-                    ),
-                  if (!progressTitles.isLoading)
-                    _BottomControls(
-                      key: const ValueKey('reader-bottom-controls'),
-                      visible: state.controlsVisible,
-                      state: controlsState,
                       theme: theme,
-                      bookId: bookId,
+                      edgeToEdge: edgeToEdge,
+                      paintMenu: scrolling,
                     ),
-                ],
-                // 笔记面板：贴在键盘上方的一层，选区留着方便对照着写
-                if (state.note != null) ...[
-                  Positioned.fill(
-                    child: GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onTap: () => ref
-                          .read(readerProvider.notifier)
-                          .requestCloseNoteEditor(),
-                    ),
-                  ),
-                  Align(
-                    alignment: Alignment.bottomCenter,
-                    child: Padding(
-                      padding: EdgeInsets.only(
-                        bottom: MediaQuery.viewInsetsOf(context).bottom,
+                  // 控制层：顶部栏 + 底部工具栏
+                  if (controlsState != null) ...[
+                    // 控制栏打开时，正文任意空白处只负责收起，不能把点击透传成翻页。
+                    Positioned.fill(
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () =>
+                            ref.read(readerProvider.notifier).toggleControls(),
                       ),
-                      child: NoteEditorPanel(
+                    ),
+                    if (controlsState.panel == ReaderPanel.none)
+                      _TopBar(
+                        visible: state.controlsVisible,
+                        state: controlsState,
+                        theme: theme,
                         bookId: bookId,
-                        request: state.note!,
+                      ),
+                    if (!progressTitles.isLoading)
+                      _BottomControls(
+                        key: const ValueKey('reader-bottom-controls'),
+                        visible: state.controlsVisible,
+                        state: controlsState,
+                        theme: theme,
+                        bookId: bookId,
+                      ),
+                  ],
+                  // 笔记面板：贴在键盘上方的一层，选区留着方便对照着写
+                  if (state.note != null) ...[
+                    Positioned.fill(
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => ref
+                            .read(readerProvider.notifier)
+                            .requestCloseNoteEditor(),
                       ),
                     ),
-                  ),
-                ],
-                // 子面板和遮罩共用当前阅读主题。
-                if (state.panel != ReaderPanel.none &&
-                    state.panel != ReaderPanel.search &&
-                    !state.panelCovered)
-                  Positioned(
-                    left: 0,
-                    right: 0,
-                    top: 0,
-                    bottom: readerPanelBottom(context),
-                    child: GestureDetector(
-                      onTap: () =>
-                          ref.read(readerProvider.notifier).closePanel(),
-                      child: Container(color: ReaderSheet.scrimOf(context)),
+                    Align(
+                      alignment: Alignment.bottomCenter,
+                      child: Padding(
+                        padding: EdgeInsets.only(
+                          bottom: MediaQuery.viewInsetsOf(context).bottom,
+                        ),
+                        child: NoteEditorPanel(
+                          bookId: bookId,
+                          request: state.note!,
+                        ),
+                      ),
+                    ),
+                  ],
+                  // 子面板和遮罩共用当前阅读主题。
+                  if (state.panel != ReaderPanel.none &&
+                      state.panel != ReaderPanel.search &&
+                      !state.panelCovered)
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      top: 0,
+                      bottom: readerPanelBottom(context),
+                      child: GestureDetector(
+                        onTap: () =>
+                            ref.read(readerProvider.notifier).closePanel(),
+                        child: Container(color: ReaderSheet.scrimOf(context)),
+                      ),
+                    ),
+                  ReaderPanelViewport(
+                    child: ReaderPanelMotion(
+                      panel:
+                          state.panel == ReaderPanel.none ||
+                              state.panel == ReaderPanel.search ||
+                              state.panelCovered
+                          ? null
+                          : state.panel,
+                      delayOpening: !state.panelCovered,
+                      child:
+                          state.panel == ReaderPanel.none ||
+                              state.panel == ReaderPanel.search ||
+                              state.panelCovered
+                          ? null
+                          : _buildPanel(ref, state),
                     ),
                   ),
-                ReaderPanelViewport(
-                  child: ReaderPanelMotion(
-                    panel:
-                        state.panel == ReaderPanel.none ||
-                            state.panel == ReaderPanel.search ||
-                            state.panelCovered
-                        ? null
-                        : state.panel,
-                    delayOpening: !state.panelCovered,
-                    child:
-                        state.panel == ReaderPanel.none ||
-                            state.panel == ReaderPanel.search ||
-                            state.panelCovered
-                        ? null
-                        : _buildPanel(ref, state),
-                  ),
-                ),
-                // 保留已有正文树，更新期间阻止继续翻页或编辑旧正文。
-                if (sourceChanged)
-                  Positioned.fill(
-                    child: ReaderSourceChangedPage(bookId: bookId),
-                  ),
-              ],
+                  // 保留已有正文树，更新期间阻止继续翻页或编辑旧正文。
+                  if (sourceChanged)
+                    Positioned.fill(
+                      child: ReaderSourceChangedPage(bookId: bookId),
+                    ),
+                ],
+              ),
             ),
           ),
         ),

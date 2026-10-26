@@ -12,6 +12,7 @@ library;
 import 'dart:ui' show FramePhase, FrameTiming;
 import 'dart:async';
 import '../../../../core/diagnostics/reader_turn_diagnostics.dart';
+import '../../../../core/diagnostics/reader_turn_state_diagnostics.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart' show kTouchSlop;
@@ -30,6 +31,7 @@ import 'original_scroll_frames.dart';
 
 part 'page_turn_input.dart';
 part 'page_turn_logging.dart';
+part 'page_turn_state_logging.dart';
 
 /// 翻页方向
 enum PageTurnDirection { forward, backward }
@@ -174,15 +176,18 @@ class _PageTurnAreaState extends State<PageTurnArea>
   int? _pointer;
   final _responseTrace = TurnResponseTrace();
   ReaderTurnTrace? _turnLog;
+  int _stallPageRevision = 0;
 
   // 包括图片/链接判断和落页确认在内，一轮操作结束前不接受新操作。
   // 忙碌期间的新输入整轮忽略，不排队、不补翻。
   Future<void> _finishInput(Future<void> Function() action) async {
     if (_finishingInput) {
+      _stallEvent('action.skipped');
       traceTurn('input skipped reason=finishing $_traceInput');
       return;
     }
     _finishingInput = true;
+    _stallEvent('action.begin');
     final responsePointer = _responseTrace.active;
     final turnLog = _turnLog;
     turnLog?.operationActive = true;
@@ -198,6 +203,7 @@ class _PageTurnAreaState extends State<PageTurnArea>
       _finishingInput = false;
       turnLog?.operationActive = false;
       turnLog?.finish('inputReleased');
+      _stallEvent('action.end');
       traceTurn('input released $_traceInput');
     }
   }
@@ -205,6 +211,7 @@ class _PageTurnAreaState extends State<PageTurnArea>
   @override
   void initState() {
     super.initState();
+    ReaderTurnStateDiagnostics.attach(this, 'pageTurn', _stallState);
     final lifecycle = WidgetsBinding.instance.lifecycleState;
     _dragFrames.setForeground(lifecycle == null || lifecycle == AppLifecycleState.resumed);
     _dragLifecycle = AppLifecycleListener(onStateChange: (state) =>
@@ -242,6 +249,7 @@ class _PageTurnAreaState extends State<PageTurnArea>
   }
 
   void _clearFold() {
+    _stallEvent('fold.clear');
     _foldToken++;
     _landing?.dispose();
     _landing = null;
@@ -259,11 +267,13 @@ class _PageTurnAreaState extends State<PageTurnArea>
     if (widget.effect == PageTurnEffect.none) return;
     final watch = Stopwatch()..start();
     final token = ++_foldToken;
+    _stallEvent('fold.begin', {'direction': direction.name});
     traceTurn('fold begin $_traceInput direction=$direction neighbour=${_neighbour != null}');
     // 分段计时：拖动开始到这一轮折页真正能画出来之间的每一段等待分别记多久。
     // 只统计已有步骤，不额外截图、不额外等待；正式包不采集。
     var mark = watch.elapsedMicroseconds;
     void stage(String name) {
+      _stallEvent('fold.stage.$name');
       final now = watch.elapsedMicroseconds;
       readerPerf('${widget.traceLabel}.${widget.effect.name}.$name', now - mark,
           {'totalUs': now, 'token': token});
@@ -274,8 +284,9 @@ class _PageTurnAreaState extends State<PageTurnArea>
       }
       mark = now;
     }
-    _foldPending = () async {
-      final neighbour = _neighbour ?? await widget.resolvePage?.call(direction);
+    _foldPending = ReaderTurnStateDiagnostics.step('fold.prepare', () async {
+      final neighbour = _neighbour ?? await traceTurnStep<Widget?>('fold.resolve-neighbour',
+          () async => await widget.resolvePage?.call(direction));
       stage('resolve');
       if (!mounted || token != _foldToken) {
         traceTurn('fold discarded stage=resolve token=$token $_traceInput mounted=$mounted');
@@ -286,7 +297,8 @@ class _PageTurnAreaState extends State<PageTurnArea>
         traceTurn('fold no-neighbour $_traceInput');
         return;
       }
-      final frames = await widget.prepareFold?.call(direction);
+      final frames = await traceTurnStep<FoldFrames?>('fold.prepare-images',
+          () async => await widget.prepareFold?.call(direction));
       stage('prepare');
       if (!mounted || token != _foldToken) {
         traceTurn('fold discarded stage=prepare token=$token $_traceInput mounted=$mounted');
@@ -303,12 +315,16 @@ class _PageTurnAreaState extends State<PageTurnArea>
       if (const bool.fromEnvironment('GT_PROFILE_CAPTURE')) {
         debugPrint('TURN_READY ${widget.traceLabel} ${watch.elapsedMicroseconds}us');
       }
-    }();
+    });
   }
 
   @override
   void didUpdateWidget(PageTurnArea oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.turnId != widget.turnId) _stallPageRevision++;
+    _stallEvent('widget.update', {'pageChanged': oldWidget.turnId != widget.turnId,
+      'revisionChanged': oldWidget.inputRevision != widget.inputRevision,
+      'effectChanged': oldWidget.effect != widget.effect});
     // 真的翻过去了：清掉冻结的相邻页与位移，回到稳定态
     if (oldWidget.inputRevision != widget.inputRevision ||
         oldWidget.effect != widget.effect ||
@@ -333,11 +349,13 @@ class _PageTurnAreaState extends State<PageTurnArea>
       _neighbour = null;
       _offset = 0;
       _dragged = 0;
+      _stallEvent('widget.reset');
     }
   }
 
   @override
   void dispose() {
+    ReaderTurnStateDiagnostics.detach(this);
     _dragLifecycle.dispose();
     _dragFrames.dispose();
     if (turnTraceEnabled || const bool.fromEnvironment('GT_PROFILE_CAPTURE') || const bool.fromEnvironment('GT_TRACE_FRAMES')) {
@@ -691,6 +709,7 @@ class _PageTurnAreaState extends State<PageTurnArea>
   Size get _foldSize => widget.spread ? Size(context.size!.width / 2, context.size!.height) : context.size!;
 
   Future<void> _animateTo(double target, {bool cornerTap = false, bool tap = false}) {
+    _stallEvent('animation.begin');
     final turnLog = _turnLog;
     turnLog?.event('animation.begin', [_offset, target, tap, cornerTap]);
     final watch = readerPerformanceEnabled ? (Stopwatch()..start()) : null;
@@ -733,6 +752,7 @@ class _PageTurnAreaState extends State<PageTurnArea>
     return _controller.forward().orCancel.catchError((Object error) {
       if (error is! TickerCanceled) throw error;
     }).whenComplete(() {
+      _stallEvent('animation.end');
       turnLog?.event('animation.end', [_controller.value]);
       if (watch != null) {
         readerPerf('${widget.traceLabel}.${widget.effect.name}.animation',

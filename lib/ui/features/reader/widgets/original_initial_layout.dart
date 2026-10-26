@@ -49,6 +49,14 @@ extension _OriginalInitialLayout on _OriginalBodyState {
           ? c.information
           : null,
     );
+    if (c.themeColors?['backgroundImage'] != null) {
+      await _evaluate(
+        frame,
+        'window.__gtHost.style.backgroundReady()',
+        async: true,
+      );
+      if (!_alive(frame) || frame.styleKey != key) return;
+    }
     if (ReaderDeliveryExperiments.originalConfigure && !frame.paginated) {
       frame.informationKey = jsonEncode(c.information);
     }

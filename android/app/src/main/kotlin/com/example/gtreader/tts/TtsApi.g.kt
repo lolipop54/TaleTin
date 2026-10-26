@@ -495,10 +495,17 @@ interface TtsHostApi {
   /** 提交一段文本。返回即代表请求已受理，是否真的开始读由 started 事件确认。 */
   fun speak(utteranceId: String, text: String)
   /**
-   * 停止发声并丢弃未播内容。原生没有真正的 pause，暂停也走这里。
+   * 停止发声并丢弃未播内容。用户主动暂停也走这里。
    * 只释放引擎，不销毁线程：之后还能再 [initialize]（在 Dart 侧就是停止听书后重新开始）。
    */
   fun stop()
+  /**
+   * 提示音等短暂抢占期间按住发声：暂停当前音频但保留播放位置，
+   * 不改正文、不丢合成结果，等 [resumeSpeech] 从同一帧继续。
+   */
+  fun holdSpeech()
+  /** 从 [holdSpeech] 停住的位置继续发声；没有按住的音频时什么也不做。 */
+  fun resumeSpeech()
   /**
    * 释放引擎并结束原生线程。只在引擎 detach（应用真正退出）时调用；
    * 调用后这个插件实例不能再初始化。
@@ -688,6 +695,38 @@ interface TtsHostApi {
         }
       }
       run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.gtreader.TtsHostApi.holdSpeech$separatedMessageChannelSuffix", codec, taskQueue)
+        if (api != null) {
+          channel.setMessageHandler { _, reply ->
+            val wrapped: List<Any?> = try {
+              api.holdSpeech()
+              listOf(null)
+            } catch (exception: Throwable) {
+              TtsApiPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.gtreader.TtsHostApi.resumeSpeech$separatedMessageChannelSuffix", codec, taskQueue)
+        if (api != null) {
+          channel.setMessageHandler { _, reply ->
+            val wrapped: List<Any?> = try {
+              api.resumeSpeech()
+              listOf(null)
+            } catch (exception: Throwable) {
+              TtsApiPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
         val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.gtreader.TtsHostApi.shutdown$separatedMessageChannelSuffix", codec, taskQueue)
         if (api != null) {
           channel.setMessageHandler { _, reply ->
@@ -768,7 +807,7 @@ class TtsEventsFlutterApi(private val binaryMessenger: BinaryMessenger, private 
           }
         } else {
           continuation.resumeWithException(TtsApiPigeonUtils.createConnectionError(channelName))
-        }
+        } 
       }
     }
   }

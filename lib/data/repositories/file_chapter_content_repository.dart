@@ -86,6 +86,13 @@ class FileChapterContentRepository implements ChapterContentRepository {
   final _pdfBooks = <String>{};
   final _pdfReaders = <String, Future<PdfFile>>{};
   final _pdfClosings = <Future<void>>{};
+
+  @override
+  Future<void> retainReadingChapters(
+    String bookId,
+    Object owner,
+    List<Chapter> chapters,
+  ) => _retainPdfChapters(bookId, owner, chapters);
   final _manifests = <String, Future<ChapterManifest?>>{};
   final _publicationResources = <String, (String, Set<String>)>{};
   final _pendingChapters = <String, Future<ChapterContent>>{};

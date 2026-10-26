@@ -17,6 +17,7 @@ import '../../../../engine/selection/selection_rects.dart' show CaretGeometry;
 import '../../../../domain/models/book_document.dart';
 import '../../../core/theme/reading_theme.dart';
 import 'prepared_page_view.dart';
+import 'prepared_page.dart';
 import 'page_information.dart';
 import 'selection_handles.dart';
 import 'thought_marker.dart';
@@ -39,6 +40,7 @@ class PageCanvas extends StatelessWidget {
     this.information,
     this.textCache,
     this.onReady,
+    this.onPrepared,
   });
 
   final ChapterLayout layout;
@@ -49,6 +51,9 @@ class PageCanvas extends StatelessWidget {
 
   /// 图片与正文齐备后报告当前页可绘制，供跳转遮盖判断何时撤去。
   final VoidCallback? onReady;
+
+  /// 借出静态页已解码的图片；接收方需要长期保存时必须clone。
+  final ValueChanged<PreparedPage>? onPrepared;
 
   /// 选区高亮矩形（页内容盒坐标，由引擎按选区算出来）
   final List<Rect> selectionRects;

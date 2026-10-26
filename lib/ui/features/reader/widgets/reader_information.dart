@@ -47,6 +47,7 @@ PageInformation readerInformation(
     bookmarked: bookmarked,
     bookEdges: settings.bookEdges,
     paper: theme.background,
+    backgroundImage: theme.texture?.image,
     spreadSide: spreadSide,
     spread: settings.spreadEnabled && spreadSide == null,
     fontFamily: Theme.of(context).textTheme.bodyMedium?.fontFamily,

@@ -80,6 +80,10 @@ class NativeTtsEngine implements TtsEngine, PreparedTtsEngine {
   @override
   Future<void> stop() => channel.stop();
   @override
+  Future<void> holdSpeech() => channel.holdSpeech();
+  @override
+  Future<void> resumeSpeech() => channel.resumeSpeech();
+  @override
   Future<int> maxSpeechInputLength() => channel.maxSpeechInputLength();
   @override
   Future<bool> isLanguageAvailable(String locale) =>

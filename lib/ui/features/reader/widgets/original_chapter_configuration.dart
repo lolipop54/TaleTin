@@ -162,7 +162,9 @@ extension _OriginalChapterConfiguration on _OriginalReaderAreaState {
       onControllerReady: (host) {
         _hosts[ordinal] = host;
         final trace = _turnLog;
-        if (trace != null && trace.endUs == null) host.beginTurnDiagnostics(trace);
+        if (trace != null && trace.endUs == null) {
+          host.beginTurnDiagnostics(trace);
+        }
       },
       onHostEvent: (raw) =>
           _onRawMessage(raw, isNeighbor: isNeighbor, ordinal: ordinal),
@@ -178,6 +180,8 @@ extension _OriginalChapterConfiguration on _OriginalReaderAreaState {
 
   Map<String, String> _themeColors() => {
     'bg': hexOf(widget.theme.background),
+    if (widget.theme.texture != null)
+      'backgroundImage': widget.theme.texture!.url,
     'text': hexOf(widget.theme.primary),
     'link': hexOf(readingLinkColor(widget.theme)),
   };

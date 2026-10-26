@@ -23,6 +23,13 @@ extension _OriginalBodyResources on _OriginalBodyState {
       gtDebugLog('[gt] -> 外部域名，已挡下');
       return _notFound();
     }
+    final background = ReadingBackgroundTexture.bytesFor(url);
+    if (background != null) {
+      return WebResourceResponse(
+        contentType: background.first == 255 ? 'image/jpeg' : 'image/png',
+        data: background,
+      );
+    }
     if (url.path.startsWith('/__gt_fonts/')) {
       final bytes = await traceTurnStep(
         'font-read chapter=${widget.current}',

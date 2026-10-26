@@ -1,7 +1,11 @@
 import 'package:flutter/foundation.dart';
+
 import 'dart:convert';
+
 import 'reader_performance.dart';
-export 'reader_performance.dart' show measureReader, readerPerf, readerPerformanceEnabled;
+import '../../../../core/diagnostics/reader_turn_state_diagnostics.dart';
+export 'reader_performance.dart'
+    show measureReader, readerPerf, readerPerformanceEnabled;
 
 const turnTraceEnabled = bool.fromEnvironment('GT_TRACE_TURN');
 const turnFrameTraceEnabled = bool.fromEnvironment('GT_TRACE_FRAMES');
@@ -30,10 +34,23 @@ void traceTurnFlush(String key) {
 }
 
 /// 只包住已有等待，不增加查询、截图或帧等待；成对编号可识别尚未返回的步骤。
-Future<T> traceTurnStep<T>(String label, Future<T> Function() action) async {
+Future<T> traceTurnStep<T>(String label, Future<T> Function() action) {
+  if (!readerTurnStateDiagnosticsEnabled ||
+      label.contains('command=__gt.drag')) {
+    return _traceTurnStep(label, action);
+  }
+  return ReaderTurnStateDiagnostics.step(
+    label,
+    () => _traceTurnStep(label, action),
+  );
+}
+
+Future<T> _traceTurnStep<T>(String label, Future<T> Function() action) async {
   if (!turnTraceEnabled) {
     // 拖动桥接另做汇总，避免开启诊断后逐点输出反而拖慢跟手。
-    return label.contains('command=__gt.drag') ? action() : measureReader(label, action);
+    return label.contains('command=__gt.drag')
+        ? action()
+        : measureReader(label, action);
   }
   final step = ++_step;
   final watch = Stopwatch()..start();
@@ -43,7 +60,9 @@ Future<T> traceTurnStep<T>(String label, Future<T> Function() action) async {
     traceTurn('step=$step end us=${watch.elapsedMicroseconds} $label');
     return result;
   } catch (error) {
-    traceTurn('step=$step error us=${watch.elapsedMicroseconds} $label type=${error.runtimeType}');
+    traceTurn(
+      'step=$step error us=${watch.elapsedMicroseconds} $label type=${error.runtimeType}',
+    );
     rethrow;
   }
 }

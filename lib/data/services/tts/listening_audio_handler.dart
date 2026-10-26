@@ -39,6 +39,14 @@ class ListeningAudioHandler extends BaseAudioHandler {
   ListeningService? get service => _controller;
   Future<void> flushPosition() async => _controller?.flushPosition();
 
+  /// 通知提示音、导航等短暂抢占期间按住发声；系统交还焦点后再继续。
+  Future<void> holdForInterruption() async =>
+      _controller?.holdForInterruption();
+
+  /// 焦点归还后的续播入口；控制器会再核对会话与用户意图，不会错误恢复。
+  Future<void> resumeAfterInterruption() async =>
+      _controller?.resumeAfterInterruption();
+
   Future<void Function()> suspendBookContent(String bookId) async =>
       await _controller?.suspendBookContent(bookId) ?? () {};
 

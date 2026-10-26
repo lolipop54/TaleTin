@@ -12,18 +12,20 @@ enum ReadingFont { system, song, kai }
 /// 面板字体 → 系统 font family。
 /// 具体字体文件后续随包提供，这里先用系统字体近似。
 String? readingFontFamily(ReadingFont font) => switch (font) {
-      ReadingFont.system => null,
-      ReadingFont.song => 'serif',
-      ReadingFont.kai => 'KaiTi',
-    };
+  ReadingFont.system => null,
+  ReadingFont.song => 'serif',
+  ReadingFont.kai => 'KaiTi',
+};
 
 /// font family → 面板字体（读回持久化设置时用）
 ReadingFont readingFontOf(String? family) => switch (family) {
-      'serif' => ReadingFont.song,
-      'KaiTi' => ReadingFont.kai,
-      _ => ReadingFont.system,
-    };
+  'serif' => ReadingFont.song,
+  'KaiTi' => ReadingFont.kai,
+  _ => ReadingFont.system,
+};
 
 /// 主题 id → 阅读主题；没存过或名字对不上时用内置默认主题
-ReadingTheme readingThemeOf(String? id) =>
-    id == null ? kDefaultReadingTheme : ReadingTheme.values.asNameMap()[id] ?? kDefaultReadingTheme;
+ReadingTheme readingThemeOf(String? id) => id == null
+    ? kDefaultReadingTheme
+    : ReadingTheme.values.where((theme) => theme.name == id).firstOrNull ??
+          kDefaultReadingTheme;

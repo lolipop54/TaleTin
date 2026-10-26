@@ -15,25 +15,32 @@ import java.util.concurrent.Executors
 class BackupDocuments(private val activity: Activity, engine: FlutterEngine) {
     private val io = Executors.newSingleThreadExecutor()
     private var pending: MethodChannel.Result? = null
+    private var multiple = false
     private var output: OutputStream? = null
     private var outputUri: Uri? = null
 
     init {
         MethodChannel(engine.dartExecutor.binaryMessenger, "gtreader/backup_documents")
             .setMethodCallHandler { call, result ->
-                if (call.method == "pick" || call.method == "create" || call.method == "pickImage") {
+                if (call.method == "pick" || call.method == "create" || call.method == "pickImage" || call.method == "pickImages") {
                     if (pending != null) {
                         result.error("busy", "文件选择器已经打开", null)
                     } else {
                         val create = call.method == "create"
+                        multiple = call.method == "pickImages"
+                        val limit = (call.argument<Int>("limit") ?: 1).coerceIn(1, 9)
                         // 封面走相册选择；备份读写仍使用文档选择器。
-                        // 旧系统没有 Photo Picker 时用相册的单图选择，不退回文件管理器。
-                        val intent = if (call.method == "pickImage") {
+                        // 旧系统用相册选择入口，并向支持多选的相册传递多选请求。
+                        val intent = if (call.method == "pickImage" || call.method == "pickImages") {
                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                Intent(MediaStore.ACTION_PICK_IMAGES).apply { type = "image/*" }
+                                Intent(MediaStore.ACTION_PICK_IMAGES).apply {
+                                    type = "image/*"
+                                    if (multiple && limit > 1) putExtra(MediaStore.EXTRA_PICK_IMAGES_MAX, limit)
+                                }
                             } else {
                                 Intent(Intent.ACTION_PICK).apply {
                                     setDataAndType(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "image/*")
+                                    if (multiple && limit > 1) putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
                                 }
                             }
                         } else Intent(if (create) Intent.ACTION_CREATE_DOCUMENT else Intent.ACTION_OPEN_DOCUMENT).apply {
@@ -96,7 +103,17 @@ class BackupDocuments(private val activity: Activity, engine: FlutterEngine) {
         if (request != REQUEST) return false
         val callback = pending
         pending = null
-        callback?.success(if (code == Activity.RESULT_OK) data?.data?.toString() else null)
+        if (multiple) {
+            val uris = linkedSetOf<String>()
+            if (code == Activity.RESULT_OK) {
+                data?.clipData?.let { clip ->
+                    for (i in 0 until clip.itemCount) uris.add(clip.getItemAt(i).uri.toString())
+                }
+                data?.data?.let { uris.add(it.toString()) }
+            }
+            callback?.success(uris.toList())
+        } else callback?.success(if (code == Activity.RESULT_OK) data?.data?.toString() else null)
+        multiple = false
         return true
     }
 

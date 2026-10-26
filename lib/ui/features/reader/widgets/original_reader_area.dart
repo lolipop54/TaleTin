@@ -513,7 +513,9 @@ class _OriginalReaderAreaState extends ConsumerState<OriginalReaderArea>
           line: widget.theme.secondary,
           child: Listener(
             onPointerDown: _readingPointerDown,
-            onPointerMove: readerTurnDiagnosticsEnabled ? _turnPointerMove : null,
+            onPointerMove: readerTurnDiagnosticsEnabled
+                ? _turnPointerMove
+                : null,
             onPointerUp: _readingPointerUp,
             onPointerCancel: _readingPointerCancel,
             child: Stack(
@@ -521,7 +523,12 @@ class _OriginalReaderAreaState extends ConsumerState<OriginalReaderArea>
                 // 底色先铺满：原书文档在分栏完成前是隐藏的，这里保证看到的是主题色
                 // 而不是 WebView 的默认白底（夜间模式下尤其明显）
                 Positioned.fill(
-                  child: ColoredBox(color: widget.theme.background),
+                  child: CustomPaint(
+                    painter: ReadingBackgroundPainter(
+                      widget.theme.background,
+                      widget.theme.texture?.image,
+                    ),
+                  ),
                 ),
                 // WebView固定保留；截图翻页结束后，在目标图遮盖下交回同一宿主。
                 Positioned(
@@ -583,7 +590,8 @@ class _OriginalReaderAreaState extends ConsumerState<OriginalReaderArea>
                 Positioned.fill(
                   child:
                       widget.settings.pageTurnEffect == PageTurnEffect.curl ||
-                          widget.settings.pageTurnEffect == PageTurnEffect.cover ||
+                          widget.settings.pageTurnEffect ==
+                              PageTurnEffect.cover ||
                           widget.settings.pageTurnEffect == PageTurnEffect.slide
                       ? OriginalCurlArea(
                           key: _curlKey,
@@ -727,7 +735,12 @@ class _OriginalReaderAreaState extends ConsumerState<OriginalReaderArea>
                     _jumpCover == null &&
                     _handoverTarget != current)
                   Positioned.fill(
-                    child: ColoredBox(color: widget.theme.background),
+                    child: CustomPaint(
+                      painter: ReadingBackgroundPainter(
+                        widget.theme.background,
+                        widget.theme.texture?.image,
+                      ),
+                    ),
                   ),
                 if (_jumpCover == null && !_everReady)
                   const Center(child: BookLoading()),
@@ -739,7 +752,12 @@ class _OriginalReaderAreaState extends ConsumerState<OriginalReaderArea>
                   ),
                 if (_speech.resuming)
                   Positioned.fill(
-                    child: ColoredBox(color: widget.theme.background),
+                    child: CustomPaint(
+                      painter: ReadingBackgroundPainter(
+                        widget.theme.background,
+                        widget.theme.texture?.image,
+                      ),
+                    ),
                   ),
               ],
             ),
