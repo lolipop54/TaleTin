@@ -27,7 +27,8 @@ class TocVolume {
   final bool collapsible;
 
   bool matches(String query) =>
-      title.contains(query) || chapters.any((entry) => entry.matches(query));
+      (collapsible && title.contains(query)) ||
+      chapters.any((entry) => entry.matches(query));
 }
 
 /// 目录列表里的一行章节。
@@ -47,121 +48,28 @@ class TocEntry {
   bool matches(String query) => title.contains(query);
 }
 
-/// 按真实阅读顺序补齐原目录遗漏的章节，并保留分卷边界。
+/// 已有目录只展示书里明确列出的目标；读取分段、版权段和脚注不是新目录。
+/// 需要从封面恢复的合集章节由解析器确认后写入目录，不在界面再次猜测。
 List<TocVolume> buildTocVolumes(List<TocNode> nodes, List<Chapter> chapters) {
   final ordered = [...chapters]..sort((a, b) => a.ordinal.compareTo(b.ordinal));
-  final indexById = {for (var i = 0; i < ordered.length; i++) ordered[i].id: i};
-  final chapterUseCount = <String, int>{};
-  void countChapterUses(TocNode node) {
-    if (node.chapterId case final id?) {
-      chapterUseCount[id] = (chapterUseCount[id] ?? 0) + 1;
-    }
-    for (final child in node.children) {
-      countChapterUses(child);
-    }
-  }
-
-  for (final node in nodes) {
-    countChapterUses(node);
-  }
-  if (chapterUseCount.values.any((count) => count > 1) ||
-      nodes.any(
-        (node) => node.children.any((child) => child.children.isNotEmpty),
-      )) {
-    return _buildAnchorVolumes(nodes, ordered, indexById);
-  }
-  final titles = <String, String>{};
-  void collectTitles(TocNode node) {
-    if (node.children.isEmpty) {
-      if (node.chapterId case final id?) {
-        final index = indexById[id];
-        titles[id] =
-            index != null &&
-                (node.title.trim().isEmpty ||
-                    node.title == '第 ${ordered[index].ordinal + 1} 章')
-            ? ordered[index].title
-            : node.title;
-      }
-    }
-    for (final child in node.children) {
-      collectTitles(child);
-    }
-  }
-
-  for (final node in nodes) {
-    collectTitles(node);
-  }
-  TocEntry entryAt(int index) {
-    final chapter = ordered[index];
-    return TocEntry(
-      title: titles[chapter.id] ?? chapter.title,
-      chapterId: chapter.id,
-    );
-  }
-
-  int? anchorOf(TocNode node) {
-    if (node.chapterId case final id?) {
-      if (indexById[id] case final index?) return index;
-    }
-    for (final child in node.children) {
-      if (anchorOf(child) case final index?) return index;
-    }
-    return null;
-  }
-
-  final roots = [
-    for (final node in nodes)
-      if (anchorOf(node) case final index?) (node: node, index: index),
-  ]..sort((a, b) => a.index.compareTo(b.index));
-  final volumes = <TocVolume>[];
-  void addLoose(int start, int end) {
-    if (start >= end) return;
-    volumes.add(
+  if (nodes.isEmpty) {
+    return [
       TocVolume(
         title: '全书',
-        chapters: [
-          for (var i = start; i < end; i++)
-            if (entryAt(i).title.trim().isNotEmpty) entryAt(i),
-        ],
         collapsible: false,
+        chapters: [
+          for (final c in ordered)
+            if (c.title.trim().isNotEmpty)
+              TocEntry(title: c.title, chapterId: c.id),
+        ],
       ),
-    );
-  }
-
-  var cursor = 0;
-  for (var i = 0; i < roots.length; i++) {
-    final root = roots[i];
-    final rootTitle =
-        root.node.title == '第 ${ordered[root.index].ordinal + 1} 章'
-        ? ordered[root.index].title
-        : root.node.title;
-    if (root.index < cursor) continue;
-    addLoose(cursor, root.index);
-    final end = i + 1 < roots.length ? roots[i + 1].index : ordered.length;
-    if (root.node.children.isEmpty && end == root.index + 1) {
-      addLoose(root.index, root.index + 1);
-      cursor = root.index + 1;
-      continue;
-    }
-    final entries = [
-      for (var j = root.index; j < end; j++)
-        if (entryAt(j).title.trim().isNotEmpty) entryAt(j),
     ];
-    if (entries.isEmpty) {
-      cursor = end;
-      continue;
-    }
-    if (rootTitle.trim().isEmpty ||
-        (entries.length == 1 &&
-            entries.single.title.trim() == rootTitle.trim())) {
-      addLoose(root.index, end);
-    } else {
-      volumes.add(TocVolume(title: rootTitle, chapters: entries));
-    }
-    cursor = end;
   }
-  addLoose(cursor, ordered.length);
-  return volumes;
+  final ids = {for (final n in nodes) ...n.chapterIds};
+  final represented = ordered.where((c) => ids.contains(c.id)).toList();
+  return _buildAnchorVolumes(nodes, represented, {
+    for (var i = 0; i < represented.length; i++) represented[i].id: i,
+  });
 }
 
 List<TocVolume> _buildAnchorVolumes(
@@ -170,13 +78,7 @@ List<TocVolume> _buildAnchorVolumes(
   Map<String, int> indexById,
 ) {
   final volumes = <TocVolume>[];
-  final represented = <String>{};
   final targets = <(String, String)>{};
-
-  int startOf(TocNode node) =>
-      indexById[node.chapterId] ??
-      (node.children.isEmpty ? chapters.length : startOf(node.children.first));
-  final roots = [...nodes]..sort((a, b) => startOf(a).compareTo(startOf(b)));
   Iterable<TocEntry> entriesOf(TocNode node, int depth) sync* {
     final id = node.chapterId;
     final target = node.fragment?.isNotEmpty == true
@@ -191,7 +93,6 @@ List<TocVolume> _buildAnchorVolumes(
               (child.fragment ?? '') == (node.fragment ?? ''),
         ) &&
         targets.add((id, target))) {
-      represented.add(id);
       yield TocEntry(
         title: node.title,
         chapterId: id,
@@ -204,34 +105,9 @@ List<TocVolume> _buildAnchorVolumes(
     }
   }
 
-  List<TocEntry> missing(int start, int end) => [
-    for (var i = start; i < end; i++)
-      if (!represented.contains(chapters[i].id) &&
-          chapters[i].title.trim().isNotEmpty)
-        TocEntry(title: chapters[i].title, chapterId: chapters[i].id),
-  ];
-  final before = missing(
-    0,
-    roots.isEmpty ? chapters.length : startOf(roots.first),
-  );
-  if (before.isNotEmpty) {
-    volumes.add(TocVolume(title: '全书', chapters: before, collapsible: false));
-  }
-  for (var i = 0; i < roots.length; i++) {
-    final node = roots[i];
+  // 正式目录本身定义阅读顺序。合集的正文文件可能交错，不能再按文件号重排。
+  for (final node in nodes) {
     final entries = entriesOf(node, node.children.isEmpty ? 0 : -1).toList();
-    final end = i + 1 < roots.length ? startOf(roots[i + 1]) : chapters.length;
-    entries.addAll(missing(startOf(node), end));
-    final originalOrder = {
-      for (var index = 0; index < entries.length; index++)
-        entries[index]: index,
-    };
-    entries.sort((a, b) {
-      final byFile = indexById[a.chapterId]!.compareTo(indexById[b.chapterId]!);
-      return byFile == 0
-          ? originalOrder[a]!.compareTo(originalOrder[b]!)
-          : byFile;
-    });
     if (entries.isEmpty) continue;
     volumes.add(
       TocVolume(

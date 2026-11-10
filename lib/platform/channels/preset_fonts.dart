@@ -6,7 +6,7 @@ import 'preset_font_previews.dart';
 
 /// 内置字体的名称和文件共用一份目录；字重在 pubspec 中明确注册。
 /// 部分 Bold 文件内部仍标成 400，不能用 FontLoader 猜测其字重。
-/// 增删步骤见 docs/内置字体维护说明.md；这里的条目顺序就是字体页的内置顺序。
+/// 增删步骤见 docs/工程维护与重构260929-261015/内置字体维护说明.md；这里的条目顺序就是字体页的内置顺序。
 abstract final class PresetFonts {
   /// Android 打包同时按此参数排除完整字体和名称预览，默认仍包含内置字体。
   static const included = bool.fromEnvironment(

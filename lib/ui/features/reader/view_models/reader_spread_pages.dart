@@ -12,10 +12,12 @@ extension ReaderSpreadPages on ReaderSessionNotifier {
     final options = source.layout.options;
     var layout = source.layout;
     final index = source.pageIndex + (forward ? 1 : -1);
-    if (forward && index >= layout.pageCount && !layout.isComplete) {
+    if (index >= 0 &&
+        (index < layout.firstPage ||
+            forward && index >= layout.pageCount && !layout.isComplete)) {
       layout = await layout.ensurePage(index);
     }
-    if (index >= 0 && index < layout.pageCount) {
+    if (layout.page(index) != null) {
       if (snapshot.book.format == BookFormat.pdf) {
         final chapter = snapshot.chapters.firstWhere(
           (c) => c.id == layout.chapterId,

@@ -95,7 +95,7 @@ class StoredDomPositions {
     var total = 0;
     for (final block in content.blocks) {
       offsets.add(total);
-      total += blockTextOf(block).length + 1;
+      total += block.textLength;
     }
     return {
       'total': total,

@@ -35,10 +35,16 @@ List<TocRow> flattenTocRows(
     if (volume.collapsible) {
       rows.add(VolumeHeaderRow(volumeIndex: index, volume: volume));
     }
-    final open = searching || !volume.collapsible || expanded.contains(index);
+    final open = !volume.collapsible || expanded.contains(index);
     if (!open) continue;
+    // 只有卷名匹配时，允许用户手动展开查看全部章节；只要卷内也有匹配，
+    // 就只列匹配章节，不能因为卷名同时命中而混入未匹配项。
+    final wholeVolume =
+        volume.collapsible &&
+        volume.title.contains(query) &&
+        !volume.chapters.any((entry) => entry.matches(query));
     for (final chapter in volume.chapters) {
-      if (!searching || chapter.matches(query)) {
+      if (!searching || wholeVolume || chapter.matches(query)) {
         rows.add(ChapterListRow(chapter));
       }
     }

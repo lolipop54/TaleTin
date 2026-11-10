@@ -18,7 +18,7 @@ final appFontFamilyProvider = FutureProvider<String?>((ref) async {
   if (settings.fontOnlyInReader ||
       settings.fontFamily == null ||
       settings.fontFamily == 'sans-serif' ||
-      (settings.layoutMode.isOriginal && settings.useOriginalFont)) {
+      settings.usesBookFont(settings.layoutMode.forBuild(pdf: false))) {
     return ref.watch(systemFontFamilyProvider.future);
   }
   return ref.read(selectedFontLoaderProvider)(settings.fontFamily);
@@ -27,7 +27,7 @@ final appFontFamilyProvider = FutureProvider<String?>((ref) async {
 /// 排版设置页只展示当前字体；进入字体选择页才加载完整名单和预览。
 final currentTypographyFontsProvider = FutureProvider<Map<String, String?>>((ref) async {
   final settings = (await ref.watch(globalSettingsProvider.future)).typography;
-  if (!(settings.layoutMode.isOriginal && settings.useOriginalFont)) {
+  if (!settings.usesBookFont(settings.layoutMode.forBuild(pdf: false))) {
     await ref.read(selectedFontLoaderProvider)(settings.fontFamily);
   }
   return ReadingFonts.loadedNames;

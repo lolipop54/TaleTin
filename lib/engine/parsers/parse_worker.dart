@@ -232,11 +232,16 @@ void _writeManifest(ParseRequest request, BookDocument document) {
   final file = File(p.join(request.workDir, 'manifest.json'));
   file.parent.createSync(recursive: true);
   final manifest = document.toManifestJson();
+  if (request.format == BookFormat.txt) {
+    manifest['txtHeadingRevision'] = txtHeadingRulesRevision;
+  }
   manifest['positionRules'] = sourcePositionRules(
     request.format.code,
     charset: request.txt?.charset,
     chapterPattern: request.txt?.chapterPattern,
     forceSections: request.txt?.forceSectionFallback ?? false,
+    usesIndentedTxtHeadings: document.usesIndentedTxtHeadings,
+    usesCombinedTxtHeadings: document.usesCombinedTxtHeadings,
   );
   file.writeAsStringSync(jsonEncode(manifest), flush: false);
   SourcePositionCache.write(request.workDir, document.locationMatches);

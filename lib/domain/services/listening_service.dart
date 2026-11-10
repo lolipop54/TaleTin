@@ -30,9 +30,6 @@ abstract class ListeningService {
   /// 独立试听任务；先暂停正文，结束后仍保持暂停，不更新阅读位置。
   Future<void> previewVoice(OfflineVoice voice);
 
-  /// 可见阅读页提供的页首；页面隐藏/释放时传空。只拆后续任务，不中断发声。
-  void setPageBoundaries(Object owner, List<Locator> boundaries);
-
   /// 从 [locator] 所在的句子开始听。
   ///
   /// 已有同一本书的暂停会话、且用户没有手动移位时，接着那个会话读；

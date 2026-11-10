@@ -1,3 +1,4 @@
+import '../../engine/styles/chapter_styler.dart';
 import 'dart:convert';
 import 'dart:async';
 import 'dart:io';
@@ -105,7 +106,7 @@ void _runChapterWorker(SendPort ready) {
           cache.remove(key) ??
           SearchChapter(
             args[9] as ChapterContent? ??
-                ChapterContent.fromJson(
+                ChapterStyler.decode(
                   (jsonDecode(
                     File(args[1] as String).readAsStringSync(),
                   ) as Map).cast<String, Object?>(),

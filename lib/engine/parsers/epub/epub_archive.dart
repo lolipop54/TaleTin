@@ -118,6 +118,31 @@ class EpubArchive {
 
   int get entryCount => _entries?.sizes.length ?? _archive?.files.length ?? 0;
 
+  /// 全部条目路径（归档内相对路径）。用于一次性列出书内 CSS，供统一 CSS
+  /// 解析在规则原位置展开 `@import`；不读取内容。
+  Iterable<String> get entryPaths sync* {
+    final entries = _entries;
+    if (entries != null) {
+      yield* entries.sizes.keys;
+      return;
+    }
+    final root = _directory;
+    if (root != null) {
+      final directory = Directory(root);
+      if (directory.existsSync()) {
+        for (final file in directory.listSync(recursive: true)) {
+          if (file is! File) continue;
+          final relative = p.relative(file.path, from: root);
+          yield relative.replaceAll('\\', '/');
+        }
+      }
+      return;
+    }
+    for (final entry in _archive?.files ?? const <ArchiveFile>[]) {
+      if (!entry.isDirectory) yield entry.name;
+    }
+  }
+
   /// 按规范化后的归档内路径查找条目。
   ArchiveFile? find(String entryPath) {
     final normalized = normalizeEntryPath(entryPath);

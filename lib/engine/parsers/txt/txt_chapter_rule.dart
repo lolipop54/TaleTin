@@ -15,12 +15,18 @@ class TxtHeading {
     required this.lineIndex,
     required this.title,
     required this.kind,
+    this.partTitle,
+    this.volumeTitle,
   });
 
   /// 标题在文本里的行号（0 起）
   final int lineIndex;
   final String title;
   final TxtHeadingKind kind;
+
+  /// 合写章题自带的篇名（可省略）和卷名。
+  final String? partTitle;
+  final String? volumeTitle;
 }
 
 class TxtChapterRule {
@@ -36,25 +42,48 @@ class TxtChapterRule {
   /// 这里直接拒绝，配合「只测短行」共同限制执行时间。
   static const int maxPatternLength = 200;
 
-  static final RegExp _volume = RegExp(r'^第\s*[0-9〇零一二三四五六七八九十百千万两]+\s*[卷部篇册]');
-  static final RegExp _chapter = RegExp(r'^第\s*[0-9〇零一二三四五六七八九十百千万两]+\s*[章节回]');
+  static const _number = r'第\s*[0-9〇零一二三四五六七八九十百千万两]+\s*';
+  static final RegExp _volume = RegExp('^$_number[卷部篇册]');
+  static final RegExp _chapter = RegExp('^$_number[章节回]');
   static final RegExp _english = RegExp(r'^(Chapter|CHAPTER)\s+[0-9IVXLC]+');
+  static final RegExp _indentedChinese = RegExp(r'^[ \t\u3000]+第');
+  static final RegExp _encodedMiddleDot = RegExp(
+    r'(?:(?:&#0*38;|&amp;)#|&#)(?:0*183|x0*b7|0*12539);|&middot;',
+    caseSensitive: false,
+  );
+  static final RegExp _combined = RegExp(
+    r'^(?:(?<part>[^·・•]+[篇部])\s*[·・•]\s*)?'
+    '(?<volume>$_number[卷部篇册])'
+    r'\s*(?:[·・•]\s*(?<volumeName>[^·・•]+?)?\s*(?:[·・•]\s*)?)?'
+    '(?<chapter>$_number[章节回].*)\$',
+  );
 
   /// 句号、分号仍作为正文线索；问号、叹号、省略号常见于独立章题。
   static final RegExp _sentencePunctuation = RegExp(r'[。；]');
 
   /// 判断一行是否为标题；不是则返回 null。
   ///
-  /// 两道防误判门槛：
-  /// 1. 有首行缩进的行一定是正文段落（中文小说标题顶格书写）；
-  /// 2. 内置规则额外排除带句子标点的行，例如「第二章的内容如下。」
-  ///    ——这行虽然以「第二章」开头，但明显是正文。
-  TxtHeading? matchLine(String rawLine, int lineIndex) {
-    if (rawLine.isEmpty || hasIndent(rawLine)) return null;
+  /// 缩进章题需要空行和独立编号共同确认，以免把正文段落当成标题。
+  TxtHeading? matchLine(
+    String rawLine,
+    int lineIndex, {
+    bool afterBlankLine = false,
+  }) {
+    if (rawLine.isEmpty) return null;
     final pattern = customPattern;
-    // 内置章题只能以“第”或C开头；明显的正文无需再次规范化整行。
-    // normalizeInline可能移除的其余前导空白仍走旧判断，自定义规则也不筛。
-    if (pattern == null) {
+    if (pattern == null && afterBlankLine) {
+      final combined = _matchCombined(rawLine, lineIndex);
+      if (combined != null) return combined;
+    }
+    final indented = hasIndent(rawLine);
+    if (indented) {
+      if (pattern != null ||
+          !afterBlankLine ||
+          !_indentedChinese.hasMatch(rawLine)) {
+        return null;
+      }
+    } else if (pattern == null) {
+      // 内置顶格标题只检查可能以“第”或 C 开头的行，保留原先允许的前导空白。
       final possible = switch (rawLine.codeUnitAt(0)) {
         0x7b2c || 0x43 || 0x0a || 0x0d || 0x0c || 0x0b || 0x85 || 0xa0 => true,
         _ => false,
@@ -81,21 +110,47 @@ class TxtChapterRule {
 
     if (_sentencePunctuation.hasMatch(title)) return null;
 
-    if (_volume.hasMatch(title)) {
-      return TxtHeading(
-        lineIndex: lineIndex,
-        title: title,
-        kind: TxtHeadingKind.volume,
-      );
+    final volume = _volume.firstMatch(title);
+    final match =
+        volume ?? _chapter.firstMatch(title) ?? _english.firstMatch(title);
+    if (match == null) return null;
+    // 例如「第二章 回城」可以是标题，「第二章的事」仍留在正文里。
+    if (indented && match.end < title.length && title[match.end] != ' ') {
+      return null;
     }
-    if (_chapter.hasMatch(title) || _english.hasMatch(title)) {
-      return TxtHeading(
-        lineIndex: lineIndex,
-        title: title,
-        kind: TxtHeadingKind.chapter,
-      );
+    return TxtHeading(
+      lineIndex: lineIndex,
+      title: title,
+      kind: volume != null ? TxtHeadingKind.volume : TxtHeadingKind.chapter,
+    );
+  }
+
+  static TxtHeading? _matchCombined(String rawLine, int lineIndex) {
+    // 编码后的中点比实际字符长。先低成本筛掉普通段落，再检查显示长度。
+    if (rawLine.length > maxHeadingLength * 3) return null;
+    final first = rawLine.indexOf('第');
+    if (first < 0 || rawLine.indexOf('第', first + 1) < 0) return null;
+    final title = normalizeInline(rawLine).replaceAllMapped(
+      _encodedMiddleDot,
+      (match) => match[0]!.endsWith('12539;') ? '・' : '·',
+    );
+    if (title.length > maxHeadingLength ||
+        _sentencePunctuation.hasMatch(title)) {
+      return null;
     }
-    return null;
+    final match = _combined.firstMatch(title);
+    if (match == null) return null;
+    final volume = match.namedGroup('volume')!;
+    final volumeName = match.namedGroup('volumeName')?.trim();
+    return TxtHeading(
+      lineIndex: lineIndex,
+      title: match.namedGroup('chapter')!,
+      kind: TxtHeadingKind.chapter,
+      partTitle: match.namedGroup('part')?.trim(),
+      volumeTitle: volumeName == null || volumeName.isEmpty
+          ? volume
+          : '$volume·$volumeName',
+    );
   }
 
   /// 是否以缩进开头（全角空格、半角空格、制表符）。

@@ -1,14 +1,13 @@
 import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 
 import '../../../../app/di/statistics_providers.dart';
 import '../../../../app/di/source_book_providers.dart';
 import '../../../../core/diagnostics/reader_work_trace.dart';
 import '../../../core/widgets/book_loading.dart';
 import '../../../core/widgets/gt_button.dart';
-import '../../bookshelf/view_models/prepare_shelf_return.dart';
+import 'reader_leave.dart';
 import '../view_models/automatic_reading.dart';
 import '../view_models/reader_session_view_model.dart';
 import '../view_models/reader_settings_view_model.dart';
@@ -96,14 +95,14 @@ class _SourceChangedState extends ConsumerState<ReaderSourceChangedPage> {
         () => ref.read(readingStatisticsServiceProvider).leaveVisual(),
       );
       if (!mounted) return;
-      await prepareShelfReturn(ref);
+      await prepareShelfReturnForExit(ref);
       if (!mounted) return;
       setState(() => _canPop = true);
       await traceReaderWork(
         'reader.exit.source.frame',
         () => WidgetsBinding.instance.endOfFrame,
       );
-      if (mounted) context.pop();
+      if (mounted) leaveReaderPage(context);
     });
   }
 

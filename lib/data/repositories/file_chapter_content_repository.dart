@@ -16,9 +16,13 @@ import '../../core/diagnostics/reader_work_trace.dart';
 import '../../domain/models/book_document.dart';
 import '../../domain/models/locator.dart';
 import '../../engine/normalization/source_position_matcher.dart';
+import '../../engine/styles/chapter_styler.dart';
+import '../../engine/layout/math_typesetting.dart';
 import '../../domain/repositories/chapter_content_repository.dart';
 import '../../domain/services/text_preparation.dart';
-import '../../engine/parsers/epub/epub_parser.dart';
+import '../services/refresh_legacy_publication_styles.dart';
+import '../../domain/models/source_content_index.dart';
+import '../services/recover_publication_toc.dart';
 import '../services/recover_txt_toc.dart';
 import '../services/book_source_path.dart';
 import '../services/enrich_epub_content.dart';
@@ -31,11 +35,6 @@ import '../../engine/parsers/pdf/pdf_page_pictures.dart';
 import '../../domain/services/toc_entry_index.dart';
 
 part '../services/pdf_chapter_reading.dart';
-
-Future<List<TocNode>> _recoverLegacyToc(
-  String sourcePath,
-  List<Chapter> chapters,
-) => Isolate.run(() => EpubParser.resolveLegacyToc(sourcePath, chapters));
 
 // 独立入口只捕获路径与快照；不能把持有连接/在途任务的正文仓库发送出去。
 typedef _PositionWork = (String, String?, String, List<Chapter>, List<Locator>);
@@ -139,7 +138,7 @@ class FileChapterContentRepository implements ChapterContentRepository {
     }
     final file = File(chapterAbsolutePath(bookId, chapter));
     if (!await file.exists()) return null;
-    return ChapterContent.fromJson(
+    return _decodeChapter(
       (jsonDecode(await file.readAsString()) as Map).cast<String, Object?>(),
     );
   }
@@ -187,6 +186,19 @@ class FileChapterContentRepository implements ChapterContentRepository {
     String bookId,
     Chapter chapter, {
     bool textOnly = false,
+  }) => _requestChapter(bookId, chapter, textOnly: textOnly);
+
+  @override
+  Future<ChapterContent> chapterForProgressLayout(
+    String bookId,
+    Chapter chapter,
+  ) => _requestChapter(bookId, chapter, prepareLayoutDigest: true);
+
+  Future<ChapterContent> _requestChapter(
+    String bookId,
+    Chapter chapter, {
+    bool textOnly = false,
+    bool prepareLayoutDigest = false,
   }) => traceReaderWork(
     'content.repository',
     () => _read(
@@ -199,7 +211,7 @@ class FileChapterContentRepository implements ChapterContentRepository {
                         _chapters['$bookId/${chapter.id}'] ??
                             _readChapterFile(bookId, chapter, textOnly: true),
                       )
-                    : _chapter(bookId, chapter))
+                    : _chapter(bookId, chapter, prepareLayoutDigest))
                 .whenComplete(() {
                   _pendingChapters.remove(
                     '$bookId/${chapter.contentPath}/${textOnly ? 'text' : 'body'}',
@@ -295,10 +307,18 @@ class FileChapterContentRepository implements ChapterContentRepository {
     _worker = null;
   }
 
-  Future<ChapterContent> _chapter(String bookId, Chapter chapter) async {
+  Future<ChapterContent> _chapter(
+    String bookId,
+    Chapter chapter,
+    bool prepareLayoutDigest,
+  ) async {
     if (await _indexed(bookId, chapter)) {
       if (_pdfBooks.contains(bookId)) return _pdfChapter(bookId, chapter);
-      return (await _contentWorker()).chapter(bookId, chapter);
+      return (await _contentWorker()).chapter(
+        bookId,
+        chapter,
+        prepareLayoutDigest: prepareLayoutDigest,
+      );
     }
     final key = '$bookId/${chapter.id}';
     final cached = _chapters[key];
@@ -309,6 +329,21 @@ class FileChapterContentRepository implements ChapterContentRepository {
       return cached;
     }
     var content = await _readChapterFile(bookId, chapter);
+    if (chapter.href != null &&
+        (content.displaySourceJson == null ||
+            content.displaySourceJson?['htmlPresentation'] != 3 ||
+            content.displaySourceJson?['linkSemantics'] != true ||
+            content.displaySourceJson?['codeLines'] == null ||
+            (content.displaySourceJson?['computed'] == true &&
+                content.displaySourceJson?['fontSizeDeclarations'] == null &&
+                content.displaySourceJson?['css'] == null))) {
+      content = await refreshLegacyPublicationStyles(
+        content,
+        chapter,
+        p.dirname(chapterAbsolutePath(bookId, chapter)),
+        bookSourcePath(p.join(libraryRoot, bookId), 'epub'),
+      );
+    }
     if (chapter.href != null &&
         content.epubDetailsRevision < kEpubDetailsRevision) {
       final raw = content;
@@ -349,7 +384,7 @@ class FileChapterContentRepository implements ChapterContentRepository {
       if (decoded is! Map) {
         throw ContentFailure(ContentErrorCode.corrupted, file.path);
       }
-      return ChapterContent.fromJson(decoded.cast<String, Object?>());
+      return _decodeChapter(decoded.cast<String, Object?>());
     } on FormatException catch (error) {
       throw ContentFailure(
         ContentErrorCode.corrupted,
@@ -435,11 +470,23 @@ class FileChapterContentRepository implements ChapterContentRepository {
     if (tocRevision < kTocRevision && chapters.isNotEmpty) {
       final epub = chapters.any((chapter) => chapter.href != null);
       final directory = p.join(libraryRoot, bookId);
-      final source = File(bookSourcePath(directory, epub ? 'epub' : 'txt'));
+      final rawIndex = manifest?['sourceIndex'];
+      final index = rawIndex is Map
+          ? SourceContentIndex.fromJson(rawIndex.cast<String, dynamic>())
+          : null;
+      final source = File(
+        bookSourcePath(directory, index?.format ?? (epub ? 'epub' : 'txt')),
+      );
       if (await source.exists()) {
         try {
           if (epub) {
-            final recovered = await _recoverLegacyToc(source.path, chapters);
+            final recovered = await recoverPublicationToc(
+              sourcePath: source.path,
+              bookDirectory: directory,
+              contentDirectory: file.parent.path,
+              chapters: chapters,
+              index: index,
+            );
             if (recovered.isNotEmpty) nodes = recovered;
           } else {
             nodes = await recoverTxtToc(
@@ -487,6 +534,8 @@ class FileChapterContentRepository implements ChapterContentRepository {
     int contentVersion,
     String resourcePath,
   ) {
+    final formula = MathTypesetting.resourceFile(resourcePath);
+    if (formula != null) return formula;
     final store = _publicationResources['$bookId/$contentVersion'];
     if (store != null &&
         resourcePath.startsWith('res/') &&
@@ -570,3 +619,10 @@ class FileChapterContentRepository implements ChapterContentRepository {
     }
   }
 }
+
+/// 解码一章正文：补样式表（旧缓存没有时按旧字段建表），然后丢掉旧显示字段。
+///
+/// 读出后的正文只有样式表与 `styleId`；测量和绘制都从样式表取样式，
+/// 旧字段只在解析/迁移阶段作为「建表原料」使用。
+ChapterContent _decodeChapter(Map<String, Object?> json) =>
+    ChapterStyler.toStylesOnly(ChapterStyler.apply(ChapterStyler.decode(json)));

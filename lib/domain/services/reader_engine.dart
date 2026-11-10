@@ -24,6 +24,8 @@ class LayoutRequest {
     required this.chapter,
     required this.content,
     required this.options,
+    this.targetFirst = false,
+    this.allowPageRestart = false,
   });
 
   final String bookId;
@@ -33,6 +35,10 @@ class LayoutRequest {
 
   /// 排版参数（设置 + 内容区尺寸 + TextScaler）
   final LayoutOptions options;
+
+  /// 进度跳转优先交付当前页，后续页可以在画面交接后补排。
+  final bool targetFirst;
+  final bool allowPageRestart;
 }
 
 abstract class ReaderEngine {

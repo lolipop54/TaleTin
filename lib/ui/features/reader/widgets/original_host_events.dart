@@ -89,8 +89,7 @@ extension _OriginalHostEvents on _OriginalReaderAreaState {
     if (isNeighbor) {
       final slot = _slotMounted(event.chapterIndex);
       if (event is HostPaginated && slot != null && !slot.ready) {
-        final waiting = _pageReady.remove(event.chapterIndex);
-        if (waiting != null && !waiting.isCompleted) waiting.complete(true);
+        _neighborReadiness.complete(event.chapterIndex, true);
         final since = slot.since;
         gtDebugLog(
           '[gt] ${slot.label}第 ${event.chapterIndex + 1} 章已就绪'
@@ -113,7 +112,10 @@ extension _OriginalHostEvents on _OriginalReaderAreaState {
           });
         }
       }
-      if (event is HostError) gtDebugLog('[gt] 相邻章报错：${event.message}');
+      if (event is HostError) {
+        _neighborReadiness.complete(event.chapterIndex, false);
+        gtDebugLog('[gt] 相邻章报错：${event.message}');
+      }
       return;
     }
     if (event.chapterIndex != widget.session.chapterIndex) return;
@@ -126,7 +128,6 @@ extension _OriginalHostEvents on _OriginalReaderAreaState {
       // 字号/图片变化只更新几何；页首不能覆盖当前听书显示位置。
       _page = event.page;
       _pageCount = event.pageCount;
-      _speech.boundaryKey = null;
       _speech.key = null;
       _scheduleSpeech();
       return;
@@ -254,6 +255,8 @@ extension _OriginalHostEvents on _OriginalReaderAreaState {
         _onBoundary(atStart, viaSettle: viaSettle);
       case HostLink(:final href):
         _openLink(href);
+      case HostFootnote(:final href, :final x, :final y):
+        _openFootnote(href, viewportPoint: Offset(x, y));
       case HostError(:final message):
         AppErrors.report(
           StateError(message),

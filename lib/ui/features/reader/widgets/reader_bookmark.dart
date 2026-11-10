@@ -163,7 +163,7 @@ class ReaderBookmarkLayer extends ConsumerStatefulWidget {
     required this.topInset,
     required this.paper,
     this.backgroundImage,
-    this.edgeToEdge = false,
+    this.navigationBar = true,
   });
   final String bookId;
   final Widget child;
@@ -173,7 +173,9 @@ class ReaderBookmarkLayer extends ConsumerStatefulWidget {
 
   /// 阅读背景图片；下拉时右上角的补块要和纸面用同一张图，不能画成纯色。
   final ui.Image? backgroundImage;
-  final bool edgeToEdge;
+
+  /// 底部导航栏是否显示；隐藏后条带不再给导航栏（或挖孔）留侧边距离。
+  final bool navigationBar;
   @override
   ConsumerState<ReaderBookmarkLayer> createState() => _BookmarkLayerState();
 }
@@ -181,11 +183,11 @@ class ReaderBookmarkLayer extends ConsumerStatefulWidget {
 class _BookmarkLayerState extends ConsumerState<ReaderBookmarkLayer>
     with SingleTickerProviderStateMixin {
   late final _pdfView = ref.read(pdfViewportProvider(widget.bookId));
-  // 条带在 SafeArea 外，横屏时必须补上画布右侧的导航栏/挖孔留白。
-  // 系统栏隐藏后使用新 inset，不能保留原来的侧边距离。
+  // 条带在 SafeArea 外，横屏时必须补上画布右侧的导航栏留白。
+  // 导航栏隐藏后使用新 inset，不保留摄像头或导航栏的侧边距离。
   double get _ribbonRight =>
       bookmarkRibbonRight +
-      (widget.edgeToEdge ? 0 : MediaQuery.paddingOf(context).right) +
+      (widget.navigationBar ? MediaQuery.paddingOf(context).right : 0) +
       ((ref
                   .watch(readerSettingsProvider(widget.bookId))
                   .value

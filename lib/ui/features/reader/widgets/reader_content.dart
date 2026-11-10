@@ -13,7 +13,30 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
   ReaderState? _closingControls;
   Timer? _controlsExitTimer;
   bool _keepOriginal = false;
+  bool _swipeExiting = false;
   String get bookId => widget.bookId;
+
+  Future<void> _exitBySwipe() async {
+    if (_swipeExiting) return;
+    _swipeExiting = true;
+    // 先给一次轻反馈；保存和书架准备仍按正常退出顺序执行。
+    unawaited(HapticFeedback.lightImpact());
+    try {
+      final scrolling =
+          ref.read(readerSessionProvider(bookId)).value?.scrolling == true;
+      await saveAndLeaveReader(
+        context,
+        ref,
+        bookId,
+        source: scrolling ? 'swipe_left' : 'swipe_up',
+        details: {'scrolling': scrolling},
+      );
+    } catch (error, stack) {
+      AppErrors.report(error, stack, operation: '手势退出阅读失败');
+    } finally {
+      _swipeExiting = false;
+    }
+  }
 
   @override
   void initState() {
@@ -124,6 +147,8 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
     final session = ref.watch(readerSessionProvider(bookId)).value;
     final showStatusBar =
         ref.watch(readingControlsProvider).value?.statusBar ?? true;
+    final showNavigationBar =
+        ref.watch(readingControlsProvider).value?.navigationBar ?? true;
     if (loaded?.settings.layoutMode.isOriginal == true &&
         session?.book.format.usesOriginalWebView == true) {
       _keepOriginal = true;
@@ -139,31 +164,6 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
         ReaderSettingsState.fromGlobal(
           ref.watch(globalReadingPreferencesProvider),
         );
-    final bars = ref.watch(readingControlsProvider).value;
-    final media = MediaQuery.of(context);
-    final edgeToEdge =
-        !settings.pdfMode &&
-        settings.settings.landscape &&
-        media.size.width > media.size.height &&
-        bars?.statusBar == false &&
-        bars?.navigationBar == false;
-    // 全屏横屏的纸面延伸到屏幕边缘；摄像头占位转为正文页边距，
-    // 只影响这次显示，不把设备安全区写进用户保存的排版设置。
-    final safeMargin = math.max(media.padding.left, media.padding.right);
-    final pageSettings = edgeToEdge && safeMargin > 0
-        ? ReaderSettingsState(
-            settings: settings.fontSettings.copyWith(
-              horizontalPadding: math.max(
-                settings.fontSettings.horizontalPadding,
-                safeMargin + 8,
-              ),
-            ),
-            theme: settings.theme,
-            pdf: settings.pdf,
-            brightness: settings.brightness,
-            customBrightness: settings.customBrightness,
-          )
-        : settings;
     final theme = settings.theme;
     // 保存当前显示配置快照，框架在构建子面板时抛错也能知道当时阅读方式。
     AppErrors.reporter.context = {
@@ -189,7 +189,7 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
           'panel': state.panel.name,
           'sourceChanged': sourceChanged,
         })?.finish();
-        if (sourceChanged) return; // 刷新层负责等待保存和退出，避免执行两次返回。
+        if (sourceChanged || _swipeExiting) return; // 已有退出流程时不重复保存和返回。
         if (didPop) {
           return;
         }
@@ -206,35 +206,12 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
             state.panel == ReaderPanel.none &&
             state.selection == null &&
             state.note == null) {
-          await traceReaderWork(
-            'reader.exit.system_back',
-            () async {
-              await traceReaderWork(
-                'reader.exit.system.auto_pause',
-                () =>
-                    ref.read(automaticReadingProvider(bookId).notifier).pause(),
-              );
-              await traceReaderWork(
-                'reader.exit.system.settings',
-                () => ref
-                    .read(readerSettingsProvider(bookId).notifier)
-                    .pendingWrites,
-              );
-              await traceReaderWork(
-                'reader.exit.system.position',
-                () => ref
-                    .read(readerSessionProvider(bookId).notifier)
-                    .flushPendingPosition(),
-              );
-              await traceReaderWork(
-                'reader.exit.system.statistics',
-                () => ref.read(readingStatisticsServiceProvider).leaveVisual(),
-              );
-              if (!context.mounted) return;
-              await prepareShelfReturn(ref);
-              if (context.mounted) context.pop();
-            },
-            {
+          await saveAndLeaveReader(
+            context,
+            ref,
+            bookId,
+            source: 'system_back',
+            details: {
               'layout': settings.settings.layoutMode.name,
               'scrolling': scrolling,
               'controls': state.controlsVisible,
@@ -273,8 +250,8 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
             resizeToAvoidBottomInset: false,
             body: ReaderTurnStateBoundary(
               details: {
-                'layout': pageSettings.settings.layoutMode.name,
-                'effect': pageSettings.settings.pageTurnEffect.name,
+                'layout': settings.settings.layoutMode.name,
+                'effect': settings.settings.pageTurnEffect.name,
                 'format': session?.book.format.name,
                 'background':
                     [
@@ -306,31 +283,48 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
                     ),
                   ReaderContentViewport(
                     child: Builder(
-                      builder: (context) => ReaderBookmarkLayer(
-                        bookId: bookId,
-                        paper: theme.background,
-                        backgroundImage: theme.texture?.image,
-                        edgeToEdge: edgeToEdge,
-                        allowPull:
-                            !scrolling &&
-                            !state.controlsVisible &&
+                      builder: (context) => ReaderSwipeExitGesture(
+                        scrolling: scrolling,
+                        enabled:
+                            ref
+                                    .watch(readingControlsProvider)
+                                    .value
+                                    ?.swipeUpToExit ==
+                                true &&
+                            loaded != null &&
+                            session?.currentAnchor != null &&
+                            !sourceChanged &&
+                            controlsState == null &&
+                            state.panel == ReaderPanel.none &&
                             state.selection == null &&
                             state.note == null,
-                        topInset: showStatusBar
-                            ? MediaQuery.paddingOf(context).top
-                            : 0,
-                        child: _ReadingContent(
-                          state: state,
+                        canSwipe: () =>
+                            !_swipeExiting &&
+                            (!ref.read(pdfModeProvider(bookId)) ||
+                                ref.read(pdfViewportProvider(bookId)).canTurn),
+                        onExit: _exitBySwipe,
+                        child: ReaderBookmarkLayer(
                           bookId: bookId,
-                          theme: theme,
-                          settings: pageSettings,
-                          edgeToEdge: edgeToEdge,
-                          // 设置就绪即可在加载层下准备原书网页，真实章名仍参与最终显示条件。
-                          settingsReady:
-                              loaded != null &&
-                              (ReaderDeliveryExperiments.originalParallelOpen ||
-                                  !progressTitles.isLoading),
-                          titlesReady: !progressTitles.isLoading,
+                          paper: theme.background,
+                          backgroundImage: theme.texture?.image,
+                          navigationBar: showNavigationBar,
+                          allowPull:
+                              !scrolling &&
+                              !state.controlsVisible &&
+                              state.selection == null &&
+                              state.note == null,
+                          topInset: showStatusBar
+                              ? MediaQuery.paddingOf(context).top
+                              : 0,
+                          child: _ReadingContent(
+                            state: state,
+                            bookId: bookId,
+                            theme: theme,
+                            settings: settings,
+                            statusBar: showStatusBar,
+                            navigationBar: showNavigationBar,
+                            settingsReady: loaded != null,
+                          ),
                         ),
                       ),
                     ),
@@ -339,7 +333,8 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
                     SearchReturnBar(
                       bookId: bookId,
                       theme: theme,
-                      edgeToEdge: edgeToEdge,
+                      statusBar: showStatusBar,
+                      navigationBar: showNavigationBar,
                       paintMenu: scrolling,
                     ),
                   // 控制层：顶部栏 + 底部工具栏

@@ -5,6 +5,7 @@ class OriginalTapTarget {
   OriginalTapTarget(Map<String, dynamic> value)
     : image = value['image'] as String?,
       link = value['link'] as String?,
+      footnote = value['footnote'] as String?,
       highlight = value['highlight'] as String?,
       markers = [
         for (final row in value['markers'] as List)
@@ -18,6 +19,6 @@ class OriginalTapTarget {
             ),
           ),
       ];
-  final String? image, link, highlight;
+  final String? image, link, highlight, footnote;
   final List<({String id, Rect rect})> markers;
 }

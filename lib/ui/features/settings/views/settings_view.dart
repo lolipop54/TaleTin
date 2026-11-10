@@ -1,31 +1,25 @@
 import '../../bookshelf/widgets/book_cover_sheet.dart';
 
-import 'package:taletin/ui/core/widgets/gt_switch.dart';
 import 'package:flutter/material.dart';
 
-import '../../../../app/router/main_pages_ready.dart';
 import '../../../../app/export_error_log.dart';
 import '../../../../app/di/theme_providers.dart';
-import '../../../../app/di/reading_controls_providers.dart';
 import '../../../../app/di/statistics_settings_providers.dart';
 import '../../../../domain/repositories/app_theme_repository.dart';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../../../domain/models/reading_settings.dart';
-
 import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/gt_tokens.dart';
 import '../../../core/widgets/decorations.dart';
-import '../view_models/settings_view_model.dart';
-import '../widgets/global_automatic_dialog.dart';
-import '../widgets/settings_action.dart';
 import '../widgets/settings_page.dart';
 import '../view_models/global_reading_settings.dart';
 import '../view_models/backup_view_model.dart';
 import '../../achievements/view_models/notes_providers.dart';
 import '../../../core/widgets/state_views.dart';
 import 'global_typography_view.dart';
+import 'reading_more_settings_view.dart';
+import '../widgets/reading_controls_options.dart';
 import '../view_models/reading_backgrounds.dart';
 import 'statistics_settings_view.dart';
 import 'storage_view.dart';
@@ -33,56 +27,23 @@ import 'about_view.dart';
 import 'backup_view.dart';
 import 'restore_view.dart';
 import 'notes_export_view.dart';
-import '../../reader/view_models/listening_view_state.dart';
-import 'listening_rate_view.dart';
-import '../view_models/listening_preferences.dart';
-import '../../reader/view_models/listening_panel_view_model.dart';
-import '../../reader/view_models/listening_voice_choices.dart';
-import 'listening_voice_view.dart';
 import '../widgets/settings_row.dart';
 
 /// 设置页（参考图 05）。
-/// 分区：外观 / 阅读 / 听书 / 数据 / 关于；统一行高与左右边缘。
+/// 分区：外观 / 阅读 / 数据 / 关于；统一行高与左右边缘。
 class SettingsView extends ConsumerWidget {
   const SettingsView({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final mainReady =
-        context.dependOnInheritedWidgetOfExactType<MainPagesReady>()?.ready ??
-        true;
     final colors = context.gtColors;
-    final preferences = ref.watch(listeningPreferencesProvider);
-    final speech = ref.watch(listeningViewStateProvider).value;
-    final connecting =
-        mainReady && ref.watch(listeningVoicesProvider).isLoading;
-    // 全局默认排版模式；还没读出来时不显示值（也不可点）
-    final layoutMode = ref.watch(globalLayoutModeProvider).value;
-    final pageTurn = ref.watch(globalPageTurnProvider).value;
-    final controls = ref.watch(readingControlsProvider).value;
-    final status = ref.watch(statusInfoVisibleProvider);
-    // 第一屏依赖的偏好一起准备，刷新时 AsyncValue 保留上一份值。
-    if (layoutMode == null ||
-        pageTurn == null ||
-        controls == null ||
-        !status.hasValue ||
-        !preferences.hasValue ||
-        speech == null) {
-      final failed =
-          ref.watch(globalSettingsProvider).hasError ||
-          ref.watch(readingControlsProvider).hasError ||
-          status.hasError ||
-          preferences.hasError;
+    final settings = ref.watch(globalSettingsProvider);
+    if (!settings.hasValue) {
       return Scaffold(
-        body: failed
+        body: settings.hasError
             ? GtErrorView(
                 title: '设置读取失败',
-                onRetry: () {
-                  ref.invalidate(globalSettingsProvider);
-                  ref.invalidate(readingControlsProvider);
-                  ref.invalidate(statusInfoVisibleProvider);
-                  ref.invalidate(listeningPreferencesProvider);
-                },
+                onRetry: () => ref.invalidate(globalSettingsProvider),
               )
             : const SizedBox.shrink(),
       );
@@ -136,113 +97,12 @@ class SettingsView extends ConsumerWidget {
               ),
             ),
             SettingsRow(
-              label: '翻页方式',
-              value: pageTurn.label,
+              label: '更多设置',
               onTap: () => openSettingsPage(
                 context,
-                SettingsChoices<PageTurnEffect>(
-                  title: '翻页方式',
-                  options: PageTurnEffect.values,
-                  label: (v) => v.label,
-                  selected: (ref) => ref
-                      .watch(globalSettingsProvider)
-                      .requireValue
-                      .typography
-                      .pageTurnEffect,
-                  save: (ref, v) =>
-                      ref.read(globalPageTurnProvider.notifier).select(v),
-                ),
+                const ReadingMoreSettingsView(),
+                ready: readingControlsReadyProvider.future,
               ),
-            ),
-            SettingsRow(
-              label: '自动阅读默认值',
-              onTap: () => openSettingsPage(
-                context,
-                const GlobalAutomaticDialog(asPage: true),
-                ready: globalAutomaticProvider.future,
-              ),
-            ),
-            SettingsRow(
-              label: '显示状态信息',
-              // 关掉后阅读页不再画顶部章节信息与底部时间/电量
-              trailing: GtSwitch(
-                value: status.requireValue,
-                onChanged: (_) => saveSetting(
-                  context,
-                  () => ref.read(statusInfoVisibleProvider.notifier).toggle(),
-                ),
-              ),
-            ),
-            SettingsRow(
-              label: '显示系统顶部状态栏',
-              trailing: GtSwitch(
-                value: controls.statusBar,
-                onChanged: (v) => saveSetting(
-                  context,
-                  () => ref
-                      .read(readingControlsProvider.notifier)
-                      .change(statusBar: v),
-                ),
-              ),
-            ),
-            SettingsRow(
-              label: '显示系统底部导航栏',
-              trailing: GtSwitch(
-                value: controls.navigationBar,
-                onChanged: (v) => saveSetting(
-                  context,
-                  () => ref
-                      .read(readingControlsProvider.notifier)
-                      .change(navigationBar: v),
-                ),
-              ),
-            ),
-            SettingsRow(
-              label: '阅读时屏幕常亮',
-              trailing: GtSwitch(
-                value: controls.keepAwake,
-                onChanged: (v) => saveSetting(
-                  context,
-                  () => ref
-                      .read(readingControlsProvider.notifier)
-                      .change(awake: v),
-                ),
-              ),
-            ),
-            SettingsRow(
-              label: '音量键翻页',
-              trailing: GtSwitch(
-                value: controls.volumeKeys,
-                onChanged: (v) => saveSetting(
-                  context,
-                  () => ref
-                      .read(readingControlsProvider.notifier)
-                      .change(keys: v),
-                ),
-              ),
-            ),
-            const SizedBox(height: GtSpacing.s4),
-            _sectionHeader(context, '听书'),
-            if (speech.error != null) Text(speech.error!),
-            SettingsRow(
-              label: '引擎与离线音色',
-              value: connecting
-                  ? '连接中'
-                  : speech.voice != null
-                  ? '${speech.voice!.displayName} · ${speech.voice!.locale}'
-                  : preferences.requireValue.voiceId == null
-                  ? '未选择'
-                  : '${preferences.requireValue.voiceId} · ${preferences.requireValue.locale}',
-              onTap: () => openSettingsPage(
-                context,
-                const ListeningVoiceView(),
-                ready: listeningVoiceChoicesProvider.future,
-              ),
-            ),
-            SettingsRow(
-              label: '语速',
-              value: '${preferences.requireValue.speed.toStringAsFixed(1)}×',
-              onTap: () => openSettingsPage(context, const ListeningRateView()),
             ),
             const SizedBox(height: GtSpacing.s4),
             _sectionHeader(context, '数据'),

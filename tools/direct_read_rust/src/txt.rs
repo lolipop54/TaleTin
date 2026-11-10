@@ -17,34 +17,76 @@ mod tests {
     fn packets_keep_bom_indent_emoji_ranges_and_reuse() {
         let source = "\u{feff}第一章\r\n　😀 a\u{feff}  \n尾";
         for encoding in [0, 1, 2] {
-            let bytes = if encoding == 0 { source.as_bytes().to_vec() } else {
-                source.encode_utf16().flat_map(|u| if encoding == 1 { u.to_le_bytes() } else { u.to_be_bytes() }).collect()
+            let bytes = if encoding == 0 {
+                source.as_bytes().to_vec()
+            } else {
+                source
+                    .encode_utf16()
+                    .flat_map(|u| {
+                        if encoding == 1 {
+                            u.to_le_bytes()
+                        } else {
+                            u.to_be_bytes()
+                        }
+                    })
+                    .collect()
             };
             for chunk in [1, 2, 3, 7, 65536] {
                 let mut scanner = Scanner::new(encoding, 0);
                 let mut packet = Vec::new();
-                for part in bytes.chunks(chunk) { packet.extend(scanner.feed(part, false)); }
+                for part in bytes.chunks(chunk) {
+                    packet.extend(scanner.feed(part, false));
+                }
                 packet.extend(scanner.feed(&[], true));
                 let mut at = 0;
                 let mut rows = Vec::new();
                 let mut reused = 0;
                 while at < packet.len() {
-                    let start = u64::from_le_bytes(packet[at..at+8].try_into().unwrap());
-                    let end = u64::from_le_bytes(packet[at+8..at+16].try_into().unwrap());
-                    let raw_size = u32::from_le_bytes(packet[at+16..at+20].try_into().unwrap()) as usize;
-                    let size = u32::from_le_bytes(packet[at+20..at+24].try_into().unwrap());
-                    let units = u32::from_le_bytes(packet[at+24..at+28].try_into().unwrap()); at += 28;
-                    let raw = String::from_utf8(packet[at..at+raw_size].to_vec()).unwrap(); at += raw_size;
-                    let text = if size == u32::MAX { reused += 1; raw.clone() } else {
-                        let text = String::from_utf8(packet[at..at+size as usize].to_vec()).unwrap(); at += size as usize; text
+                    let start = u64::from_le_bytes(packet[at..at + 8].try_into().unwrap());
+                    let end = u64::from_le_bytes(packet[at + 8..at + 16].try_into().unwrap());
+                    let raw_size =
+                        u32::from_le_bytes(packet[at + 16..at + 20].try_into().unwrap()) as usize;
+                    let size = u32::from_le_bytes(packet[at + 20..at + 24].try_into().unwrap());
+                    let units = u32::from_le_bytes(packet[at + 24..at + 28].try_into().unwrap());
+                    at += 28;
+                    let raw = String::from_utf8(packet[at..at + raw_size].to_vec()).unwrap();
+                    at += raw_size;
+                    let text = if size == u32::MAX {
+                        reused += 1;
+                        raw.clone()
+                    } else {
+                        let text =
+                            String::from_utf8(packet[at..at + size as usize].to_vec()).unwrap();
+                        at += size as usize;
+                        text
                     };
                     rows.push((start, end, raw, text, units));
                 }
-                let bounds = if encoding == 0 { [(0,12),(14,28),(29,32)] } else { [(0,8),(12,28),(30,32)] };
-                assert_eq!(rows, vec![
-                    (bounds[0].0,bounds[0].1,"第一章".into(),"第一章".into(),3),
-                    (bounds[1].0,bounds[1].1,"　😀 a\u{feff}  ".into(),"😀 a\u{feff}".into(),5),
-                    (bounds[2].0,bounds[2].1,"尾".into(),"尾".into(),1)]);
+                let bounds = if encoding == 0 {
+                    [(0, 12), (14, 28), (29, 32)]
+                } else {
+                    [(0, 8), (12, 28), (30, 32)]
+                };
+                assert_eq!(
+                    rows,
+                    vec![
+                        (
+                            bounds[0].0,
+                            bounds[0].1,
+                            "第一章".into(),
+                            "第一章".into(),
+                            3
+                        ),
+                        (
+                            bounds[1].0,
+                            bounds[1].1,
+                            "　😀 a\u{feff}  ".into(),
+                            "😀 a\u{feff}".into(),
+                            5
+                        ),
+                        (bounds[2].0, bounds[2].1, "尾".into(), "尾".into(), 1)
+                    ]
+                );
                 assert_eq!(reused, 2);
             }
         }
@@ -120,10 +162,19 @@ impl Scanner {
         out.extend_from_slice(&self.start.to_le_bytes());
         out.extend_from_slice(&end.to_le_bytes());
         out.extend_from_slice(&(raw.len() as u32).to_le_bytes());
-        out.extend_from_slice(&(if reuse { u32::MAX } else { normalized.len() as u32 }).to_le_bytes());
+        out.extend_from_slice(
+            &(if reuse {
+                u32::MAX
+            } else {
+                normalized.len() as u32
+            })
+            .to_le_bytes(),
+        );
         out.extend_from_slice(&units.to_le_bytes());
         out.extend_from_slice(raw.as_bytes());
-        if !reuse { out.extend_from_slice(normalized.as_bytes()); }
+        if !reuse {
+            out.extend_from_slice(normalized.as_bytes());
+        }
         self.pending.clear();
     }
     fn unit(&mut self, bytes: &[u8], code: u16, out: &mut Vec<u8>) {
@@ -180,15 +231,18 @@ impl Scanner {
             }
             while at < bytes.len() {
                 let end = memchr::memchr2(10, 13, &bytes[at..])
-                    .map(|n| at + n).unwrap_or(bytes.len());
+                    .map(|n| at + n)
+                    .unwrap_or(bytes.len());
                 if end > at {
                     self.after_cr = false;
-                    if self.encoding != 3 { self.pending.extend_from_slice(&bytes[at..end]); }
+                    if self.encoding != 3 {
+                        self.pending.extend_from_slice(&bytes[at..end]);
+                    }
                     self.offset += (end - at) as u64;
                 }
                 at = end;
                 if at < bytes.len() {
-                    self.unit(&bytes[at..at+1], bytes[at] as u16, &mut out);
+                    self.unit(&bytes[at..at + 1], bytes[at] as u16, &mut out);
                     at += 1;
                 }
             }

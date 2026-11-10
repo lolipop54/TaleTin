@@ -12,7 +12,13 @@ class PublicationCache {
     String digest, {
     String? epoch,
   }) : root = p.join(cacheRoot, 'reading'),
-       directory = p.join(cacheRoot, 'reading', bookId, digest, 'content2'),
+       directory = p.join(
+         cacheRoot,
+         'reading',
+         bookId,
+         digest,
+         _contentRevision,
+       ),
        epoch = epoch ?? processEpoch {
     // 上一版的MOBI缓存可以直接沿用，避免升级后保留两份相同的读过内容。
     final previous = Directory(
@@ -28,6 +34,21 @@ class PublicationCache {
     }
   }
 
+  // content30：四边定位进入样式表；正文归属排除已裁掉的标签间空白。
+  // 正文写入和对外图片路径必须共用版本，避免升级后图片写在新目录、读旧目录。
+  // content31：MathML 显示结构和来源节点编号随章节缓存。
+  // content32：CSS 背景资源的来源路径和条件样式依赖随章节保存。
+  // content33：body 相对字号按完整继承链计算，作废此前缺少外层倍率的样式。
+  // content34：hr 浏览器默认样式进入统一样式表。
+  // content36：旧式 HTML 字号改为正文加固定差值，并保留按当前字号重算的来源。
+  // content37：hr currentColor 特殊绘色；强制重建缺少标题声明资料的旧缓存。
+  // content39：章首显示索引同步、代码源码断行及标签边界缩进、NBSP留白和脚注配对。
+  // content41：中英文括号编号与明确回链身份；继承属性按统一注册表传递。
+  // content43：旧式HTML颜色/对齐与圈码脚注；正文和块号保持不变。
+  // content44：列表内段落编号、旧式p对齐与空白段断点重新核对。
+  // content45：hidden 空章题不再产生边距，旧章节原地补齐显示来源。
+  // content46：保留解析后的字体族候选和章内 @font-face 资料。
+  static const _contentRevision = 'content46';
   static final processEpoch = DateTime.now().microsecondsSinceEpoch.toString();
   static const budget = 64 * 1024 * 1024;
   final String root, directory, epoch;
@@ -49,7 +70,7 @@ class PublicationCache {
   static String effectiveRoot(String libraryRoot, String? cacheRoot) =>
       cacheRoot ?? p.join(p.dirname(libraryRoot), 'cache');
   static String assets(String cacheRoot, String bookId, String digest) =>
-      p.join(cacheRoot, 'reading', bookId, digest, 'content2', 'assets');
+      p.join(cacheRoot, 'reading', bookId, digest, _contentRevision, 'assets');
 
   File file(String relative) {
     final path = p.normalize(p.join(directory, relative));
@@ -209,8 +230,13 @@ class PublicationCache {
       if (!book.existsSync() || p.basename(book.path) == '.pins') continue;
       for (final source
           in book.listSync(followLinks: false).whereType<Directory>()) {
-        final chapters = Directory(p.join(source.path, 'content2', 'chapters'));
-        if (chapters.existsSync()) chapters.deleteSync(recursive: true);
+        // 升级后旧版正文目录（content13 等）可能还在，一并清掉；保留 assets。
+        for (final entry
+            in source.listSync(followLinks: false).whereType<Directory>()) {
+          if (!p.basename(entry.path).startsWith('content')) continue;
+          final chapters = Directory(p.join(entry.path, 'chapters'));
+          if (chapters.existsSync()) chapters.deleteSync(recursive: true);
+        }
       }
     }
   }

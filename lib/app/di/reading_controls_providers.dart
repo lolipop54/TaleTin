@@ -20,6 +20,7 @@ class ReadingControlsNotifier extends AsyncNotifier<ReadingControls> {
   Future<void> change({
     bool? awake,
     bool? keys,
+    bool? swipeUpToExit,
     bool? statusBar,
     bool? navigationBar,
   }) {
@@ -29,6 +30,7 @@ class ReadingControlsNotifier extends AsyncNotifier<ReadingControls> {
       final value = ReadingControls(
         keepAwake: awake ?? old.keepAwake,
         volumeKeys: keys ?? old.volumeKeys,
+        swipeUpToExit: swipeUpToExit ?? old.swipeUpToExit,
         statusBar: statusBar ?? old.statusBar,
         navigationBar: navigationBar ?? old.navigationBar,
       );

@@ -7,6 +7,47 @@ import '../../normalization/locator_mapper.dart';
 import 'anchor_locator.dart';
 import 'xhtml_blocks.dart';
 
+/// 目录只需要锚点比例。原生映射不能确认时沿用完整DOM映射，但不为
+/// 已经找到的目标再读取一份带CSS和图片资料的正文。
+Map<String, double?> _htmlAnchorPositions({
+  required String html,
+  required Chapter chapter,
+  required String bookId,
+  required int version,
+  required List<TocTitleRef> titles,
+}) {
+  final fragments = titles.map((t) => t.anchorId).whereType<String>().toList();
+  final native = XhtmlBlockBuilder.anchorPositions(
+    html,
+    chapter.href ?? '',
+    fragments,
+  );
+  if (native != null) return native;
+  final map = ChapterAnchorMap.parse(
+    sanitizedHtml: html,
+    resourceHref: chapter.href ?? '',
+    bookId: bookId,
+    contentVersion: version,
+    chapterId: chapter.id,
+  );
+  final offsets = <String, int>{};
+  var total = 0;
+  for (final block in map.blocks) {
+    offsets[block.id] = total;
+    total += block.textLength;
+  }
+  return {
+    for (final fragment in fragments)
+      fragment: switch (map.locatorOfAnchor(fragment)) {
+        null => null,
+        final target =>
+          total == 0
+              ? 0
+              : offsets[target.blockId]! / total + target.utf16Offset / total,
+      },
+  };
+}
+
 /// 一个正文文件内的目录位置。EPUB 优先用原始锚点，标题仅用于缺失锚点的旧书。
 /// 返回章内比例，调用方再转换为全书进度；不保留整章 DOM。
 List<TocProgressEntry> chapterTocEntries({
@@ -28,20 +69,13 @@ List<TocProgressEntry> chapterTocEntries({
         preparedAnchorPositions ??
         (html == null
             ? null
-            : XhtmlBlockBuilder.anchorPositions(
-                html,
-                chapter.href ?? '',
-                titles.map((title) => title.anchorId).whereType<String>(),
+            : _htmlAnchorPositions(
+                html: html,
+                chapter: chapter,
+                bookId: bookId,
+                version: version,
+                titles: titles,
               ));
-    final map = html == null || nativePositions != null
-        ? null
-        : ChapterAnchorMap.parse(
-            sanitizedHtml: html,
-            resourceHref: chapter.href ?? '',
-            bookId: bookId,
-            contentVersion: version,
-            chapterId: chapter.id,
-          );
     trace?.mark('anchor_map');
     Map<String, double> positions(List<ContentBlock> blocks) {
       final total = blocks.fold<int>(0, (n, block) => n + block.textLength);
@@ -55,9 +89,6 @@ List<TocProgressEntry> chapterTocEntries({
     }
 
     final offsets = positions(content.blocks);
-    final anchorOffsets = map == null ? null : positions(map.blocks);
-    final anchorLength =
-        map?.blocks.fold<int>(0, (n, b) => n + b.textLength) ?? 0;
     final result = <TocProgressEntry>[];
     trace?.mark('offsets');
     for (final title in titles) {
@@ -67,13 +98,6 @@ List<TocProgressEntry> chapterTocEntries({
         fraction = 0; // 无片段的 EPUB 链接指向文件首页，不按标题搜索。
       } else if (nativePositions != null && fragment != null) {
         fraction = nativePositions[fragment];
-      } else if (map != null && fragment != null) {
-        final target = map.locatorOfAnchor(fragment);
-        if (target != null) {
-          fraction =
-              anchorOffsets![target.blockId]! +
-              (anchorLength == 0 ? 0 : target.utf16Offset / anchorLength);
-        }
       }
       if (fraction == null) {
         for (final block in content.blocks) {
@@ -122,21 +146,36 @@ Future<List<TocProgressEntry>> prepareChapterTocEntries({
   Map<String, double?>? preparedAnchorPositions,
   Map<String, double>? preparedTitlePositions,
 }) async {
+  // 先完成小型锚点结果，只有确实需要按正文标题兜底时才读取完整正文。
+  // DOM及其大块资料留在后台，跨线程只传目标比例。
+  final positions =
+      preparedAnchorPositions ??
+      (html == null
+          ? null
+          : await Isolate.run(
+              () => _htmlAnchorPositions(
+                html: html,
+                chapter: chapter,
+                bookId: bookId,
+                version: version,
+                titles: titles,
+              ),
+            ));
   if (!isTxt &&
-      preparedAnchorPositions != null &&
+      positions != null &&
       (preparedTitlePositions != null ||
           titles.every(
             (title) =>
                 title.anchorId == null ||
                 title.anchorId!.isEmpty ||
-                preparedAnchorPositions[title.anchorId] != null ||
+                positions[title.anchorId] != null ||
                 preparedTitlePositions?[title.title] != null,
           ))) {
     final entries = <TocProgressEntry>[];
     for (final title in titles) {
       final fraction = title.anchorId == null || title.anchorId!.isEmpty
           ? 0.0
-          : preparedAnchorPositions[title.anchorId] ??
+          : positions[title.anchorId] ??
                 preparedTitlePositions?[title.title] ??
                 entries.lastOrNull?.progress ??
                 0.0;
@@ -158,7 +197,7 @@ Future<List<TocProgressEntry>> prepareChapterTocEntries({
     titles: titles,
     isTxt: isTxt,
     html: html,
-    preparedAnchorPositions: preparedAnchorPositions,
+    preparedAnchorPositions: positions,
   );
   return html == null ? parse() : Isolate.run(parse);
 }

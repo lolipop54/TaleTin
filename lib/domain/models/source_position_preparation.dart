@@ -6,11 +6,17 @@ import 'locator.dart';
 /// 只在会改变章节、块编号、文字规范化或编码判断时递增；界面改动不影响它。
 const sourcePositionRulesRevision = 1;
 
+/// 记录自动章题检查是否已完成，和书的实际切章规则分别保存。
+const txtHeadingRulesRevision = 2;
+const txtSectionFallbackWarning = '未识别到章节标题，已按固定长度分成小节';
+
 String sourcePositionRules(
   String format, {
   String? charset,
   String? chapterPattern,
   bool forceSections = false,
+  bool usesIndentedTxtHeadings = false,
+  bool usesCombinedTxtHeadings = false,
 }) => jsonEncode([
   sourcePositionRulesRevision,
   kContentVersion,
@@ -18,6 +24,8 @@ String sourcePositionRules(
   if (format == 'mobi' || format == 'azw3') 'libmobi90627420-publication1',
   if (format == 'pdf') 'pdf-text-and-page-map1',
   if (format == 'txt') ...[charset, chapterPattern, forceSections],
+  if (usesIndentedTxtHeadings) 'indented-txt-headings1',
+  if (usesCombinedTxtHeadings) 'combined-txt-headings1',
 ]);
 
 /// 独立于可删除的正文缓存保存，重新导入只在摘要和规则均相同时复用旧坐标。

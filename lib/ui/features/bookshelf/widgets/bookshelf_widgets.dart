@@ -71,28 +71,6 @@ class BookTile extends ConsumerWidget {
       GtSpacing.s1 +
       _lineBox(authorFontSize, authorLineHeight, scaler);
 
-  /// 书名实际占用的高度：用与渲染同一套参数量一次。
-  ///
-  /// 短书名占一行、长书名占两行，量出来的高度决定书名区的高度；剩下的余量
-  /// 留到格子底部，这样同一行里封面尺寸仍然完全等大。
-  static double measureTitleHeight({
-    required String title,
-    required TextStyle style,
-    required TextScaler scaler,
-    required double maxWidth,
-  }) {
-    final painter = TextPainter(
-      text: TextSpan(text: title, style: style),
-      textDirection: TextDirection.ltr,
-      textScaler: scaler,
-      maxLines: titleMaxLines,
-      ellipsis: '…',
-    )..layout(maxWidth: maxWidth);
-    final height = painter.height;
-    painter.dispose();
-    return height;
-  }
-
   /// 条目内容高度：封面（宽高比见 GtSize.coverAspectRatio）+ 间距 + 文字区。
   /// 网格比例与条目自身用同一个公式，保证封面在同一行里完全等大。
   static double contentHeightFor(double width, TextScaler scaler) =>
@@ -120,14 +98,6 @@ class BookTile extends ConsumerWidget {
           selected ? colors.actionPrimary : colors.textPrimary,
           family: Theme.of(context).textTheme.bodyMedium?.fontFamily,
         ).copyWith(fontSize: titleFontSize, height: titleLineHeight);
-        // 书名实际占几行就占多高，余下的高度留到格子底部
-        final titleHeight = measureTitleHeight(
-          title: book.title,
-          style: titleStyle,
-          scaler: scaler,
-          maxWidth: w,
-        );
-        final titleSlack = titleBlockHeight(scaler) - titleHeight;
         return GtButton.raw(
           borderRadius: BorderRadius.circular(GtRadius.control),
           onPressed:
@@ -208,28 +178,32 @@ class BookTile extends ConsumerWidget {
                 ),
               ),
               const SizedBox(height: GtSpacing.s2),
-              // 书名最多两行，作者紧跟在书名下面；书名区不足两行的余量补到
-              // 格子底部，这样同一行里封面尺寸仍然完全等大。
+              // 固定整个文字区高度，让Text自己排一次；作者仍紧跟实际书名，
+              // 短书名余量留在底部，不再为了算余量额外创建TextPainter。
               SizedBox(
-                height: titleHeight,
-                child: Text(
-                  book.title,
-                  maxLines: titleMaxLines,
-                  overflow: TextOverflow.ellipsis,
-                  style: titleStyle,
+                height: textBlockHeight(scaler),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      book.title,
+                      maxLines: titleMaxLines,
+                      overflow: TextOverflow.ellipsis,
+                      style: titleStyle,
+                    ),
+                    const SizedBox(height: GtSpacing.s1),
+                    Text(
+                      book.author.isEmpty ? '未知作者' : book.author,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: GtText.caption(colors.textMuted).copyWith(
+                        fontSize: authorFontSize,
+                        height: authorLineHeight,
+                      ),
+                    ),
+                  ],
                 ),
               ),
-              const SizedBox(height: GtSpacing.s1),
-              Text(
-                book.author.isEmpty ? '未知作者' : book.author,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: GtText.caption(
-                  colors.textMuted,
-                ).copyWith(fontSize: authorFontSize, height: authorLineHeight),
-              ),
-              // 短书名的富余高度：留在底部，保证封面等大
-              if (titleSlack > 0) SizedBox(height: titleSlack),
             ],
           ),
         );

@@ -2,9 +2,9 @@ import 'dart:math' as math;
 
 import 'package:flutter/painting.dart';
 
-import '../../domain/models/book_document.dart';
 import '../../domain/models/locator.dart';
 import '../layout/chapter_layout.dart';
+import '../layout/line_text_geometry.dart';
 
 /// 听书范围使用与 PageCanvas 相同的片段分组、字距及断行回退。
 /// 返回内容盒坐标；不修改选区，也不参与分页。
@@ -38,17 +38,40 @@ List<Rect> speechRectsForPage({
     final end = order == last
         ? to.utf16Offset + block.displayPrefixLength
         : block.text.length;
-    final width = (block.layoutWidth ?? layout.options.contentWidthFor(block.kind));
-    final justify = block.tableId == null && switch (block.kind) {
-      BlockKind.paragraph || BlockKind.listItem || BlockKind.footnote => true,
-      _ => false,
-    };
-    double spacing(int i) =>
-        block.justifySpacingFor(i, maxWidth: width, enabled: justify,
-          textScaler: layout.options.textScaler);
-    var top = fragment.y;
+    final width =
+        (block.layoutWidth ?? layout.options.contentWidthFor(block.kind));
+    if (block.hasSegmentedText) {
+      var top = fragment.y + block.textTopOf(fragment.lineFrom);
+      for (var i = fragment.lineFrom; i < fragment.lineTo; i++) {
+        rects.addAll(
+          block
+              .rangeRectsInLine(
+                i,
+                start,
+                end,
+                scaler: layout.options.textScaler,
+                width: width,
+              )
+              .map(
+                (r) => r
+                    .shift(Offset(0, top))
+                    .intersect(Offset.zero & layout.contentSize),
+              )
+              .where((r) => !r.isEmpty),
+        );
+        top += block.lines[i].height;
+      }
+      continue;
+    }
+    double spacing(int i) => block.justifySpacingFor(
+      i,
+      maxWidth: width,
+      enabled: block.justifiesLine(i),
+      textScaler: layout.options.textScaler,
+    );
+    var top = fragment.y + block.textTopOf(fragment.lineFrom);
     var index = fragment.lineFrom;
-    void collect(TextPainter painter, int a, int b, double y) {
+    void collect(TextPainter painter, int a, int b, double y, double x) {
       final lo = math.max(start, a);
       final hi = math.min(end, b);
       if (hi <= lo) return;
@@ -57,7 +80,7 @@ List<Rect> speechRectsForPage({
       )) {
         final rect = box
             .toRect()
-            .shift(Offset(block.inset, y))
+            .shift(Offset(x, y))
             .intersect(Offset.zero & layout.contentSize);
         if (!rect.isEmpty) rects.add(rect);
       }
@@ -66,8 +89,12 @@ List<Rect> speechRectsForPage({
     while (index < fragment.lineTo) {
       final gap = spacing(index);
       var stop = index + 1;
-      if (gap <= 0 && !block.lines[index].hyphenated) {
-        while (stop < fragment.lineTo && !block.lines[stop].hyphenated && spacing(stop) <= 0) {
+      if (gap <= 0 && !block.lines[index].hyphenated && !block.hasScript) {
+        final left = block.horizontalOffset(index, width);
+        while (stop < fragment.lineTo &&
+            !block.lines[stop].hyphenated &&
+            block.horizontalOffset(stop, width) == left &&
+            spacing(stop) <= 0) {
           stop++;
         }
       }
@@ -84,6 +111,7 @@ List<Rect> speechRectsForPage({
           block.lines[index].start,
           block.lines[stop - 1].end,
           top,
+          block.inset + block.horizontalOffset(index, width),
         );
         for (var i = index; i < stop; i++) {
           top += block.lines[i].height;
@@ -96,7 +124,13 @@ List<Rect> speechRectsForPage({
             textScaler: layout.options.textScaler,
             letterSpacing: spacing(i),
           );
-          collect(single, block.lines[i].start, block.lines[i].end, top);
+          collect(
+            single,
+            block.lines[i].start,
+            block.lines[i].end,
+            top,
+            block.inset + block.horizontalOffset(i, width),
+          );
           single.dispose();
           top += block.lines[i].height;
         }

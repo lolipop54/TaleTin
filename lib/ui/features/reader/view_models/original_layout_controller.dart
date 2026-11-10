@@ -122,6 +122,22 @@ class HostLink extends OriginalHostEvent {
   final String href;
 }
 
+/// 点了脚注引用：弹气泡展示内容，不直接跳转
+class HostFootnote extends OriginalHostEvent {
+  const HostFootnote({
+    required super.chapterIndex,
+    required this.href,
+    this.x = 0,
+    this.y = 0,
+  });
+
+  final String href;
+
+  /// 点击位置（宿主页视口坐标，CSS 像素）
+  final double x;
+  final double y;
+}
+
 /// 宿主页报错（加载或排版失败）
 class HostError extends OriginalHostEvent {
   const HostError({required super.chapterIndex, required this.message});
@@ -195,6 +211,13 @@ OriginalHostEvent? parseHostEvent(
       );
     case 'link':
       return HostLink(chapterIndex: chapterIndex, href: stringOf('href'));
+    case 'footnote':
+      return HostFootnote(
+        chapterIndex: chapterIndex,
+        href: stringOf('href'),
+        x: doubleOf('x'),
+        y: doubleOf('y'),
+      );
     case 'error':
       return HostError(
         chapterIndex: chapterIndex,

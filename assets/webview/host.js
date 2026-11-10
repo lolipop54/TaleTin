@@ -321,6 +321,12 @@
        每次点击的手感（W12 实测掉帧），合成一次就只往返一次。
        zone：prev / next / center（由 Flutter 按点击位置算好）。 */
     tap: function (x, y, zone, duration) {
+      // 脚注引用先弹气泡，由 Dart 决定是否跳转
+      var footnote = window.__gt.footnoteAt(x, y);
+      if (footnote) {
+        post('footnote', { href: footnote, x: x, y: y });
+        return 'footnote';
+      }
       var link = window.__gt.linkAt(x, y);
       if (link) {
         post('link', { href: link });
@@ -355,11 +361,13 @@
     setContentTitles: function(value) { window.__gtInformation.setTitles(value); },
     pageContentFraction: function (page) { return internal.content.fractionForPage(page); },
     linkAt: internal.dom.linkAt,
+    footnoteAt: internal.dom.footnoteAt,
     tapTarget: function (x, y) {
       return JSON.stringify({
         markers: internal.highlight.thoughtMarkers(),
         highlight: internal.highlight.hitAt(x, y),
         image: internal.dom.imageAt(x, y),
+        footnote: internal.dom.footnoteAt(x, y),
         link: internal.dom.linkAt(x, y)
       });
     },

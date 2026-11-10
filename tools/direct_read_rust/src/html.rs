@@ -1,6 +1,7 @@
 // Copyright (c) 2026 GT Reader contributors. MIT license, see LICENSE.
 // Conversion mirrors the reader's existing block/run rules, including separate
 // trimming at style boundaries. UTF-16 lengths are used for all reader positions.
+use crate::display_source::{DisplaySource, role_of};
 use crate::dom::{Dom, Handle, attr, tag};
 use html5ever::{parse_document, tendril::TendrilSink};
 use serde_json::{Value, json};
@@ -88,6 +89,20 @@ fn find(node: &Handle, name: &str) -> Option<Handle> {
     }
     None
 }
+#[path = "html_styles.rs"]
+mod styles;
+#[path = "html_tables.rs"]
+mod tables;
+#[path = "html_text.rs"]
+mod text;
+#[path = "html_text_helpers.rs"]
+mod text_helpers;
+#[path = "html_walk.rs"]
+mod walk;
+
+#[path = "html_style_sources.rs"]
+mod style_sources;
+
 impl Html {
     pub fn new(input: &[u8]) -> Self {
         Self::with_options(input, false)
@@ -103,6 +118,7 @@ impl Html {
             Default::default(),
         )
         .one(String::from_utf8_lossy(input).as_ref());
+        crate::note_links::repair(&dom);
         Self {
             dom,
             optimized,
@@ -141,47 +157,85 @@ impl Html {
                 }
                 continue;
             }
-            if t == "a"
-                && (attr(&n, "epub:type")
-                    .unwrap_or_default()
-                    .contains("noteref")
-                    || attr(&n, "role").unwrap_or_default().contains("doc-noteref"))
-            {
+            // 所有书内链接都要收集：脚注引用要显示气泡，普通链接要能点击跳转。
+            // 书外链接由 Dart 侧解析时丢掉（resolveEntryPath 返回 null）。
+            if t == "a" {
                 if let Some(href) = attr(&n, "href") {
                     links.push(href);
                 }
             }
             stack.extend(n.children.borrow().iter().rev().cloned());
         }
-        json!({"images":images,"links":links})
+        json!({"images":images,"links":links,"css":style_sources::style_sources(&self.dom)})
     }
     fn build(&self, metadata: Value, flags: u32) -> Builder {
         let mut build = Builder::new(metadata, flags | if self.optimized { 4 } else { 0 });
         if let Some(body) = find(&self.dom.document, "body") {
-            build.walk_all(&body, Style::default());
+            build.source.set_root_node(body.id);
+            let (root_style, root_block) = build.root_context(&body);
+            build.walk_all(&body, root_style, root_block);
         }
         build.flush();
+        build.source.finish_root(build.blocks.len());
+        let mut removed = 0;
         while !build.blocks.is_empty()
             && build.blocks[0]["kind"] != "image"
             && build.blocks[0].get("runs").is_none()
         {
             build.blocks.remove(0);
+            removed += 1;
         }
+        build.source.remove_prefix(removed);
         build
     }
     pub fn convert(&self, metadata: Value, flags: u32) -> Value {
+        if metadata.get("styleProgram").is_some() {
+            return crate::css::program::evaluate(&metadata);
+        }
         let anchors = metadata.get("anchors").cloned();
         let anchor_metadata = metadata.clone();
-        let build = self.build(metadata, flags);
+        let mut build = self.build(metadata, flags);
+        // 批次 C：块与片段各带一个样式表编号，表随正文一起输出；旧显示字段同时保留（双写）。
+        let (styles, element_style_ids) =
+            crate::style_table::attach_with_elements(&mut build.blocks, &build.element_styles);
+        build.source.apply_styles(&element_style_ids);
+        let mut source = build.source.to_json();
+        if build.engine.is_some() {
+            let mut declared: Vec<_> = build
+                .computed_cache
+                .iter()
+                .filter_map(|(id, style)| style.font_size_declared.then_some(*id))
+                .collect();
+            declared.sort_unstable();
+            source["fontSizeDeclarations"] = json!(declared);
+        }
+        if let Some(engine) = &build.engine {
+            source["computed"] = json!(true);
+            let mut resources = engine.resources();
+            resources.sort();
+            source["backgroundResources"] = json!(resources);
+            if !engine.font_faces().is_empty() {
+                source["fontFaces"] = json!(engine.font_faces());
+            }
+            if engine.needs_environment() {
+                source["css"] = json!({"nodes":self.dom.style_nodes(),"cssSources":build.metadata["cssSources"],"cssFiles":build.metadata["cssFiles"],"documentPath":build.metadata["documentPath"],"unifiedCss":true});
+            }
+        }
         let mut result = json!({"blocks":build.blocks,"tables":build.tables,"heading":build.heading,"warnings":build.warnings,
-            "length":build.length,"singleImage":build.single_image,"pieces":build.maps});
+            "length":build.length,"singleImage":build.single_image,"pieces":build.maps,"styles":styles});
+        if !source.is_null() {
+            result["displaySource"] = source;
+        }
         if anchors.is_some() {
             result["tocHeadings"] = json!(build.toc_headings);
         }
         if build.map {
             result["dom"] = self.export(&self.dom.document);
         }
-        if anchors.as_ref().is_some_and(|a| a.as_array().is_some_and(|a| !a.is_empty())) {
+        if anchors
+            .as_ref()
+            .is_some_and(|a| a.as_array().is_some_and(|a| !a.is_empty()))
+        {
             // Reuse this parsed tree. Only the small target positions leave the
             // import batch; original HTML and standard body are never saved.
             crate::original::sanitize_dom(&self.dom);
@@ -228,16 +282,115 @@ impl Html {
         ])
     }
 }
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 struct Style {
     bold: bool,
     italic: bool,
+    /// 0 正常、1 上标、2 下标
+    script: u8,
     suppress_bold: bool,
     suppress_italic: bool,
+    /// 书内文字颜色（ARGB）；None 跟随阅读主题
+    color: Option<u32>,
+    /// CSS 层叠后的相对字号倍数
+    size: f64,
+    /// 样式表给的字重／斜体：只影响显示，不参与 run 合并
+    css_bold: Option<bool>,
+    css_italic: Option<bool>,
+    /// 文字装饰：0 无、1 下划线、2 删除线、3 两者都有（只影响显示）
+    deco: u8,
+    /// 字距／词距（相对字号的百分之一 em，可为负）；0 表示书里没写
+    letter_spacing: i64,
+    word_spacing: i64,
+}
+impl Default for Style {
+    fn default() -> Self {
+        Self {
+            bold: false,
+            italic: false,
+            script: 0,
+            suppress_bold: false,
+            suppress_italic: false,
+            color: None,
+            size: 1.0,
+            css_bold: None,
+            css_italic: None,
+            deco: 0,
+            letter_spacing: 0,
+            word_spacing: 0,
+        }
+    }
+}
+/// 块的显示信息（对齐与“取消首行缩进”），沿标签树向下继承。
+#[derive(Clone, Copy, Default, PartialEq)]
+struct BlockStyle {
+    center: bool,
+    right: bool,
+    no_indent: bool,
+}
+impl BlockStyle {
+    fn align(&self) -> Option<&'static str> {
+        if self.center {
+            Some("center")
+        } else if self.right {
+            Some("right")
+        } else {
+            None
+        }
+    }
 }
 struct Run {
     text: String,
     style: Style,
+    /// 书内链接目标（`章节路径#锚点`）与是否脚注引用；只用于点击交互
+    link: Option<String>,
+    footnote: bool,
+}
+/// 待换算成块内下标的硬换行：追加时的 run 序号、run 内偏移、下一行缩进空格数。
+struct Mark {
+    run: usize,
+    offset: usize,
+    indent: u32,
+}
+/// 一段文字的显示样式（相对追加时的 run）。合并与裁剪仍按旧规则，最后再切分。
+struct StyleMark {
+    run: usize,
+    offset: usize,
+    length: usize,
+    script: u8,
+    color: Option<u32>,
+    size: f64,
+    css_bold: Option<bool>,
+    css_italic: Option<bool>,
+    /// 文字装饰：0 无、1 下划线、2 删除线、3 两者都有
+    deco: u8,
+    /// 书内链接目标（`章节路径#锚点`）与是否脚注引用
+    link: Option<String>,
+    footnote: bool,
+}
+struct ListState {
+    ordered: bool,
+    next: i64,
+    /// 列表容器上的 list-style（CSS 里由 li 继承）
+    list_style: Option<i32>,
+}
+/// 段落中间遇到、还没确定属于哪一段的行内图片。
+struct PendingImage {
+    source_element: usize,
+    /// 遇到图片时已收集的原始文字长度（UTF-16）
+    offset: usize,
+    /// 图片块字段（resource／width／height／alt／iw／imw），不含 id 与 kind
+    block: Value,
+    /// 独立图片块沿用遇到图片时的盒子与引用层级（外层作用域可能已经退出）
+    box_props: Option<(Vec<i64>, i64)>,
+    nest: u32,
+}
+struct PendingInlineBox {
+    start: usize,
+    end: usize,
+    id: i64,
+    values: Vec<i64>,
+    scale: f64,
 }
 struct Builder {
     metadata: Value,
@@ -248,6 +401,9 @@ struct Builder {
     tables: Vec<Value>,
     runs: Vec<Run>,
     pieces: Vec<Value>,
+    source_spans: Vec<(usize, usize, Vec<usize>)>,
+    /// 空元素也可能夹在尚未收段的文字里；收尾时和文字使用同一个偏移换算。
+    source_anchors: Vec<(usize, usize)>,
     maps: Vec<Value>,
     warnings: Vec<&'static str>,
     heading: Option<String>,
@@ -255,13 +411,127 @@ struct Builder {
     kind: &'static str,
     level: Option<u32>,
     target: Option<String>,
+    /// 当前所在的 `<a>`：`章节路径#锚点` 与是否脚注引用
+    link: Option<String>,
+    footnote: bool,
     length: usize,
     count: usize,
     single_image: Option<String>,
     toc_headings: Vec<Value>,
+    // 块的显示信息：对齐、取消首行缩进、列表层级与编号
+    align: Option<&'static str>,
+    no_indent: bool,
+    nest: u32,
+    ordered: bool,
+    ordinal: Option<i64>,
+    marks: Vec<Mark>,
+    /// `<br>` 产生的换行标记位置；裁剪 run 时保护这个尾空格，否则换行会被吞掉。
+    hard_breaks: Vec<(usize, usize)>,
+    pending_spaces: Vec<(usize, usize)>,
+    scripts: Vec<StyleMark>,
+    lists: Vec<ListState>,
+    quote_depth: u32,
+    /// 当前块是不是 `<blockquote>` 元素本身（不是引用里的段落）。
+    /// 这类块的文字不补阅读器首行缩进，和原书 WebView 的默认行为一致。
+    quote_container: bool,
+    code_depth: u32,
+    // 样式表与盒子作用域
+    styles: crate::styles::BookStyles,
+    ancestors: Vec<crate::styles::Key>,
+    box_props: Option<(Vec<i64>, i64)>,
+    next_box_id: i64,
+    code_parent_box: Option<(Vec<i64>, i64)>,
+    quote_box: Option<(Vec<i64>, i64)>,
+    list_style: Option<i32>,
+    text_shadow: Option<Vec<i64>>,
+    pending_text_shadow: Option<Vec<i64>>,
+    /// 当前元素的四边外边距（来自作者样式或行内样式），由紧随其后的那一块消费一次。
+    pending_margin: Option<Vec<i64>>,
+    /// 代码块里当前是否在行首（换行后的缩进可能被标签拆到下一个文本节点）
+    code_line_start: bool,
+    /// 段落中间遇到的行内图片：收块时再换算成块内位置
+    pending_images: Vec<PendingImage>,
+    pending_inline_boxes: Vec<PendingInlineBox>,
+    /// S1 显示来源索引；开关关闭时只有空结构，不产生额外 JSON。
+    source: DisplaySource,
+    element_stack: Vec<usize>,
+    /// 块级元素的归属栈：行内元素不改变当前块由谁产生。
+    owner_stack: Vec<usize>,
+    /// 当前正在生成的块由哪个元素产生（块收尾时写进来源索引）。
+    block_owner: usize,
+    /// 统一 CSS 引擎；元数据没有有序来源时为 None，继续走旧路径。
+    engine: Option<crate::css::Engine>,
+    /// 每个 DOM 节点的计算结果与自定义属性；按节点 id 缓存，父子链只算一次。
+    computed_cache: std::collections::HashMap<usize, crate::css::Computed>,
+    vars_cache: std::collections::HashMap<usize, std::collections::HashMap<String, String>>,
+    /// 元素 id → 计算样式 JSON，最后 intern 进样式表并写进来源索引。
+    element_styles: std::collections::HashMap<usize, Value>,
 }
-fn units(s: &str) -> usize {
-    s.encode_utf16().count()
+use text_helpers::*;
+/// 节点里的文字（跳过脚本样式），用于判断链接是否为脚注编号。
+fn text_of(node: &Handle) -> String {
+    let mut out = String::new();
+    let mut stack = vec![node.clone()];
+    while let Some(n) = stack.pop() {
+        if n.name.is_none() {
+            out.push_str(&n.text.borrow());
+            continue;
+        }
+        let name = tag(&n);
+        if name == "script" || name == "style" {
+            continue;
+        }
+        stack.extend(n.children.borrow().iter().rev().cloned());
+    }
+    out
+}
+
+/// `<ol start="3">` 的起始序号。
+fn ordered_start(node: &Handle) -> i64 {
+    attr(node, "start")
+        .and_then(|v| v.trim().parse::<i64>().ok())
+        .unwrap_or(1)
+}
+
+/// 图片元素自己的行内 `width`／`max-width`（`style="width:60%"`）。
+fn image_size(node: &Handle, key: &str) -> Option<[i64; 2]> {
+    let css = attr(node, "style")?;
+    for part in css.split(';') {
+        if let Some((name, value)) = part.split_once(':') {
+            if name.trim().eq_ignore_ascii_case(key) {
+                return crate::styles::parse_size(value);
+            }
+        }
+    }
+    None
+}
+/// 0、0px、0em、0% 等零长度写法（与 Dart 侧正则口径一致）。
+fn zero_length(value: &str) -> bool {
+    let mut chars = value.trim().chars().peekable();
+    if chars.peek() == Some(&'+') {
+        chars.next();
+    }
+    let mut zeros = 0;
+    while chars.peek() == Some(&'0') {
+        chars.next();
+        zeros += 1;
+    }
+    if chars.peek() == Some(&'.') {
+        chars.next();
+        let mut fraction = 0;
+        while chars.peek() == Some(&'0') {
+            chars.next();
+            fraction += 1;
+        }
+        if fraction == 0 && zeros == 0 {
+            return false;
+        }
+        zeros += fraction;
+    }
+    if zeros == 0 {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_alphabetic() || c == '%')
 }
 pub(crate) fn html_space(c: char) -> bool {
     matches!(
@@ -297,8 +567,19 @@ pub(crate) fn collapse(raw: &str) -> String {
     }
     out
 }
+/// 表格列宽（百分比）：`<colgroup><col style="width: 14%">…`。
+///
+/// 返回每列的相对宽度；没有写宽度的列记 0，由 Dart 按剩余宽度平均补。
+/// 只认百分比，px／em 混排时按未声明处理，退回平均列宽。
 impl Builder {
     fn new(metadata: Value, flags: u32) -> Self {
+        let metadata_styles = metadata.get("styles").cloned().unwrap_or(Value::Null);
+        let source_enabled = flags & 8 != 0
+            || metadata
+                .get("displaySource")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+        let engine = crate::css::Engine::from_metadata(&metadata);
         Self {
             metadata,
             stats: flags & 1 != 0,
@@ -308,6 +589,8 @@ impl Builder {
             tables: vec![],
             runs: vec![],
             pieces: vec![],
+            source_spans: vec![],
+            source_anchors: vec![],
             maps: vec![],
             warnings: vec![],
             heading: None,
@@ -315,21 +598,60 @@ impl Builder {
             kind: "paragraph",
             level: None,
             target: None,
+            link: None,
+            footnote: false,
             length: 0,
             count: 0,
             single_image: None,
             toc_headings: vec![],
+            align: None,
+            no_indent: false,
+            nest: 0,
+            ordered: false,
+            ordinal: None,
+            marks: vec![],
+            hard_breaks: vec![],
+            pending_spaces: vec![],
+            scripts: vec![],
+            lists: vec![],
+            quote_depth: 0,
+            quote_container: false,
+            code_depth: 0,
+            styles: crate::styles::BookStyles::from_json(&metadata_styles),
+            ancestors: vec![],
+            box_props: None,
+            next_box_id: 1,
+            code_parent_box: None,
+            quote_box: None,
+            list_style: None,
+            text_shadow: None,
+            pending_text_shadow: None,
+            pending_margin: None,
+            code_line_start: false,
+            pending_images: vec![],
+            pending_inline_boxes: vec![],
+            source: DisplaySource::new(source_enabled),
+            element_stack: vec![0],
+            owner_stack: vec![0],
+            block_owner: 0,
+            engine,
+            computed_cache: std::collections::HashMap::new(),
+            vars_cache: std::collections::HashMap::new(),
+            element_styles: std::collections::HashMap::new(),
         }
     }
+
     fn warning(&mut self) {
         if self.warnings.is_empty() {
             self.warnings.push("部分排版样式已忽略");
         }
     }
+
     fn next(&mut self) -> String {
         self.seq += 1;
         format!("b{}", self.seq)
     }
+
     fn record(&mut self, kind: &str, length: usize, image: Option<String>) {
         if self.count == 0 && kind != "image" && length == 1 {
             return;
@@ -342,378 +664,124 @@ impl Builder {
             None
         };
     }
-    fn style(&mut self, node: &Handle, mut s: Style) -> Style {
-        if let Some(css) = attr(node, "style") {
-            for part in css.split(';') {
-                if let Some((key, value)) = part.split_once(':') {
-                    let key = key.trim().to_lowercase();
-                    let value = value.trim().to_lowercase();
-                    if key.is_empty() || value.is_empty() {
-                        continue;
-                    }
-                    match key.as_str() {
-                        "font-weight" => {
-                            s.bold = value == "bold"
-                                || value == "bolder"
-                                || value.parse::<i64>().is_ok_and(|v| v >= 600);
-                            s.suppress_bold = !s.bold;
-                        }
-                        "font-style" => {
-                            s.italic = value == "italic" || value == "oblique";
-                            s.suppress_italic = !s.italic;
-                        }
-                        _ => self.warning(),
-                    }
-                }
-            }
-        }
-        let t = tag(node);
-        if !s.suppress_bold && matches!(t, "b" | "strong") {
-            s.bold = true;
-        }
-        if !s.suppress_italic && matches!(t, "i" | "em") {
-            s.italic = true;
-        }
-        s
-    }
-    fn walk_all(&mut self, node: &Handle, style: Style) {
-        for (i, child) in node.children.borrow().iter().enumerate() {
-            self.walk(child, style, Some((node, i)));
-        }
-    }
-    fn walk(&mut self, n: &Handle, style: Style, parent: Option<(&Handle, usize)>) {
+
+    fn walk(
+        &mut self,
+        n: &Handle,
+        style: Style,
+        parent: Option<(&Handle, usize)>,
+        block: BlockStyle,
+    ) {
         if n.name.is_none() {
             if !n.comment {
                 self.text(n.text.borrow().as_str(), style, Some(n), parent);
             }
             return;
         }
-        let tag = tag(n);
-        if tag == "style" || tag == "link" {
-            self.warning();
+        let tag_name = tag(n);
+        if tag_name == "style" || tag_name == "link" || ignored(tag_name) {
             return;
         }
-        if ignored(tag) {
-            return;
-        }
-        if tag == "table" {
-            self.table(n, style);
-            return;
-        }
-        let style = self.style(n, style);
-        match tag {
-            "br" => {
-                self.text("\n", style, None, None);
-                return;
-            }
-            "img" | "image" => {
-                self.image(n);
-                return;
-            }
-            "svg" => {
-                if let Some(image) = find(n, "image") {
-                    self.image(&image);
+        // 保留每个真实元素；未知标签按行内容器处理，其 display 仍可由 CSS 改写。
+        let eid = match Some(
+            role_of(tag_name).unwrap_or(crate::display_source::ElementRole::InlineContainer),
+        ) {
+            Some(role) => {
+                let id =
+                    self.source
+                        .enter(self.element_stack.last().copied(), n.id, tag_name, role);
+                self.element_stack.push(id);
+                if self.source.enabled {
+                    self.source_anchors
+                        .push((id, self.runs.iter().map(|r| units(&r.text)).sum()));
                 }
-                return;
+                id
             }
-            "hr" => {
-                self.flush();
-                self.record("divider", 1, None);
-                if !self.stats {
-                    let id = self.next();
-                    self.blocks.push(json!({"id":id,"kind":"divider"}));
-                }
-                return;
-            }
-            _ => {}
-        }
-        let level = if tag.len() == 2 && tag.starts_with('h') {
-            tag[1..].parse::<u32>().ok().filter(|v| (1..=6).contains(v))
-        } else {
-            None
+            None => 0,
         };
-        let kind = match tag {
-            "p" | "dd" | "dt" | "figcaption" | "pre" | "blockquote" | "td" | "th" => {
-                Some("paragraph")
-            }
-            "li" => Some("listItem"),
-            _ => None,
-        };
-        if level.is_some() || kind.is_some() {
-            self.flush();
-            self.kind = if level.is_some() {
-                "heading"
-            } else {
-                kind.unwrap()
-            };
-            self.level = level;
-            self.walk_all(n, style);
-            self.flush();
-            return;
+        if tag_name == "math" && self.source.enabled {
+            self.source.elements[eid].math = Some(crate::mathml::serialize(n));
         }
-        if boundary(tag) {
-            self.flush();
-            self.walk_all(n, style);
-            return;
+        if self.source.enabled && tag_name == "a" && attr(n, "href").is_some() {
+            // 来源链接身份不依赖地址是否能解析；未知设备协议也不能变成普通正文缩进。
+            self.source.elements[eid].is_link = true;
         }
-        if tag == "a"
-            && self.target.is_none()
-            && (attr(n, "epub:type").unwrap_or_default().contains("noteref")
-                || attr(n, "role").unwrap_or_default().contains("doc-noteref"))
-        {
-            if let Some(href) = attr(n, "href") {
-                self.target = self.metadata["links"][href].as_str().map(str::to_owned);
-            }
-        }
-        self.walk_all(n, style);
-    }
-    fn text(
-        &mut self,
-        raw: &str,
-        style: Style,
-        node: Option<&Handle>,
-        parent: Option<(&Handle, usize)>,
-    ) {
-        let breaks = parent
-            .and_then(|(p, i)| attr(p, &format!("data-gt-hyphens-{i}")))
-            .and_then(|v| serde_json::from_str::<Vec<usize>>(&v).ok())
-            .unwrap_or_default();
-        let clean = if breaks.is_empty() && self.optimized {
-            Cow::Borrowed(raw)
-        } else if breaks.is_empty() {
-            Cow::Owned(raw.to_owned())
-        } else {
-            Cow::Owned(String::from_utf16_lossy(
-                &raw.encode_utf16()
-                    .enumerate()
-                    .filter(|(i, _)| !breaks.contains(i))
-                    .map(|(_, v)| v)
-                    .collect::<Vec<_>>(),
-            ))
-        };
-        let mut normalized = collapse(&clean);
-        if normalized.is_empty() || (normalized == " " && self.runs.is_empty()) {
-            return;
-        }
-        let merges = self
-            .runs
-            .last()
-            .is_some_and(|r| r.style.bold == style.bold && r.style.italic == style.italic);
-        if self.map {
-            self.pieces.push(json!([
-                node.map(|n| n.id),
-                clean,
-                if merges {
-                    self.runs.len() - 1
-                } else {
-                    self.runs.len()
-                },
-                breaks
-            ]));
-        }
-        if merges {
-            let last = self.runs.last_mut().unwrap();
-            if last.text.ends_with(' ') && normalized.starts_with(' ') {
-                normalized.remove(0);
-            }
-            last.text.push_str(&normalized);
-        } else {
-            self.runs.push(Run {
-                text: normalized,
-                style,
-            });
-        }
-    }
-    fn flush(&mut self) {
-        let kind = self.kind;
-        let level = self.level.take();
-        let target = self.target.take();
-        self.kind = "paragraph";
-        // Statistics need the same style-boundary trimming and UTF-16 count,
-        // but no second vector or owned copy of every trimmed run.
-        if self.stats && self.optimized {
-            let mut length = 0;
-            let mut nonempty = false;
-            let heading = self.heading.is_none() && (kind == "paragraph" || kind == "heading");
-            let toc_heading = kind == "heading" && self.metadata.get("anchors").is_some();
-            let mut title = String::new();
-            for run in &self.runs {
-                let text = run.text.trim_matches(|c| c == ' ' || c == '\n');
-                if text.is_empty() {
-                    continue;
-                }
-                nonempty = true;
-                length += units(text);
-                if heading || toc_heading {
-                    title.push_str(text);
-                }
-            }
-            if nonempty {
-                if toc_heading {
-                    self.toc_headings.push(json!([title, self.length]));
-                }
-                if heading {
-                    self.heading = Some(title);
-                }
-                self.record(kind, 1 + length, None);
-            }
-            self.runs.clear();
-            self.pieces.clear();
-            return;
-        }
-        let runs = std::mem::take(&mut self.runs)
-            .into_iter()
-            .filter_map(|r| {
-                let text = r.text.trim_matches(|c| c == ' ' || c == '\n').to_owned();
-                if text.is_empty() {
-                    None
-                } else {
-                    Some(Run {
-                        text,
-                        style: r.style,
-                    })
-                }
-            })
-            .collect::<Vec<_>>();
-        let pieces = std::mem::take(&mut self.pieces);
-        if runs.is_empty() {
-            return;
-        }
-        if self.heading.is_none() && (kind == "paragraph" || kind == "heading") {
-            self.heading = Some(runs.iter().map(|r| r.text.as_str()).collect());
-        }
-        if kind == "heading" && self.metadata.get("anchors").is_some() {
-            let title: String = runs.iter().map(|r| r.text.as_str()).collect();
-            self.toc_headings.push(json!([title, self.length]));
-        }
-        self.record(
-            kind,
-            1 + runs.iter().map(|r| units(&r.text)).sum::<usize>(),
-            None,
-        );
-        if self.stats {
-            return;
-        }
-        let id = self.next();
-        let mut block = json!({"id":id,"kind":kind,"runs":runs.iter().map(|r| {
-            if !r.style.bold && !r.style.italic { json!(r.text) } else { let mut run=json!({"text":r.text});
-                if r.style.bold { run["bold"]=json!(true); } if r.style.italic { run["italic"]=json!(true); } run }
-        }).collect::<Vec<_>>()});
-        if let Some(level) = level {
-            block["level"] = json!(level);
-        }
-        if let Some(target) = target {
-            block["target"] = json!(target);
-        }
-        self.blocks.push(block);
-        if self.map {
-            self.maps.push(json!([id, pieces]));
-        }
-    }
-    fn image(&mut self, n: &Handle) {
-        let Some(src) = source(n) else {
-            return;
-        };
-        let resolved = self.metadata["images"][src].clone();
-        if resolved.is_null() {
-            return;
-        }
-        self.flush();
-        self.record("image", 1, resolved["resource"].as_str().map(str::to_owned));
-        if self.stats {
-            return;
-        }
-        let mut block = resolved;
-        block["id"] = json!(self.next());
-        block["kind"] = json!("image");
-        if let Some(alt) = attr(n, "alt") {
-            block["alt"] = json!(alt);
-        }
-        self.blocks.push(block);
-    }
-    fn table(&mut self, table: &Handle, style: Style) {
-        self.flush();
-        let nested_start = self.tables.len();
-        let mut cells = vec![];
-        let mut occupied = HashSet::new();
-        let mut row: i32 = -1;
-        let mut columns = 0;
-        let mut rows = 0;
-        for n in table.children.borrow().iter() {
-            self.table_visit(
-                n,
-                style,
-                &mut row,
-                &mut columns,
-                &mut rows,
-                &mut cells,
-                &mut occupied,
+        let block_level = eid != 0
+            && matches!(
+                role_of(tag_name),
+                Some(
+                    crate::display_source::ElementRole::BlockContainer
+                        | crate::display_source::ElementRole::Paragraph
+                        | crate::display_source::ElementRole::Heading
+                        | crate::display_source::ElementRole::List
+                        | crate::display_source::ElementRole::ListItem
+                        | crate::display_source::ElementRole::Code
+                        | crate::display_source::ElementRole::Caption
+                        // `<hr>` 自己就是分隔线块的产生元素。以前没把它算进
+                        // block_level，divider 块记在了外层 div 名下：div 被
+                        // 当成“块自己”从容器链里排除，div 是盒子最后一块时
+                        // 找不到底边，底部白边/底色会少一截。
+                        | crate::display_source::ElementRole::Divider
+                        | crate::display_source::ElementRole::Table
+                        | crate::display_source::ElementRole::TableRow
+                        | crate::display_source::ElementRole::TableCell
+                )
             );
+        if block_level {
+            self.owner_stack.push(self.block_owner);
+            self.block_owner = eid;
         }
-        self.flush();
-        if !self.stats
-            && cells
-                .iter()
-                .any(|c: &Value| !c["blocks"].as_array().unwrap().is_empty())
-        {
-            self.tables.truncate(nested_start);
-            self.tables
-                .push(json!({"cells":cells,"columns":columns,"rows":rows}));
+        self.walk_node(n, style, parent, block);
+        if block_level {
+            self.block_owner = self.owner_stack.pop().unwrap_or(0);
+        }
+        if eid != 0 {
+            self.source.exit(eid, self.blocks.len());
+            self.element_stack.pop();
         }
     }
-    fn table_visit(
+
+    fn begin(
         &mut self,
-        n: &Handle,
-        style: Style,
-        row: &mut i32,
-        columns: &mut i32,
-        rows: &mut i32,
-        cells: &mut Vec<Value>,
-        occupied: &mut HashSet<(i32, i32)>,
+        kind: &'static str,
+        level: Option<u32>,
+        block: BlockStyle,
+        nest: u32,
+        ordered: bool,
+        ordinal: Option<i64>,
     ) {
-        let t = tag(n);
-        if t == "tr" {
-            *row += 1;
-            for c in n.children.borrow().iter() {
-                self.table_visit(c, style, row, columns, rows, cells, occupied);
-            }
-            self.flush();
-        } else if t == "td" || t == "th" {
-            if *row < 0 {
-                *row = 0;
-            }
-            let mut column = 0;
-            while occupied.contains(&(*row, column)) {
-                column += 1;
-            }
-            let rs = attr(n, "rowspan")
-                .and_then(|v| v.trim().parse::<i32>().ok())
-                .unwrap_or(1)
-                .clamp(1, 1000);
-            let cs = attr(n, "colspan")
-                .and_then(|v| v.trim().parse::<i32>().ok())
-                .unwrap_or(1)
-                .clamp(1, 1000);
-            self.flush();
-            let first = self.blocks.len();
-            self.walk(n, style, None);
-            self.flush();
-            if !self.stats {
-                cells.push(json!({"blocks":self.blocks[first..].iter().map(|b|b["id"].clone()).collect::<Vec<_>>(),"row":*row,"column":column,"rowSpan":rs,"columnSpan":cs,"header":t=="th"}));
-                for r in *row..*row + rs {
-                    for c in column..column + cs {
-                        occupied.insert((r, c));
-                    }
-                }
-                *columns = (*columns).max(column + cs);
-                *rows = (*rows).max(*row + rs);
-            }
-        } else if matches!(t, "thead" | "tbody" | "tfoot") {
-            for c in n.children.borrow().iter() {
-                self.table_visit(c, style, row, columns, rows, cells, occupied);
-            }
-        } else {
-            self.walk(n, style, None);
+        self.flush();
+        self.kind = kind;
+        self.level = level;
+        self.quote_container = false;
+        self.align = block.align();
+        self.no_indent = block.no_indent;
+        self.nest = nest;
+        self.ordered = ordered;
+        self.ordinal = ordinal;
+        self.text_shadow = self.pending_text_shadow.take();
+    }
+
+    /// `<br>`：沿用旧规则（折叠成一个空格），另记「这里要换行」。
+    fn line_break(&mut self, style: Style) {
+        if self.runs.is_empty() {
+            // 块首的换行没有意义，旧规则同样丢弃
+            return;
         }
+        let (run, _, _) = self.append(" ", style, "\n", None, &[]);
+        let len = units(&self.runs[run].text);
+        if len == 0 {
+            return;
+        }
+        self.hard_breaks.push((run, len - 1));
+        self.marks.push(Mark {
+            run,
+            offset: len - 1,
+            indent: 0,
+        });
     }
 }
+
+#[cfg(test)]
+#[path = "html_tests.rs"]
+mod tests;

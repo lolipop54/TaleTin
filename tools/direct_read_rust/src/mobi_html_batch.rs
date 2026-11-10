@@ -21,7 +21,10 @@ pub unsafe extern "C" fn gt_mobi_batch_open(input: *const u8, length: usize) -> 
         at += size;
     }
     let trees = pool().install(|| sources.into_par_iter().map(MobiHtml::new).collect());
-    Box::into_raw(Box::new(MobiBatch { trees, output: Vec::new() }))
+    Box::into_raw(Box::new(MobiBatch {
+        trees,
+        output: Vec::new(),
+    }))
 }
 
 #[unsafe(no_mangle)]
@@ -29,19 +32,32 @@ pub unsafe extern "C" fn gt_mobi_batch_refs(handle: *mut MobiBatch, output: *mut
     let batch = unsafe { &mut *handle };
     // par_iter_mut requires only Send: Rc graphs must never be shared via Sync.
     let refs: Vec<_> = pool().install(|| batch.trees.par_iter_mut().map(|h| h.refs()).collect());
-    result(serde_json::to_vec(&refs).unwrap(), &mut batch.output, output);
+    result(
+        serde_json::to_vec(&refs).unwrap(),
+        &mut batch.output,
+        output,
+    );
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gt_mobi_batch_finish(
-    handle: *mut MobiBatch, input: *const u8, length: usize, output: *mut GtScanResult,
+    handle: *mut MobiBatch,
+    input: *const u8,
+    length: usize,
+    output: *mut GtScanResult,
 ) {
     let edits: Vec<Vec<(usize, String, String)>> =
         serde_json::from_slice(unsafe { slice::from_raw_parts(input, length) }).unwrap();
     let batch = unsafe { &mut *handle };
     assert_eq!(edits.len(), batch.trees.len());
-    let finished: Vec<_> = pool().install(|| batch.trees.par_iter_mut()
-        .zip(edits.into_par_iter()).map(|(tree, edits)| tree.finish_edits(edits)).collect());
+    let finished: Vec<_> = pool().install(|| {
+        batch
+            .trees
+            .par_iter_mut()
+            .zip(edits.into_par_iter())
+            .map(|(tree, edits)| tree.finish_edits(edits))
+            .collect()
+    });
     let mut packet = Vec::with_capacity(finished.iter().map(|s| 4 + s.len()).sum());
     for bytes in finished {
         packet.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
@@ -52,5 +68,9 @@ pub unsafe extern "C" fn gt_mobi_batch_finish(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gt_mobi_batch_close(handle: *mut MobiBatch) {
-    if !handle.is_null() { unsafe { drop(Box::from_raw(handle)); } }
+    if !handle.is_null() {
+        unsafe {
+            drop(Box::from_raw(handle));
+        }
+    }
 }

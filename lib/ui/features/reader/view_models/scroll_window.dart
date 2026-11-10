@@ -60,6 +60,7 @@ class ScrollWindow extends ChangeNotifier {
     required this.chapters,
     required this.load,
     required this.onPosition,
+    this.prepareFonts,
     this.prepareResources,
     this.onError,
   });
@@ -67,6 +68,7 @@ class ScrollWindow extends ChangeNotifier {
   final int version;
   final List<Chapter> chapters;
   final Future<ChapterContent> Function(Chapter) load;
+  final PreparePublicationFonts? prepareFonts;
   final void Function(ChapterContent, Locator, int?) onPosition;
   final Future<void> Function(ScrollChapter, double, double)? prepareResources;
   final void Function(Object, StackTrace)? onError;
@@ -122,11 +124,15 @@ class ScrollWindow extends ChangeNotifier {
       'simplified.scroll.load',
       () => load(chapters[index]),
     );
+    final prepared =
+        value.settings.useBookFontsInSimplified && prepareFonts != null
+        ? await prepareFonts!(bookId, content, value)
+        : value;
     final layout = await measureReader(
       'simplified.scroll.layout',
       () => ScrollChapter.prepare(
         content,
-        value,
+        prepared,
         cancelled: () => _disposed || request != _request,
         chapterTitle: chapters[index].title,
         measurementCache: _measurements,

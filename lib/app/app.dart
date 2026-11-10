@@ -27,6 +27,7 @@ import '../ui/core/theme/app_theme.dart';
 import '../ui/core/theme/forui_theme.dart';
 import '../ui/core/widgets/gt_scroll_input_scope.dart';
 import 'router/app_router.dart';
+import 'router/reader_navigation.dart';
 import '../platform/channels/external_book_open.dart';
 import '../ui/features/import/view_models/import_view_model.dart';
 import '../ui/features/reader/view_models/reader_session_view_model.dart';
@@ -48,7 +49,9 @@ class _GTReaderAppState extends ConsumerState<GTReaderApp> {
   late final GoRouter _router = createAppRouter();
   StreamSubscription<bool>? _notificationClicks;
   String? _fontFamily;
-  late final AppLifecycleListener _fontLifecycle;
+  late final AppLifecycleListener _lifecycle;
+  bool _wasBackground = false;
+  String? _previousRoute;
   bool _refreshingFonts = false;
   final _externalBooks = ExternalBookOpenChannel();
   bool _openingExternal = false;
@@ -69,10 +72,18 @@ class _GTReaderAppState extends ConsumerState<GTReaderApp> {
         unawaited(window.setGlobalLandscape(settings.typography.landscape));
       }
     }, fireImmediately: true);
-    _router.routeInformationProvider.addListener(_updateDiagnosticRoute);
+    _router.routerDelegate.addListener(_updateDiagnosticRoute);
     _updateDiagnosticRoute();
-    _fontLifecycle = AppLifecycleListener(
-      onResume: () => unawaited(_refreshSystemFont()),
+    _lifecycle = AppLifecycleListener(
+      onHide: () => _wasBackground = true,
+      onResume: () {
+        unawaited(_refreshSystemFont());
+        // 通知栏短暂失焦不算后台，首次启动也不重复核对书库。
+        if (_wasBackground) {
+          _wasBackground = false;
+          ref.invalidate(libraryBooksProvider);
+        }
+      },
     );
     if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
       _externalBooks.listen(_externalBookChanged);
@@ -86,12 +97,30 @@ class _GTReaderAppState extends ConsumerState<GTReaderApp> {
         final state = widget.listening!.snapshot;
         if (!clicked || !state.hasSession || state.bookId.isEmpty) return;
         // 路由只传 bookId；阅读页准备时再取最新位置，避免把通知旧快照带回来。
-        final location = AppRoutes.reader(state.bookId);
-        if (_router.routeInformationProvider.value.uri.path != location) {
-          _router.go(location);
-        }
+        _openReaderFromNotification(AppRoutes.reader(state.bookId));
       });
     }
+  }
+
+  /// 通知点开阅读页时叠在书架上，保留返回页。
+  ///
+  /// 不能用 go()：它会整体替换路由栈，阅读页成了唯一一页，返回时没有页面
+  /// 可弹，页面会停在“退出中”的屏蔽状态。冷启动时书架路由还没建出来，
+  /// 这时的 push 同样没有书架可叠，等首帧完成后再来。
+  void _openReaderFromNotification(String location) {
+    if (_router.routerDelegate.currentConfiguration.matches.isEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        if (_router.routerDelegate.currentConfiguration.matches.isEmpty) {
+          // 首帧后仍没有书架（路由异常），按旧行为直接打开，退出仍会兜底回书架。
+          _router.go(location);
+        } else {
+          _openReaderFromNotification(location);
+        }
+      });
+      return;
+    }
+    openReaderPage(_router, location);
   }
 
   void _externalBookChanged() {
@@ -160,17 +189,8 @@ class _GTReaderAppState extends ConsumerState<GTReaderApp> {
           final current = await _externalBooks.complete(request.id);
           if (!mounted) return;
           if (current && id != null) {
-            final location = AppRoutes.reader(id);
-            if (_router.routeInformationProvider.value.uri.path != location) {
-              // 保留书架作为返回页；换书只替换当前阅读页，不叠放两个阅读器。
-              if (_router.routeInformationProvider.value.uri.path.startsWith(
-                '/reader/',
-              )) {
-                unawaited(_router.pushReplacement<void>(location));
-              } else {
-                unawaited(_router.push<void>(location));
-              }
-            }
+            // 保留书架作为返回页；换书只替换当前阅读页，不叠放两个阅读器。
+            openReaderPage(_router, AppRoutes.reader(id));
           }
         } catch (error, stack) {
           if (!mounted) return;
@@ -188,7 +208,16 @@ class _GTReaderAppState extends ConsumerState<GTReaderApp> {
   }
 
   void _updateDiagnosticRoute() {
-    final parts = _router.routeInformationProvider.value.uri.pathSegments;
+    final uri = _router.routerDelegate.currentConfiguration.matches.isEmpty
+        ? _router.routeInformationProvider.value.uri
+        : _router.state.uri;
+    final parts = uri.pathSegments;
+    // 阅读退出已有prepareShelfReturn，主页切换在_goBranch等待完整资料；
+    // 导入页返回补一次核对，不在滚动或普通数据库更新时检查源文件。
+    if (uri.path == AppRoutes.shelf && _previousRoute == AppRoutes.import) {
+      ref.invalidate(libraryBooksProvider);
+    }
+    _previousRoute = uri.path;
     // 只记录页面名，不记录路由中的书籍ID或搜索参数。
     AppErrors.reporter.route = parts.isEmpty ? '/' : '/${parts.first}';
     AppErrors.reporter.context = {};
@@ -213,12 +242,12 @@ class _GTReaderAppState extends ConsumerState<GTReaderApp> {
 
   @override
   void dispose() {
-    _fontLifecycle.dispose();
+    _lifecycle.dispose();
     if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
       _externalBooks.dispose();
     }
     unawaited(_notificationClicks?.cancel());
-    _router.routeInformationProvider.removeListener(_updateDiagnosticRoute);
+    _router.routerDelegate.removeListener(_updateDiagnosticRoute);
     _router.dispose();
     super.dispose();
   }

@@ -153,6 +153,16 @@ class _ReaderPerformanceState extends State<ReaderPerformance> {
       'rasterP95Us': rasters[(rasters.length * .95).ceil() - 1],
       'rasterMaxUs': rasters.last,
       'refreshHz': _refreshRate,
+      // 手机可能实际运行在120Hz；另外固定记录用户要求的90Hz预算。
+      // 这是Flutter构建/栅格耗时，真实屏幕呈现仍由系统轨迹核对。
+      'targetHz': 90,
+      'over90Budget': _frames
+          .where(
+            (f) =>
+                f.buildDuration.inMicroseconds > 1000000 / 90 ||
+                f.rasterDuration.inMicroseconds > 1000000 / 90,
+          )
+          .length,
       'overFrameBudget': _frames
           .where(
             (f) =>

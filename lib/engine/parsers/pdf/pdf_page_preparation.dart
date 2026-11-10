@@ -1,4 +1,5 @@
 import 'dart:convert';
+import '../../styles/chapter_styler.dart';
 import 'dart:io';
 import 'dart:math' as math;
 
@@ -96,6 +97,7 @@ typedef PdfPagePreparation = (
     }
   }
   final content = ChapterContent(
+    stylesJson: ChapterStyler.emptyTableJson,
     chapterId: id,
     blocks: blocks,
     pdfPage: PdfPageInfo(

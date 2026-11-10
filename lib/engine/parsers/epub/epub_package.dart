@@ -53,6 +53,7 @@ class EpubPackage {
     required this.author,
     required this.manifest,
     required this.spine,
+    this.navigationSpine = const [],
     this.uniqueIdentifier = '',
     this.navItem,
     this.ncxItem,
@@ -76,6 +77,9 @@ class EpubPackage {
 
   /// 阅读顺序（已过滤 linear="no"）
   final List<EpubManifestItem> spine;
+
+  /// 包含linear=no的原始顺序，只用于目录边界；正文仍只读取[spine]。
+  final List<EpubManifestItem> navigationSpine;
   final EpubManifestItem? navItem;
   final EpubManifestItem? ncxItem;
   final EpubManifestItem? coverItem;
@@ -168,10 +172,13 @@ class EpubPackage {
     }
 
     final spine = <EpubManifestItem>[];
+    final navigationSpine = <EpubManifestItem>[];
     for (final idref in spineOrder) {
-      if (spineLinear[idref] == false) continue;
       final item = manifest[idref];
-      if (item != null && item.isXhtml) spine.add(item);
+      if (item != null && item.isXhtml) {
+        navigationSpine.add(item);
+        if (spineLinear[idref] != false) spine.add(item);
+      }
     }
     if (spine.isEmpty) {
       throw const ImportFailure(ImportErrorCode.invalidContainer, '缺少正文 spine');
@@ -184,6 +191,7 @@ class EpubPackage {
       author: _metadataText(root, 'creator'),
       manifest: manifest,
       spine: spine,
+      navigationSpine: navigationSpine,
       uniqueIdentifier: uniqueIdentifier,
       navItem: _firstWhere(manifest.values, (i) => i.isNav),
       ncxItem: _resolveNcx(manifest, tocId),

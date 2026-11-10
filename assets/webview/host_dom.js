@@ -332,6 +332,43 @@
     return null;
   }
 
+  /* 链接文字是不是脚注编号：[1]、(2) 或上标数字（与 Dart 侧口径一致）。 */
+  function isNoteMarker(text) {
+    var value = (text || '').trim();
+    if (!value || value.length > 8) return false;
+    if (/^[\[\(]\s*\d{1,4}\s*[\]\)]$/.test(value)) return true;
+    return /^[¹²³⁰-⁹]+$/.test(value);
+  }
+
+  /* 这一点是不是脚注引用？是就返回 href，由 Dart 弹脚注气泡而不是直接跳转。
+     很多 EPUB2 老书不给 noteref 标记，只写 <a href="#filepos...">[1]</a>，
+     所以和简化排版一样按「带锚点 + 编号文字」兜底识别。 */
+  function footnoteAt(x, y) {
+    try {
+      var element = document.elementFromPoint(x, y);
+      while (element && element.tagName) {
+        if (element.tagName === 'A') {
+          var type = (element.getAttribute('epub:type') || '') + ' ' +
+            (element.getAttribute('role') || '');
+          var href = element.getAttribute('href') || '';
+          if (type.indexOf('noteref') >= 0 || type.indexOf('doc-noteref') >= 0) {
+            if (href) return href;
+          }
+          if (href && ((isNoteMarker(element.textContent) &&
+              (href.indexOf('#') >= 0 || element.closest('sup'))) ||
+              (href.indexOf('#') >= 0 && /^\s*\d{1,4}\s*$/.test(element.textContent) &&
+                element.closest('sup')))) {
+            return href;
+          }
+        }
+        element = element.parentElement;
+      }
+    } catch (error) {
+      // 取不到时按普通点击处理。
+    }
+    return null;
+  }
+
   function goToDomPoint(point) {
     var page = pageOfPoint(point);
     if (page === null) return false;
@@ -397,6 +434,7 @@
     goToAnchor: goToAnchor,
     goToDomPoint: goToDomPoint,
     goToText: goToText,
+    footnoteAt: footnoteAt,
     imageAt: imageAt,
     landOnElement: landOnElement,
     linkAt: linkAt,

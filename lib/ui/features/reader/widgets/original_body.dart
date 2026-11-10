@@ -632,6 +632,7 @@ class _OriginalBodyState extends State<OriginalBody> {
     final result = frame.updateFlight.then((_) async {
       if (!_alive(frame)) return;
       frame.preparationFailed = false;
+      frame.host.preparationStage = 'style';
       final viewport = Size(_width, _height);
       if (frame.paginated && frame.viewport != viewport) {
         await _evaluate(
@@ -646,6 +647,7 @@ class _OriginalBodyState extends State<OriginalBody> {
       );
       final c = frame.chapter;
       if (!frame.prepared || frame.preparedRevision != c.preparationRevision) {
+        frame.host.preparationStage = 'position';
         await traceTurnStep(
           'load host-position chapter=${c.ordinal}',
           () async => c.prepare?.call(frame.host),
@@ -655,6 +657,7 @@ class _OriginalBodyState extends State<OriginalBody> {
         frame.preparedRevision = c.preparationRevision;
       }
       final information = jsonEncode(frame.chapter.information);
+      frame.host.preparationStage = 'information';
       if (information != frame.informationKey) {
         frame.informationKey = information;
         await _evaluate(frame, '__gt.information($information)');
@@ -689,7 +692,9 @@ class _OriginalBodyState extends State<OriginalBody> {
     frame.host.preparation = result;
     frame.updateFlight = result.catchError((Object error, StackTrace stack) {
       if (!_alive(frame)) return;
+      AppErrors.report(error, stack, operation: '原书章节准备失败', notify: false);
       frame.preparationFailed = true;
+      frame.host.preparationStage = 'failed';
       frame.updateKey = null; // 下次更新允许重试，不让一次读取失败阻断后续操作。
       frame.chapter.onHostEvent?.call({
         'type': 'loadError',
@@ -712,6 +717,7 @@ class _OriginalBodyState extends State<OriginalBody> {
     await _updateFrame(frame);
     if (!_alive(frame) || frame.preparationFailed) {
       frame.host.cancelStartup();
+      frame.started = false;
       frame.styleKey = frame.informationKey = null;
       frame.prepared = false;
       return;
@@ -726,6 +732,7 @@ class _OriginalBodyState extends State<OriginalBody> {
       'pager start chapter=${c.ordinal} load=${frame.load} '
       'exact=${frame.host.initialDomPoint != null}',
     );
+    frame.host.preparationStage = 'start';
     await _evaluate(
       frame,
       frame.host.finishStartupScript(

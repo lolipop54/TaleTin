@@ -104,8 +104,13 @@ class ImportBooksUseCase {
   /// 对照测试可分别关闭流程优化和 Rust 匹配，正式应用默认均开启。
   final bool optimizeLocations;
 
-  /// 单次导入的源文件大小上限（设计文档 6.1 防护阈值初值）
-  static const int maxSourceBytes = 200 * 1024 * 1024;
+  /// 单本源文件大小上限，与 MOBI／AZW3 原生读取器的 GT_SOURCE_LIMIT 一致。
+  static const int _maxSourceMiB = 500;
+  static const int maxSourceBytes = _maxSourceMiB * 1024 * 1024;
+  static const _sourceTooLarge = ImportFailure(
+    ImportErrorCode.tooLarge,
+    '超过 $_maxSourceMiB MB',
+  );
 
   /// 空间校验余量：复制与解析产物会同时存在，按源文件的 2.2 倍加余量估算
   static const int spaceHeadroomBytes = 32 * 1024 * 1024;
@@ -288,7 +293,7 @@ class ImportBooksUseCase {
       }
       final sizeBytes = picked.sizeBytes;
       if (sizeBytes != null && sizeBytes > maxSourceBytes) {
-        throw const ImportFailure(ImportErrorCode.tooLarge, '超过 200 MB');
+        throw _sourceTooLarge;
       }
 
       stagingDir = await _storage.stagingDirectory(jobId);
@@ -333,7 +338,7 @@ class ImportBooksUseCase {
         throw const ImportFailure(ImportErrorCode.emptyFile);
       }
       if (copied.byteCount > maxSourceBytes) {
-        throw const ImportFailure(ImportErrorCode.tooLarge, '超过 200 MB');
+        throw _sourceTooLarge;
       }
 
       // 2) 真实格式探测（只认文件头，不信任扩展名）
@@ -425,20 +430,33 @@ class ImportBooksUseCase {
           optimizeLocations && loadSourcePositions != null && existing != null
           ? await loadSourcePositions!(bookId)
           : const SourcePositionPreparation();
-      final positionRules = sourcePositionRules(
-        format.code,
-        charset: format == BookFormat.txt
-            ? txtChoice?.charset ??
-                  _textPreparation.detectEncoding(header).charset
-            : null,
-        chapterPattern: txtChoice?.chapterPattern,
-        forceSections: txtChoice?.forceSectionFallback ?? false,
-      );
+      final positionCharset = format == BookFormat.txt
+          ? txtChoice?.charset ??
+                _textPreparation.detectEncoding(header).charset
+          : null;
+      String rulesFor({bool indented = false, bool combined = false}) =>
+          sourcePositionRules(
+            format.code,
+            charset: positionCharset,
+            chapterPattern: txtChoice?.chapterPattern,
+            forceSections: txtChoice?.forceSectionFallback ?? false,
+            usesIndentedTxtHeadings: indented,
+            usesCombinedTxtHeadings: combined,
+          );
+      final automaticTxt =
+          format == BookFormat.txt &&
+          txtChoice?.chapterPattern == null &&
+          txtChoice?.forceSectionFallback != true;
       // 属性没变时可避免连带匹配；最终仍比较本次扫描得到的摘要，才决定复用。
+      // 旧的自动索引可能漏掉缩进或合写章题，扫描时先带上待核对的历史位置。
+      final oldRules = oldPositions.proof?.rules;
       final unchangedStamp =
           beforeParse != null &&
-          oldPositions.proof?.rules == positionRules &&
-          oldPositions.proof?.stamp == sourceFingerprint(beforeParse);
+          oldPositions.proof?.stamp == sourceFingerprint(beforeParse) &&
+          (automaticTxt
+              ? oldRules == rulesFor(combined: true) ||
+                    oldRules == rulesFor(combined: true, indented: true)
+              : oldRules == rulesFor());
       final anchors = [
         for (final point in oldPositions.anchors)
           if (!unchangedStamp || point.needsRelocation)
@@ -530,7 +548,10 @@ class ImportBooksUseCase {
           ? null
           : SourcePositionProof(
               index.sourceDigest,
-              positionRules,
+              rulesFor(
+                indented: document.usesIndentedTxtHeadings,
+                combined: document.usesCombinedTxtHeadings,
+              ),
               index.sourceStamp ?? '',
             );
       final sameContent =

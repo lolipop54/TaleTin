@@ -15,7 +15,8 @@
 #include <wchar.h>
 #endif
 
-#define GT_SOURCE_LIMIT ((size_t)200 * 1024 * 1024)
+/* Keep in sync with ImportBooksUseCase.maxSourceBytes. */
+#define GT_SOURCE_LIMIT ((size_t)500 * 1024 * 1024)
 #define GT_RESOURCE_LIMIT ((size_t)50 * 1024 * 1024)
 #define GT_TEXT_LIMIT ((size_t)1024 * 1024 * 1024)
 #define GT_INPUT_WINDOW ((size_t)64 * 1024)

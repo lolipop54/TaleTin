@@ -12,6 +12,54 @@
   var appliedIndent = true;
   var appliedLineHeight = null;
   var appliedParagraphGap = null;
+  var bookAlignmentMarked = false;
+  var legacyFontStyle = null;
+  var legacyFontDeltas = [-2, -1, 0, 1, 2, 4, 6];
+
+  function normalizeLegacyFontSizes() {
+    if (document.getElementById('gt-legacy-font-size')) return;
+    var fonts = document.querySelectorAll('font[size]');
+    if (!fonts.length) return;
+    for (var i = 0; i < fonts.length; i++) {
+      var raw = fonts[i].getAttribute('size').trim();
+      if (!/^[+-]?\d+$/.test(raw)) continue;
+      var size = Number(raw) + (/^[+-]/.test(raw) ? 3 : 0);
+      fonts[i].setAttribute('data-gt-legacy-font', Math.max(1, Math.min(7, size)));
+    }
+    var style = document.createElement('style');
+    style.id = 'gt-legacy-font-size';
+    // 先以正文档测量原书基准；真正的固定差值在读者字号已知后一次写好。
+    style.textContent = legacyFontDeltas.map(function(delta, index) {
+      return ':where(font[data-gt-legacy-font="' + (index + 1) + '"]) {' +
+        'font-size:1rem}';
+    }).join('\n');
+    document.head.insertBefore(style, document.head.firstChild);
+    legacyFontStyle = style;
+  }
+
+  function applyLegacyFontSizes(readerSize, scaledRootSize) {
+    if (!legacyFontStyle) return;
+    // 保持低于作者CSS；以缩放后的根字号换算，最终结果为正文加固定差值。
+    // 也适用于原书用px写死正文、随后逐元素缩放的情况。
+    legacyFontStyle.textContent = legacyFontDeltas.map(function(delta, index) {
+      return ':where(font[data-gt-legacy-font="' + (index + 1) + '"]) {' +
+        'font-size:' + ((readerSize + delta) / scaledRootSize) + 'rem}';
+    }).join('\n');
+  }
+
+  // 必须在首次写入阅读器覆盖样式前读取：否则 p 写的居中章题和右对齐署名
+  // 会先变成 justify，后续缩进判断便再也看不到书里的对齐。
+  function markBookAlignment() {
+    if (bookAlignmentMarked) return;
+    var pending = [];
+    var elements = document.querySelectorAll('p,li,blockquote,div');
+    for (var i = 0; i < elements.length; i++) {
+      var align = window.getComputedStyle(elements[i]).textAlign;
+      if (align === 'center' || align === 'right') pending.push([elements[i], align]);
+    }
+    pending.forEach(function(item) { item[0].setAttribute('data-gt-book-align', item[1]); });
+    bookAlignmentMarked = true;
+  }
 
   function hasFixedPxFont() {
     try {
@@ -196,7 +244,8 @@
     var pending = [];
     for (var j = 0; j < nodes.length; j++) {
       var element = nodes[j];
-      if (element.__gtBaseFont === undefined) {
+      // 旧式字号的固定差值已经更新，子元素的基准也需重读，避免沿用上次倍率。
+      if (legacyFontStyle || element.__gtBaseFont === undefined) {
         var size = parseFloat(window.getComputedStyle(element).fontSize);
         element.__gtBaseFont = size > 0 ? size : 0;
       }
@@ -212,6 +261,7 @@
   function applyFontSize(fontSizePx) {
     var book = analyzeBookFont();
     var scale = book.textPx > 0 ? fontSizePx / book.textPx : 1;
+    applyLegacyFontSizes(fontSizePx, book.rootPx * scale);
     if (book.fixed) {
       applyElementFontScale(scale);
       return '';
@@ -233,9 +283,14 @@
 
   function applyStyle(options) {
     options = options || {};
+    normalizeLegacyFontSizes();
+    markBookAlignment();
     var css = '';
-    // 正文强制两端对齐，段落末行仍靠左；章题保留原书对齐方式。
-    css += 'body, body p:not([data-gt-image-only]), body li, body blockquote, body [data-gt-prose] {' +
+    // 普通正文两端对齐；书内居中／右对齐的段落和章题保留原有格式。
+    // 不在 body 上设置末行对齐：该属性会继承到章题，连 <br> 前一行也会靠左。
+    css += 'body p:not([data-gt-image-only]):not([data-gt-book-align]), ' +
+      'body li:not([data-gt-book-align]), body blockquote:not([data-gt-book-align]), ' +
+      'body [data-gt-prose]:not([data-gt-book-align]) {' +
       'text-align: justify !important; text-align-last: left !important;' +
       'text-justify: inter-character !important; hyphens: manual !important; }\n';
     var family = options.fontFamily !== undefined

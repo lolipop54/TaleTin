@@ -7,7 +7,7 @@ class _SpeechFollowState {
   bool engaged = false;
   int version = 0;
   String? stage;
-  Object? key, boundaryKey;
+  Object? key;
   late ListeningService service;
   late AppLifecycleListener lifecycle;
   final diagnostics = ListeningFollowDiagnostics('original');
@@ -94,7 +94,6 @@ extension _OriginalSpeechFollow on _OriginalReaderAreaState {
         _speech.version++;
         _speech.key = null;
         if (!_speech.visible) {
-          _speech.service.setPageBoundaries(this, const []);
           ref
               .read(readerSessionProvider(widget.bookId).notifier)
               .cancelSpeechFollow();
@@ -103,7 +102,6 @@ extension _OriginalSpeechFollow on _OriginalReaderAreaState {
             _updateState(() => _speech.resuming = true);
           }
         } else {
-          _speech.boundaryKey = null;
           _scheduleSpeech();
         }
       },
@@ -283,27 +281,6 @@ extension _OriginalSpeechFollow on _OriginalReaderAreaState {
       ),
     );
     if (!_speechCurrent(version, state) || host != _host) return false;
-    final boundaryKey = (
-      host,
-      widget.settings,
-      _captureVersions[session.chapterIndex],
-    );
-    if (_speech.boundaryKey != boundaryKey) {
-      final points = await _speechWait(
-        'ttsBoundaries',
-        () => host.ttsBoundaries(map.nodes),
-      );
-      if (!_speechCurrent(version, state) || host != _host) return false;
-      if (points == null) {
-        _speechLog('skip', {'reason': 'boundariesMissing'});
-        return false;
-      }
-      _speech.service.setPageBoundaries(
-        this,
-        points.map(map.locatorOf).toList(),
-      );
-      _speech.boundaryKey = boundaryKey;
-    }
     if (!await _speechWait(
       'followTtsPoint',
       () => host.followTtsPoint(map.point(target)),

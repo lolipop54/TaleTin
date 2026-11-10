@@ -32,7 +32,9 @@ impl MobiHtml {
         // it as body text. An extra parser-only BOM retains that exact value.
         let source = if source.starts_with('\u{feff}') {
             format!("\u{feff}{source}")
-        } else { source.into_owned() };
+        } else {
+            source.into_owned()
+        };
         let dom = parse_document(Dom::for_original(), options).one(source);
         Self {
             dom,

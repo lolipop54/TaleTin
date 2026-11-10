@@ -68,9 +68,7 @@ mixin _ReaderOriginalPosition on AsyncNotifier<ReaderSession> {
       ReaderDeliveryExperiments.contentTarget &&
       _visualRestore?.progressBasis != ReadingProgressBasis.legacyVisual;
 
-  void reportPositionFailure(Object error, StackTrace stack) {
-    state = AsyncError(error, stack);
-  }
+  void reportPositionFailure(Object error, StackTrace stack);
 
   void _clearRestoredPosition() {
     _listeningRestore = null;

@@ -33,10 +33,8 @@ extension ReaderScanCommit on ReaderSessionNotifier {
     final chapter = session.chapters.indexWhere((c) => c.id == next.chapterId);
     _clearRestoredPosition();
     if (chapter != session.chapterIndex) {
-      ++_tokenVersion;
-      _token?.cancel();
+      _invalidateLayoutRequests();
       _previousChapterLayout = current;
-      _nextChapterLayout = null;
     }
     _publishScan(
       session.copyWith(

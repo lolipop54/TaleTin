@@ -76,12 +76,7 @@ extension _OriginalTurnCoordinator on _OriginalReaderAreaState {
     );
     if (silent && !slot.ready) return null;
     if (!slot.ready) {
-      final ready = _pageReady.putIfAbsent(chapter, () => Completer<bool>());
-      if (!await ready.future.timeout(
-        const Duration(seconds: 5),
-        onTimeout: () => false,
-      )) {
-        _pageReady.remove(chapter);
+      if (!await _awaitNeighborReady(chapter, const Duration(seconds: 5))) {
         throw StateError('相邻章尚未就绪');
       }
       traceTurn('resolve neighbor ready chapter=$chapter');
@@ -216,6 +211,10 @@ extension _OriginalTurnCoordinator on _OriginalReaderAreaState {
       return;
     }
     if (await _openImage(details.localPosition, hit: hit) || !mounted) return;
+    if (hit.footnote != null && hit.footnote!.isNotEmpty) {
+      await _openFootnote(hit.footnote!, localPoint: details.localPosition);
+      return;
+    }
     final ratio = (details.localPosition.dx - _webViewOrigin.dx) / pageWidth;
     final zone = ratio < GtReadingTapZones.previousEdge
         ? 'prev'

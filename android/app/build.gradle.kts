@@ -32,6 +32,11 @@ val keystoreProperties = Properties().apply {
     }
 }
 
+// 临时用调试签名打 release 包（真机试装、给别人试用的包）：打包时加 -P gtDebugSigning=true。
+// 默认仍按 key.properties 走正式签名；调试签名包与正式签名包签名不一致，
+// 既不能覆盖安装正式包，正式包也不能覆盖它，升级前要先卸载。
+val debugSigningRequested = providers.gradleProperty("gtDebugSigning").orNull.toBoolean()
+
 android {
     namespace = "com.example.gtreader"
     compileSdk = flutter.compileSdkVersion
@@ -72,13 +77,21 @@ android {
         release {
             // 有签名配置就用正式签名；缺 key.properties 时退回调试签名并明确告警，
             // 免得打出一个「能用但不能覆盖升级」的包还以为已经正式签名。
-            signingConfig = if (keystorePropertiesFile.exists()) {
-                signingConfigs.getByName("release")
-            } else {
-                logger.warn(
-                    "未找到 android/key.properties：release 包将使用调试签名，不能覆盖安装正式包"
-                )
-                signingConfigs.getByName("debug")
+            // 打包时显式加 -P gtDebugSigning=true 则不论有没有 key.properties 都用调试签名。
+            signingConfig = when {
+                debugSigningRequested -> {
+                    logger.warn(
+                        "已指定 gtDebugSigning=true：release 包使用调试签名，不能覆盖安装正式签名包"
+                    )
+                    signingConfigs.getByName("debug")
+                }
+                keystorePropertiesFile.exists() -> signingConfigs.getByName("release")
+                else -> {
+                    logger.warn(
+                        "未找到 android/key.properties：release 包将使用调试签名，不能覆盖安装正式包"
+                    )
+                    signingConfigs.getByName("debug")
+                }
             }
             // 混淆与资源压缩暂不开启：原书排版用的 WebView 插件带原生代码，
             // 打开 R8 需要额外 keep 规则并做真机回归，等发版前单独验证。

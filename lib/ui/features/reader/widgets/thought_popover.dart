@@ -13,9 +13,11 @@ Future<void> showThoughtPopover(
   required Rect anchor,
   required String body,
   required ReadingTheme theme,
+  String title = '想法',
+  String? actionLabel,
+  VoidCallback? onAction,
 }) {
   final media = MediaQuery.of(context);
-  final fontSize = media.textScaler.scale(16.0);
   final width = math.min(340.0, media.size.width - 32);
   final topSafe = media.padding.top + 12;
   final bottomSafe =
@@ -31,9 +33,15 @@ Future<void> showThoughtPopover(
     textDirection: Directionality.of(context),
     textScaler: media.textScaler,
   )..layout(maxWidth: width - 32);
-  final textHeight = math.min(painter.height, fontSize * 1.5 * 8);
+  // 内容多时最多占安全高度的一大半，其余在框内滚动（脚注可能很长）
+  final maxBodyHeight = (bottomSafe - topSafe) * 0.62;
+  final textHeight = math.min(painter.height, maxBodyHeight);
   painter.dispose();
-  final height = math.min(textHeight + 80, bottomSafe - topSafe);
+  final rowHeight = math.max(48.0, media.textScaler.scale(16) * 1.5);
+  final height = math.min(
+    textHeight + 16 + rowHeight + (actionLabel == null ? 12 : rowHeight),
+    bottomSafe - topSafe,
+  );
   final below = anchor.bottom + 8 + height <= bottomSafe;
   final left = (anchor.center.dx - width / 2).clamp(
     16.0,
@@ -62,6 +70,9 @@ Future<void> showThoughtPopover(
             theme: theme,
             tip: tip,
             below: below,
+            title: title,
+            actionLabel: actionLabel,
+            onAction: onAction,
           ),
         ),
       ],
@@ -77,12 +88,18 @@ class ThoughtPopover extends StatelessWidget {
     required this.theme,
     required this.tip,
     required this.below,
+    this.title = '想法',
+    this.actionLabel,
+    this.onAction,
   });
   final String body;
   final TextStyle style;
   final ReadingTheme theme;
   final double tip;
   final bool below;
+  final String title;
+  final String? actionLabel;
+  final VoidCallback? onAction;
   @override
   Widget build(BuildContext context) => CustomPaint(
     painter: _BubblePainter(theme.background, theme.primary, tip, below),
@@ -93,33 +110,60 @@ class ThoughtPopover extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    '想法',
-                    style: style.copyWith(fontWeight: FontWeight.w600),
+            SizedBox(
+              height: math.max(
+                48.0,
+                MediaQuery.textScalerOf(context).scale(16) * 1.5,
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: style.copyWith(fontWeight: FontWeight.w600),
+                    ),
                   ),
-                ),
-                GtButton.icon(
-                  tooltip: '关闭想法',
-                  onPressed: () => Navigator.pop(context),
-                  icon: Icon(Icons.close, color: theme.primary, size: 20),
-                ),
-              ],
-            ),
-            Flexible(
-              child: ConstrainedBox(
-                constraints: BoxConstraints(
-                  maxHeight: MediaQuery.textScalerOf(context).scale(16) * 12,
-                ),
-                child: SingleChildScrollView(
-                  primary: false,
-                  child: Text(body, style: style),
-                ),
+                  GtButton.icon(
+                    tooltip: '关闭想法',
+                    onPressed: () => Navigator.pop(context),
+                    icon: Icon(Icons.close, color: theme.primary, size: 20),
+                  ),
+                ],
               ),
             ),
-            const SizedBox(height: 12),
+            Flexible(
+              fit: FlexFit.tight,
+              // 弹窗外框已按文字和安全区算好高度，正文用完实际剩余空间。
+              // 这里再设另一套上限，会在长注释的底部留下大块空白。
+              child: SingleChildScrollView(
+                primary: false,
+                physics: const ClampingScrollPhysics(),
+                child: Text(body, style: style),
+              ),
+            ),
+            if (actionLabel != null && onAction != null)
+              SizedBox(
+                height: math.max(
+                  48.0,
+                  MediaQuery.textScalerOf(context).scale(16) * 1.5,
+                ),
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: GtButton(
+                    onPressed: onAction,
+                    tooltip: actionLabel,
+                    child: Text(
+                      actionLabel!,
+                      style: style.copyWith(
+                        color: theme.primary,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
+              )
+            else
+              const SizedBox(height: 12),
           ],
         ),
       ),

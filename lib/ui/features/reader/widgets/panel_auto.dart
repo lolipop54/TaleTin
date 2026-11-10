@@ -1,4 +1,3 @@
-import 'package:taletin/ui/core/widgets/gt_switch.dart';
 import 'package:taletin/ui/core/widgets/gt_button.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -90,36 +89,6 @@ class PanelAuto extends ConsumerWidget {
               onScrollSpeed: preferences.setAutoScrollSpeed,
               onScanSeconds: preferences.setAutoScanSeconds,
               pendingSave: () => preferences.pendingWrites,
-            ),
-            const SizedBox(height: GtSpacing.s2),
-            Container(height: 1, color: colors.borderSubtle),
-            const SizedBox(height: GtSpacing.s2),
-            // 屏幕常亮
-            Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '屏幕常亮',
-                        style: GtText.body(colors.textPrimary)
-                            .copyWith(fontSize: 14),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        '自动阅读期间保持屏幕常亮',
-                        style: GtText.caption(colors.textMuted)
-                            .copyWith(fontSize: 12),
-                      ),
-                    ],
-                  ),
-                ),
-                GtSwitch(
-                  value: settings.autoKeepAwake,
-                  onChanged: preferences.setAutoKeepAwake,
-                ),
-              ],
             ),
             const SizedBox(height: GtSpacing.s4),
           ],

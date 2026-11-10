@@ -173,6 +173,9 @@ class OriginalHostController {
   /// 就绪属于文档本身，不属于左/右预载槽；搬槽时不能丢失。
   int? pageCount;
   int knownPageCount = 0;
+
+  /// 失败日志使用的最近准备阶段；不采集正文，也不额外查询网页。
+  String preparationStage = 'created';
   bool get hasReadableWindow => pageCount != null || knownPageCount > 0;
 
   /// 首次 start 前准备的精确正文点；不消耗会话中的落页确认目标。

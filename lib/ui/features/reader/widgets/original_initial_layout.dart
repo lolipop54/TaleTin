@@ -28,6 +28,7 @@ extension _OriginalInitialLayout on _OriginalBodyState {
     if (frame.styleKey == key) return;
     frame.styleKey = key;
     if (c.fontFamily.isNotEmpty) {
+      frame.host.preparationStage = 'font';
       await _evaluate(
         frame,
         'window.__gt && __gt.prepareFont(${jsonEncode(c.fontFamily)}, ${jsonEncode(originalFontCss(c.fontFamily))})',
@@ -50,6 +51,7 @@ extension _OriginalInitialLayout on _OriginalBodyState {
           : null,
     );
     if (c.themeColors?['backgroundImage'] != null) {
+      frame.host.preparationStage = 'background';
       await _evaluate(
         frame,
         'window.__gtHost.style.backgroundReady()',

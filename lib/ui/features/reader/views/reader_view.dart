@@ -29,12 +29,12 @@ import '../../../../app/router/reader_route_page.dart';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 
 import '../../../../app/di/app_providers.dart';
 import '../../../../app/di/reading_controls_providers.dart';
 import '../../../../platform/channels/reading_window.dart';
-import '../../bookshelf/view_models/prepare_shelf_return.dart';
+import '../widgets/reader_leave.dart';
+import '../widgets/reader_swipe_exit.dart';
 import '../../../../app/di/statistics_providers.dart';
 import '../widgets/reading_statistics_scope.dart';
 import '../../../../domain/models/annotation.dart';
@@ -43,11 +43,11 @@ import '../../../../domain/models/reading_settings.dart';
 import '../../../../domain/services/screen_controls.dart';
 import '../../../../domain/services/toc_entry_index.dart';
 import '../../../../engine/layout/chapter_layout.dart';
-import '../../../../engine/layout/layout_work_gate.dart';
 import '../../../../core/diagnostics/reader_delivery_experiments.dart';
 import '../../../../engine/selection/selection_range.dart';
 import '../../../../engine/selection/selection_rects.dart';
 import '../../../../engine/layout/layout_options.dart';
+import '../../../../engine/layout/layout_work_gate.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/gt_tokens.dart';
 import '../../../core/theme/reading_theme.dart';
@@ -60,8 +60,10 @@ import '../view_models/automatic_reading.dart';
 import '../widgets/original_reader_area.dart';
 import '../widgets/pdf_reader_area.dart';
 import '../view_models/pdf_book_provider.dart';
+import '../view_models/pdf_viewport.dart';
 import '../widgets/original_host_controller.dart';
 import '../widgets/page_canvas.dart';
+import '../widgets/footnote_popover.dart';
 import '../widgets/book_paper.dart';
 import '../view_models/visible_spread.dart';
 import '../widgets/simplified_scroll_area.dart';
@@ -112,6 +114,7 @@ import '../../../core/widgets/gt_icon.dart';
 part '../widgets/reader_content.dart';
 part '../widgets/reader_reading_content.dart';
 part '../widgets/reader_page_area.dart';
+part '../widgets/reader_page_content.dart';
 part '../widgets/reader_spread_area.dart';
 part '../widgets/spread_page_content.dart';
 part '../widgets/reader_page_preparation.dart';
@@ -147,7 +150,7 @@ class ReaderView extends ConsumerWidget {
 
 /// 阅读页的外围处理：窗口亮度与阅读位置。
 ///
-/// - 亮度：本书设了覆盖就作用到窗口，离开阅读页恢复原亮度（设计文档 2.3）；
+/// - 亮度：全局阅读亮度作用到窗口，离开阅读页恢复原亮度（设计文档 2.3）；
 /// - 位置：应用切到后台时记一次当前位置（设计文档 7.1）。翻页、换章时已经
 ///   各写一次，这里补的是「读到一半直接切后台或被系统回收」；因此不依赖
 ///   dispose 提交数据（设计文档 4.2）。
@@ -161,7 +164,8 @@ class _ReaderScope extends ConsumerStatefulWidget {
   ConsumerState<_ReaderScope> createState() => _ReaderScopeState();
 }
 
-class _ReaderScopeState extends ConsumerState<_ReaderScope> {
+class _ReaderScopeState extends ConsumerState<_ReaderScope>
+    with WidgetsBindingObserver {
   late final ReadingWindow _window;
   final _orientationOwner = Object();
   MediaQueryData? _readingMetrics;
@@ -194,6 +198,7 @@ class _ReaderScopeState extends ConsumerState<_ReaderScope> {
   @override
   void dispose() {
     WidgetsBinding.instance
+      ..removeObserver(this)
       ..resamplingEnabled = _previousResampling
       ..samplingOffset = _previousSamplingOffset;
     _lifecycle.dispose();
@@ -204,10 +209,18 @@ class _ReaderScopeState extends ConsumerState<_ReaderScope> {
     super.dispose();
   }
 
+  /// 旋转、分屏或键盘弹出都会改变窗口占位；控制层按最新分类占位重新留白。
+  @override
+  void didChangeMetrics() {
+    unawaited(_window.refreshBarInsets());
+  }
+
   @override
   void initState() {
     super.initState();
     _window = ref.read(readingWindowProvider)..enterReading(_orientationOwner);
+    WidgetsBinding.instance.addObserver(this);
+    unawaited(_window.refreshBarInsets());
     final binding = WidgetsBinding.instance;
     _previousResampling = binding.resamplingEnabled;
     _previousSamplingOffset = binding.samplingOffset;
@@ -230,6 +243,8 @@ class _ReaderScopeState extends ConsumerState<_ReaderScope> {
       onStateChange: (state) {
         final foreground = state == AppLifecycleState.resumed;
         _automatic.setForeground(foreground);
+        // 回前台时系统可能重新应用了系统栏，占位以窗口实际值为准。
+        if (foreground) unawaited(_window.refreshBarInsets());
         if (!foreground) _persist();
       },
     );
@@ -281,7 +296,7 @@ class _ReaderScopeState extends ConsumerState<_ReaderScope> {
         unawaited(_automatic.discard());
       }
     });
-    // 本书亮度覆盖变化立刻作用到窗口
+    // 全局阅读亮度变化立刻作用到当前窗口
     ref.listen(
       readerSettingsProvider(widget.bookId).select((s) => s.value?.brightness),
       (_, brightness) => unawaited(
@@ -342,9 +357,48 @@ class _ReaderScopeState extends ConsumerState<_ReaderScope> {
       },
       child: Listener(
         behavior: HitTestBehavior.translucent,
-        onPointerDown: (_) => _automatic.pointerDown(),
+        // 离开阅读页时自动阅读的 Provider 可能已经释放，迟到的指针事件直接忽略
+        onPointerDown: (_) {
+          try {
+            _automatic.pointerDown();
+          } on Object {
+            // Provider 已随页面释放；这一下点击不必再记录
+          }
+        },
         child: widget.child,
       ),
     );
   }
+}
+
+/// 控制层留白：每个开关只管自己那一侧的系统栏。
+/// 显示顶部状态栏时，状态栏所在的边（以及横屏时同一侧的挖孔）留白；
+/// 隐藏后那一边归零，内容直接贴到屏幕边缘。底部导航栏同理。
+/// [native] 是原生的分类占位（物理像素），为空时退回整块安全区。
+EdgeInsets readerControlInsets(
+  BuildContext context,
+  ReadingBarInsets? native, {
+  required bool statusBar,
+  required bool navigationBar,
+}) {
+  final media = MediaQuery.of(context);
+  if (native != null) {
+    final ratio = media.devicePixelRatio;
+    final inset = native.controls(
+      statusBar: statusBar,
+      navigationBar: navigationBar,
+    );
+    return EdgeInsets.fromLTRB(
+      inset.left / ratio,
+      inset.top / ratio,
+      inset.right / ratio,
+      inset.bottom / ratio,
+    );
+  }
+  return EdgeInsets.only(
+    left: statusBar ? media.padding.left : 0,
+    top: statusBar ? media.padding.top : 0,
+    right: navigationBar ? media.padding.right : 0,
+    bottom: navigationBar ? media.viewPadding.bottom : 0,
+  );
 }

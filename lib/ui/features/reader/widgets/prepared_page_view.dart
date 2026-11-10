@@ -47,7 +47,9 @@ class _PreparedPageViewState extends State<PreparedPageView> {
   }
 
   bool _sameContent(PageCanvas? a, PageCanvas b) =>
-      a != null && a.layout.samePageAs(b.layout, a.pageIndex, b.pageIndex);
+      a != null &&
+      a.formulaColor == b.formulaColor &&
+      a.layout.samePageAs(b.layout, a.pageIndex, b.pageIndex);
 
   void _prepare() {
     final page = widget.page;
@@ -73,17 +75,18 @@ class _PreparedPageViewState extends State<PreparedPageView> {
       _ready?.dispose();
       _ready = null;
     }
-    // 动画中的失败占位不能作为静态页的有效图片继续复用；
-    // 提交位置已补齐资源时重新解码，准备期间继续保留旧页。
-    final text =
-        _sameContent(transfer?.page, page) && !transfer!.hasFailedImages
-        ? transfer.clone()
+    final text = _sameContent(transfer?.page, page)
+        ? transfer!.clone()
         : PreparedPage.textOnly(page);
     if (text != null) {
       _ready?.dispose();
       _ready = text;
-      _reportReady(page);
-      return;
+      if (!text.hasFailedImages) {
+        _reportReady(page);
+        return;
+      }
+      // 动画已经画过失败占位，先接住同一画面，后台再试一次解码。
+      // 若资源恰好补齐就换成真图，期间不退回上一页或空白。
     }
     PreparedPage.load(page, configuration).then((loaded) {
       if (!mounted || request != _request) {

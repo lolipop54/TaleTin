@@ -19,12 +19,21 @@ import 'chapter_layout.dart';
 import 'layout_cache.dart';
 import 'block_measurement_cache.dart';
 import 'english_hyphenation.dart';
+import 'layout_options.dart';
 import '../normalization/content_fingerprint.dart';
 
-class FlutterReaderEngine implements ReaderEngine {
-  FlutterReaderEngine({LayoutCache? cache, this.checkpoints})
+class FlutterReaderEngine extends ReaderEngine {
+  FlutterReaderEngine({LayoutCache? cache, this.checkpoints, this.prepareFonts})
     : _cache = cache ?? LayoutCache();
   final LayoutCheckpointStore? checkpoints;
+  final PreparePublicationFonts? prepareFonts;
+
+  Future<LayoutOptions>? _fontPreparation(LayoutRequest request) {
+    final options = request.options;
+    return options.settings.useBookFontsInSimplified
+        ? prepareFonts?.call(request.bookId, request.content, options)
+        : null;
+  }
 
   final LayoutCache _cache;
   final _measurements = BlockMeasurementCache();
@@ -48,8 +57,22 @@ class FlutterReaderEngine implements ReaderEngine {
     if (!ReaderDeliveryExperiments.incremental) {
       return layoutChapter(request, token: token);
     }
-    final options = request.options;
+    final task = await _taskFor(request);
+    return task.ensure(
+      target: target,
+      atEnd: atEnd,
+      token: token,
+      lookAhead: request.targetFirst ? 0 : 4,
+      foregroundBudgetUs: request.targetFirst ? 4000 : 2000,
+      deferCheckpointEncoding: request.targetFirst,
+      allowPageRestart: request.allowPageRestart,
+    );
+  }
+
+  Future<ChapterLayoutTask> _taskFor(LayoutRequest request) async {
     final revision = (_allInvalidation, _bookInvalidation[request.bookId] ?? 0);
+    final preparation = _fontPreparation(request);
+    final options = preparation == null ? request.options : await preparation;
     final digest = await traceReaderWork(
       'layout.content_identity',
       () => ContentFingerprint.of(request.content),
@@ -61,16 +84,16 @@ class FlutterReaderEngine implements ReaderEngine {
       request.contentVersion,
       request.chapter.id,
       digest,
-      options.layoutSignature,
+      options.chapterSignature,
       options.contentSize,
     );
     var task = _tasks.remove(key);
     if (task == null) {
-      final future = _opening[key] ??= _createTask(request);
+      final opening = _opening[key] ??= _createTask(request, options);
       try {
-        task = await future;
+        task = await opening;
       } finally {
-        if (identical(_opening[key], future)) _opening.remove(key);
+        if (identical(_opening[key], opening)) _opening.remove(key);
       }
     }
     if (revision !=
@@ -87,18 +110,20 @@ class FlutterReaderEngine implements ReaderEngine {
       if (oldest == null) break;
       _tasks.remove(oldest)?.dispose();
     }
-    return task.ensure(target: target, atEnd: atEnd, token: token);
+    return task;
   }
 
-  Future<ChapterLayoutTask> _createTask(LayoutRequest request) async {
+  Future<ChapterLayoutTask> _createTask(
+    LayoutRequest request,
+    LayoutOptions options,
+  ) async {
     final store = ReaderDeliveryExperiments.checkpoint ? checkpoints : null;
-    final options = request.options;
     await EnglishHyphenation.prepare();
     final exact =
         '${EnglishHyphenation.fingerprint}|'
         '${request.content.pdfPage == null ? '' : 'pdf-without-page-heading-1|'}'
         '${request.contentVersion}|${request.chapter.contentPath}|'
-        '${options.layoutSignature}|${options.contentSize.width}|'
+        '${options.chapterSignature}|${options.contentSize.width}|'
         '${options.contentSize.height}|${[for (var n = 1; n <= options.settings.fontSize + 8; n++) options.textScaler.scale(n.toDouble())]}';
     final key = await store?.identity(
       bookId: request.bookId,
@@ -127,6 +152,18 @@ class FlutterReaderEngine implements ReaderEngine {
               throughCursor: cursor,
               afterBlocks: after,
             ),
+      readPageWindow:
+          key == null ||
+              !ReaderDeliveryExperiments.checkpointDemand ||
+              request.content.pdfPage != null ||
+              options.settings.layoutMode.isOriginal
+          ? null
+          : (target, cursor) => store!.read(
+              request.bookId,
+              key,
+              throughCursor: cursor,
+              nearPage: target,
+            ),
     );
     if (key != null && !ReaderDeliveryExperiments.checkpointDemand) {
       final cached = await store!.read(request.bookId, key);
@@ -151,12 +188,14 @@ class FlutterReaderEngine implements ReaderEngine {
       'cancellable': token != null,
     });
     try {
-      final options = request.options;
+      final preparation = _fontPreparation(request);
+      final options = preparation == null ? request.options : await preparation;
+      if (token?.isCancelled == true) throw const LayoutCancelled();
       final key = LayoutCache.keyFor(
         bookId: request.bookId,
         contentVersion: request.contentVersion,
         chapterId: request.chapter.id,
-        layoutSignature: options.layoutSignature,
+        layoutSignature: options.chapterSignature,
       );
       final cached = _cache.get(key);
       trace?.details['hit'] = cached != null;

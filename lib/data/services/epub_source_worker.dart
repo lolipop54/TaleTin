@@ -138,6 +138,13 @@ class EpubSourceWorker {
   Future<String?> document(String entry) async =>
       await _request('document', entry) as String?;
 
+  Future<({Uint8List bytes, String digest})?> fontResource(String entry) async {
+    final result = await _request('font_resource', entry);
+    if (result == null) return null;
+    final (data, digest) = result as (TransferableTypedData, String);
+    return (bytes: data.materialize().asUint8List(), digest: digest);
+  }
+
   Future<Map<String, double?>?> tocPositions(
     String entry,
     List<String> fragments,
@@ -264,6 +271,7 @@ Future<void> _run(_Start start) async {
         Object? result;
         // 已打开的原书会话也核对来源；命中网页/资源缓存不能绕过变更检测。
         if (operation == 'resource' ||
+            operation == 'font_resource' ||
             operation == 'document' ||
             operation == 'toc_positions' ||
             operation == 'toc_index' ||
@@ -305,6 +313,14 @@ Future<void> _run(_Start start) async {
               result = (
                 TransferableTypedData.fromList([bytes]),
                 store.typeOf(entry),
+              );
+            }
+          case 'font_resource':
+            final bytes = await store.load(entry!);
+            if (bytes != null) {
+              result = (
+                TransferableTypedData.fromList([bytes]),
+                sha256.convert(bytes).toString(),
               );
             }
           case 'document':

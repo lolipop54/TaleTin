@@ -241,7 +241,7 @@ class LocatorDomMap {
     var total = 0;
     for (final block in content.blocks) {
       offsets[block.id] = total;
-      total += blockTextOf(block).length + 1;
+      total += block.textLength;
     }
     // 历史块号可能与本次 DOM 解析的块号不同；沿用已验证的块序对应关系。
     final mappedOffsets = {

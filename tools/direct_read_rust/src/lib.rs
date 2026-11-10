@@ -1,14 +1,21 @@
 // Copyright (c) 2026 GT Reader contributors. MIT license, see LICENSE.
+mod css;
+mod display_source;
 mod dom;
 mod hash;
 mod html;
 mod html_anchors;
 mod inflate;
+mod mathml;
 mod mobi_html;
 mod mobi_html_batch;
+mod note_links;
 mod original;
 mod original_hyphen;
 mod original_serialize;
+mod style_table;
+mod style_tables_generated;
+mod styles;
 mod text;
 mod txt;
 use rayon::prelude::*;
@@ -258,10 +265,21 @@ pub unsafe extern "C" fn gt_html_bytes(
 }
 // Keep single-chapter and full-book statistics decoding exactly the same.
 fn html_from_bytes(source: &[u8], optimized: bool) -> html::Html {
-    let encoding = if source.starts_with(&[0xff, 0xfe]) { 1 }
-        else if source.starts_with(&[0xfe, 0xff]) { 2 } else { 0 };
+    let encoding = if source.starts_with(&[0xff, 0xfe]) {
+        1
+    } else if source.starts_with(&[0xfe, 0xff]) {
+        2
+    } else {
+        0
+    };
     let decoded = text::decode(source, encoding);
-    html::Html::with_options(decoded.strip_prefix('\u{feff}').unwrap_or(&decoded).as_bytes(), optimized)
+    html::Html::with_options(
+        decoded
+            .strip_prefix('\u{feff}')
+            .unwrap_or(&decoded)
+            .as_bytes(),
+        optimized,
+    )
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gt_html_refs(handle: *mut html::Html, output: *mut GtScanResult) {
@@ -298,11 +316,19 @@ pub unsafe extern "C" fn gt_html_close(handle: *mut html::Html) {
     }
 }
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn gt_html_anchor_positions(handle: *mut html::Html,
-    input: *const u8, length: usize, output: *mut GtScanResult) {
+pub unsafe extern "C" fn gt_html_anchor_positions(
+    handle: *mut html::Html,
+    input: *const u8,
+    length: usize,
+    output: *mut GtScanResult,
+) {
     let metadata = serde_json::from_slice(unsafe { slice::from_raw_parts(input, length) }).unwrap();
     let html = unsafe { &mut *handle };
-    result(serde_json::to_vec(&html.anchor_positions(metadata)).unwrap(), &mut html.output, output);
+    result(
+        serde_json::to_vec(&html.anchor_positions(metadata)).unwrap(),
+        &mut html.output,
+        output,
+    );
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gt_html_batch_open(input: *const u8, length: usize) -> *mut Batch {

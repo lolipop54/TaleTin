@@ -20,7 +20,7 @@ TocIndexPreparation _prepare((Book, List<Chapter>, List<TocNode>) input) {
   final (book, chapters, toc) = input;
   final names = collectTocTitles(toc);
   final signature = jsonEncode([
-    2,
+    3,
     book.contentVersion,
     book.textLength,
     book.format.name,

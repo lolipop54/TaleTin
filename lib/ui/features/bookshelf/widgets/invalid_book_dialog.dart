@@ -11,7 +11,7 @@ import '../../../core/theme/gt_tokens.dart';
 import '../../../core/widgets/gt_dialog_action.dart';
 import '../view_models/bookshelf_view_model.dart';
 
-/// 点击前再查一次，覆盖外部删除尚未被书架轮询发现的间隙。
+/// 点击时只核对这一本书，停留书架时不持续轮询源文件。
 Future<void> openShelfBook(
   BuildContext context,
   WidgetRef ref,

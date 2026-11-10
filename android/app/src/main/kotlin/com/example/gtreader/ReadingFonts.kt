@@ -31,6 +31,25 @@ object ReadingFonts {
                     result.success(null)
                 } catch (error: Exception) { result.error("FONTS", "字体无法解码：${error.message}", null) }
             }
+            else if (call.method == "validatePublication") {
+                try {
+                    val bytes = call.arguments as ByteArray
+                    if (Build.VERSION.SDK_INT >= 29) {
+                        val buffer = ByteBuffer.allocateDirect(bytes.size)
+                        buffer.put(bytes).rewind()
+                        Font.Builder(buffer).build()
+                    } else {
+                        val file = File.createTempFile("book-font", ".font", context.cacheDir)
+                        try {
+                            file.writeBytes(bytes)
+                            Typeface.createFromFile(file)
+                        } finally {
+                            file.delete()
+                        }
+                    }
+                    result.success(null)
+                } catch (error: Exception) { result.error("FONTS", "字体无法解码：${error.message}", null) }
+            }
             else if (call.method == "environmentDigest") {
                 try { result.success(environmentDigest()) }
                 catch (error: Exception) { result.error("FONTS", error.message, null) }

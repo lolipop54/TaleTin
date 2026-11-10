@@ -8,8 +8,8 @@ class _ReadingContent extends ConsumerStatefulWidget {
     required this.theme,
     required this.settings,
     required this.settingsReady,
-    required this.titlesReady,
-    this.edgeToEdge = false,
+    this.statusBar = true,
+    this.navigationBar = true,
   });
 
   final ReaderState state;
@@ -21,8 +21,10 @@ class _ReadingContent extends ConsumerStatefulWidget {
 
   /// 本书设置是否已读出来
   final bool settingsReady;
-  final bool titlesReady;
-  final bool edgeToEdge;
+
+  /// 顶部状态栏／底部导航栏当前是否显示；各自决定对应那一边要不要避让。
+  final bool statusBar;
+  final bool navigationBar;
 
   @override
   ConsumerState<_ReadingContent> createState() => _ReadingContentState();
@@ -59,6 +61,8 @@ class _ReadingContentState extends ConsumerState<_ReadingContent> {
     _progressReturn.prepareJumpCover = _prepareJumpCover;
     _finishJumpCover = () => ReaderDisplayTransition.finishJump(_transitionKey);
     _progressReturn.finishJumpCover = _finishJumpCover;
+    _progressReturn.finishSeekCover = () =>
+        ReaderDisplayTransition.finishJump(_transitionKey, immediate: true);
   }
 
   @override
@@ -66,6 +70,7 @@ class _ReadingContentState extends ConsumerState<_ReadingContent> {
     if (_progressReturn.prepareJumpCover == _prepareJumpCover) {
       _progressReturn.prepareJumpCover = null;
       _progressReturn.finishJumpCover = null;
+      _progressReturn.finishSeekCover = null;
     }
     _displayWork.dispose();
     super.dispose();
@@ -85,7 +90,15 @@ class _ReadingContentState extends ConsumerState<_ReadingContent> {
     // 失败页也是准备结束，不能继续盖着加载动画隐藏真正的错误。
     final session = ref.read(readerSessionProvider(bookId));
     if (session.hasError && !session.isLoading) return true;
-    if (!widget.titlesReady) return false;
+    final current = session.value;
+    // 正文可在加载层下并行准备。揭页时进度滑块依赖的全书索引也应可用。
+    if (current == null ||
+        ref.read(progressTitlesProvider(bookId)).isLoading ||
+        ref
+            .read(pageProgressTitlesProvider((bookId, current.chapterIndex)))
+            .isLoading) {
+      return false;
+    }
     if (ref.read(readerSessionProvider(bookId).notifier).displayTarget !=
         null) {
       return false;
@@ -104,6 +117,10 @@ class _ReadingContentState extends ConsumerState<_ReadingContent> {
   Widget build(BuildContext context) {
     final sessionAsync = ref.watch(readerSessionProvider(bookId));
     final session = sessionAsync.value;
+    if (session != null) {
+      // 页内信息行、原书与滚动共用这份章名，保活到当前正文完成交接。
+      ref.watch(pageProgressTitlesProvider((bookId, session.chapterIndex)));
+    }
     if (session != null && !identical(_displayBook, session.book)) {
       // 来源刷新仍沿用 bookId 和正文规则版本，但章节与会话已经换了。
       // 重建各显示器，避免滚动窗口继续使用旧章节列表或已释放的会话；外层保留旧截图。
@@ -145,11 +162,13 @@ class _ReadingContentState extends ConsumerState<_ReadingContent> {
           !ref.read(readerSessionProvider(bookId)).hasError &&
           ref.read(readerSessionProvider(bookId)).value?.currentAnchor != null,
       child: SafeArea(
-        left: !widget.edgeToEdge,
-        right: !widget.edgeToEdge,
-        top: ref.watch(readingControlsProvider).value?.statusBar ?? true,
-        bottom: ref.watch(readingControlsProvider).value?.navigationBar ?? true,
-        // 显示系统栏时避开对应安全区；隐藏时，两种排版的画布和手势一起延伸。
+        // 两个开关分别管自己那一边：显示状态栏时左侧避让状态栏和挖孔，
+        // 显示导航栏时右侧避让导航栏；隐藏后那一边直接贴到屏幕边缘，
+        // 挖孔挡住一点正文也接受，不在正文内部另加摄像头页边距。
+        left: widget.statusBar,
+        right: widget.navigationBar,
+        top: widget.statusBar,
+        bottom: widget.navigationBar,
         // 键盘收起的中间帧也保留导航栏留白，正文不先变高再缩回。
         maintainBottomViewPadding: true,
         child: Stack(
@@ -280,13 +299,6 @@ class _ReadingContentState extends ConsumerState<_ReadingContent> {
     if (session == null) return const _PreparingState();
     // 本书的排版设置还没到位：先不排，否则会按全局值排一遍再重排
     if (!settingsReady) return const _PreparingState();
-    // 这里只并行准备原书网页；简化模式仍等真实目录，避免旧TXT补章名后跳变。
-    if (!widget.titlesReady &&
-        !(settings.settings.layoutMode.isOriginal &&
-            settings.settings.pageTurnEffect != PageTurnEffect.scroll &&
-            session.book.format.supportsOriginalLayout)) {
-      return const _PreparingState();
-    }
     if (settings.settings.pageTurnEffect == PageTurnEffect.scroll) {
       final annotations = ref.watch(annotationsProvider(bookId));
       if (!annotations.hasValue && annotations.isLoading) {

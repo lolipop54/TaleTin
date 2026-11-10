@@ -135,12 +135,21 @@ Future<void> validateEpubTocMetadata(
       cancel: CancelToken(),
     );
     final index = document.sourceIndex!;
-    if ((stored['tocPositions1'] != null &&
-            jsonEncode(stored['tocPositions1']) !=
-                jsonEncode(index.tocPositions)) ||
-        (stored['tocHeadings1'] != null &&
-            jsonEncode(stored['tocHeadings1']) !=
-                jsonEncode(index.tocHeadings)) ||
+    // 旧备份只保存多个目录项共用正文的章节。缺少的可选表可重新生成，
+    // 已保存的每张表仍需与原书的计算结果逐项一致。
+    bool matchesTables(String field, Map<String, Object> actual) {
+      final tables = stored[field];
+      if (tables == null) return true;
+      return tables is Map &&
+          tables.entries.every(
+            (entry) =>
+                actual.containsKey(entry.key) &&
+                jsonEncode(entry.value) == jsonEncode(actual[entry.key]),
+          );
+    }
+
+    if (!matchesTables('tocPositions1', index.tocPositions) ||
+        !matchesTables('tocHeadings1', index.tocHeadings) ||
         jsonEncode(manifest['chapters']) !=
             jsonEncode(document.toManifestJson()['chapters']) ||
         jsonEncode(manifest['toc']) !=

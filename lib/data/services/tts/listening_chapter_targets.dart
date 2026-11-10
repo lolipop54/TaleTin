@@ -22,7 +22,9 @@ List<ListeningTarget> resolveListeningTargets({
     chapterId: file.id,
   );
   ChapterAnchorMap? map;
-  if (entries.any((entry) => entry.fragment != null && !entry.fragment!.startsWith('gt-txt:'))) {
+  if (entries.any(
+    (entry) => entry.fragment != null && !entry.fragment!.startsWith('gt-txt:'),
+  )) {
     if (html == null) throw StateError('无法读取章节锚点：${file.title}');
     map = ChapterAnchorMap.parse(
       sanitizedHtml: html,
@@ -57,11 +59,7 @@ List<ListeningTarget> resolveListeningTargets({
         final index = map.blocks.indexWhere((b) => b.id == start!.blockId);
         start = mapper.at(content.blocks[index], start.utf16Offset);
       } else {
-        final exists =
-            map.document.getElementById(fragment) != null ||
-            map.document
-                .querySelectorAll('a[name]')
-                .any((e) => e.attributes['name'] == fragment);
+        final exists = map.hasAnchor(fragment);
         if (exists) {
           // 锚点存在但后面已无文字，属于空范围，落到文件末端并继续找下一章。
           start = content.blocks.isEmpty

@@ -5,6 +5,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/gt_tokens.dart';
 import '../../../../app/di/app_providers.dart';
+import '../../../../app/di/reading_controls_providers.dart';
+import '../../settings/widgets/settings_action.dart';
 import '../view_models/reader_settings_view_model.dart';
 import '../view_models/reader_view_model.dart';
 import 'reader_sheet.dart';
@@ -16,8 +18,8 @@ import '../../settings/widgets/settings_slider.dart';
 /// 亮度面板（参考图 03-2）。
 /// 跟随系统开关与带百分比的应用窗口亮度滑块。
 ///
-/// 亮度按单书保存；跟随系统时保留上一次自定义值，
-/// 拖动滑块就写覆盖并立刻作用到窗口；离开阅读页窗口恢复原亮度（S14）。
+/// 亮度、主题和背景全局保存；跟随系统时保留上一次自定义值，
+/// 拖动滑块就保存全局亮度并立刻作用到窗口；离开阅读页窗口恢复原亮度（S14）。
 class PanelBrightness extends ConsumerWidget {
   const PanelBrightness({super.key, required this.bookId});
 
@@ -26,13 +28,15 @@ class PanelBrightness extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final settings = ref.watch(readerSettingsProvider(bookId)).value;
+    final controls = ref.watch(readingControlsProvider).value;
+    if (settings == null || controls == null) return const SizedBox.shrink();
     final colors = context.gtColors;
-    final brightness = settings?.brightness;
+    final brightness = settings.brightness;
     final followSystem = brightness == null;
     // 首次未自定义时才取系统值，切换跟随模式不改变滑块位置。
     final systemBrightness = ref.watch(systemBrightnessProvider).value;
     final shown =
-        settings?.customBrightness ?? brightness ?? systemBrightness ?? 0.5;
+        settings.customBrightness ?? brightness ?? systemBrightness ?? 0.5;
     final vm = ref.read(readerSettingsProvider(bookId).notifier);
 
     return ReaderSheet(
@@ -55,6 +59,25 @@ class PanelBrightness extends ConsumerWidget {
                   value: followSystem,
                   onChanged: (follow) =>
                       vm.setBrightness(follow ? null : shown),
+                ),
+              ],
+            ),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    '阅读时屏幕常亮',
+                    style: GtText.body(colors.textPrimary),
+                  ),
+                ),
+                GtSwitch(
+                  value: controls.keepAwake,
+                  onChanged: (value) => saveSetting(
+                    context,
+                    () => ref
+                        .read(readingControlsProvider.notifier)
+                        .change(awake: value),
+                  ),
                 ),
               ],
             ),
@@ -87,16 +110,16 @@ class PanelBrightness extends ConsumerWidget {
                 color: colors.textSecondary,
               ),
             ),
+            const SizedBox(height: GtSpacing.s4),
+            Container(height: 1, color: colors.borderSubtle),
+            const SizedBox(height: GtSpacing.s3),
+            Text(
+              '阅读主题',
+              style: GtText.body(colors.textSecondary).copyWith(fontSize: 14),
+            ),
+            const SizedBox(height: GtSpacing.s3),
+            ReaderThemeChoices(bookId: bookId),
             if (!ref.watch(pdfModeProvider(bookId))) ...[
-              const SizedBox(height: GtSpacing.s4),
-              Container(height: 1, color: colors.borderSubtle),
-              const SizedBox(height: GtSpacing.s3),
-              Text(
-                '阅读主题',
-                style: GtText.body(colors.textSecondary).copyWith(fontSize: 14),
-              ),
-              const SizedBox(height: GtSpacing.s3),
-              ReaderThemeChoices(bookId: bookId),
               const SizedBox(height: GtSpacing.s3),
               Text(
                 '阅读背景',

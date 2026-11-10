@@ -8,7 +8,7 @@ import '../../../core/widgets/gt_button.dart';
 import '../../../core/widgets/gt_icon.dart';
 import '../view_models/reader_settings_view_model.dart';
 
-/// 亮度下方的单书阅读主题；沿用四色块、选中勾号和原来的保存方法。
+/// 亮度下方的全局阅读主题；电子书和PDF原页共用四色块、勾号及保存方法。
 class ReaderThemeChoices extends ConsumerWidget {
   const ReaderThemeChoices({super.key, required this.bookId});
   final String bookId;

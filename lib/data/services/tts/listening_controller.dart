@@ -199,11 +199,6 @@ class ListeningController implements ListeningService {
   Stream<ListeningState> get state => _states.stream;
   ListeningBook? _book;
   SpeechUnit? _unit;
-  @override
-  void setPageBoundaries(Object owner, List<Locator> boundaries) {
-    // 保留显示器契约；页界只用于视觉跟随，朗读不在这里拆句。
-  }
-
   final List<SpeechUnit> _window = [];
   Locator? _next;
   bool _nextSentenceStart = false;
@@ -704,23 +699,6 @@ class ListeningController implements ListeningService {
         );
       }
     }
-  }
-
-  /// 提交或续播后重新计时。提示音按住期间不计超时：
-  /// 那不是引擎没响应，不该被当成错误结束整次听书。
-  void _armWatchdog() {
-    final unit = _unit;
-    final id = _activeId;
-    if (unit == null || id == null) return;
-    _watchdog?.cancel();
-    _watchdog = Timer(
-      eventTimeout ??
-          Duration(seconds: 30 + (unit.text.length * 2 / snapshot.speed).ceil()),
-      () {
-        if (_activeId != id || _promptHold != null) return;
-        unawaited(_finish(TtsStatus.error, error: '语音回调超时，请重试（$id）'));
-      },
-    );
   }
 
   Future<void> dispose() async {

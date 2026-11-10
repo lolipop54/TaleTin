@@ -19,8 +19,14 @@ final tocVolumesProvider = Provider.autoDispose
 List<TocVolume> _build(TocTreeInput input) =>
     buildTocVolumes(input.$1, input.$2);
 
-typedef TocRowsInput = (List<TocVolume>, Set<int>, String, bool);
-typedef TocRowsResult = ({List<TocRow> rows, List<int> visible, int count});
+// 展开集合为 null 时，由搜索结果决定默认开合；大目录仍在后台一起准备。
+typedef TocRowsInput = (List<TocVolume>, Set<int>?, String, bool);
+typedef TocRowsResult = ({
+  List<TocRow> rows,
+  List<int> visible,
+  Set<int> expanded,
+  int count,
+});
 final _rows = FutureProvider.autoDispose.family<TocRowsResult, TocRowsInput>(
   (ref, input) => backgroundCompute(_flatten, input),
 );
@@ -41,16 +47,24 @@ TocRowsResult _flatten(TocRowsInput input) {
     for (var i = 0; i < volumes.length; i++)
       if (!searching || volumes[i].matches(query)) i,
   ];
+  final resolvedExpanded =
+      expanded ??
+      {
+        for (final index in visible)
+          if (volumes[index].chapters.any((entry) => entry.matches(query)))
+            index,
+      };
   return (
     rows: flattenTocRows(
       volumes,
       visible,
-      expanded,
+      resolvedExpanded,
       query,
       searching: searching,
       descending: descending,
     ),
     visible: visible,
+    expanded: resolvedExpanded,
     count: volumes.fold<int>(0, (n, v) => n + v.chapters.length),
   );
 }

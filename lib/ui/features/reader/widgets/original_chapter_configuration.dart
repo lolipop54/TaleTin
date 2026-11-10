@@ -93,12 +93,12 @@ extension _OriginalChapterConfiguration on _OriginalReaderAreaState {
       prepare: (host) async {
         if (ReaderDeliveryExperiments.contentTarget && !host.contentMapReady) {
           if (!current(host)) return;
-          final awaitingTitles = ref
-              .read(progressTitlesProvider(bookId))
-              .isLoading;
+          final titleIndex = pageProgressTitlesProvider((bookId, ordinal));
+          final awaitingTitles = ref.read(titleIndex).isLoading;
+          host.preparationStage = 'titles';
           final titles = await traceTurnStep(
             'prepare titles chapter=$ordinal',
-            () => ref.read(progressTitlesProvider(bookId).future),
+            () => ref.read(titleIndex.future),
           );
           if (awaitingTitles) {
             // 目录完成会重建信息栏配置；让同一帧的最终章名先进入frame，
@@ -113,11 +113,13 @@ extension _OriginalChapterConfiguration on _OriginalReaderAreaState {
               {'progress': entry.progress, 'title': entry.title},
           ]);
           final chapter = snapshot.chapters[ordinal];
+          host.preparationStage = 'content';
           final content = ordinal == snapshot.chapterIndex
               ? snapshot.content!
               : await ref
                     .read(chapterContentRepositoryProvider)
                     .chapter(bookId, chapter);
+          host.preparationStage = 'positionMap';
           final map = await traceTurnStep(
             'prepare map chapter=$ordinal',
             () => controller.positionMap(
@@ -157,6 +159,7 @@ extension _OriginalChapterConfiguration on _OriginalReaderAreaState {
           );
         }
         if (!current(host)) return;
+        host.preparationStage = 'highlights';
         await _prepareChapterHighlights(ordinal, host);
       },
       onControllerReady: (host) {

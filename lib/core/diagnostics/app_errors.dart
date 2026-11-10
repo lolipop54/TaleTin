@@ -272,31 +272,26 @@ abstract final class AppErrors {
     await ReaderTurnDiagnostics.flush(force: true);
     final complete = await reporter.flush();
     final text = await store.exportText();
-    var native = '';
+    final exit = await _readNativeLog('readerExitLog', 'Android退出诊断');
+    final turn = await _readNativeLog('readerTurnLog', '翻页诊断');
+    final resume = await _readNativeLog('appResumeLog', '应用启动与后台恢复诊断');
+    final result =
+        '$text\nAndroid退出阅读诊断\n$exit\n翻页诊断\n$turn'
+        '\n应用启动与后台恢复诊断\n$resume';
+    return complete ? result : '部分错误未能写入本机日志，请同时提供错误Toast截图。\n$result';
+  }
+
+  static Future<String> _readNativeLog(String method, String title) async {
     try {
-      native =
-          await channel
-              .invokeMethod<String>('readerExitLog')
-              .timeout(const Duration(seconds: 3)) ??
-          '';
-    } on MissingPluginException {
-      // 非 Android 没有原生系统栏记录。
-    } catch (error) {
-      native = 'Android退出诊断读取失败：${error.runtimeType}\n';
-    }
-    var slide = '';
-    try {
-      slide =
-          await channel
-              .invokeMethod<String>('readerTurnLog')
+      return await channel
+              .invokeMethod<String>(method)
               .timeout(const Duration(seconds: 3)) ??
           '';
     } on MissingPluginException {
       // 非Android或较旧原生层仍导出其他已取得的日志。
+      return '';
     } catch (error) {
-      slide = '翻页诊断读取失败：${error.runtimeType}\n';
+      return '$title读取失败：${error.runtimeType}\n';
     }
-    final result = '$text\nAndroid退出阅读诊断\n$native\n翻页诊断\n$slide';
-    return complete ? result : '部分错误未能写入本机日志，请同时提供错误Toast截图。\n$result';
   }
 }

@@ -30,7 +30,9 @@ PageInformation readerInformation(
   // 系统分钟、校时、电量及恢复前台都会重建信息；正文排版参数不变。
   ref.watch(deviceStatusChangesProvider);
   final now = ref.watch(readerClockProvider)();
-  final titles = ref.watch(progressTitlesProvider(session.book.id)).value;
+  final titles = ref
+      .watch(pageProgressTitlesProvider((session.book.id, chapterIndex)))
+      .value;
   final chapter = session.chapters[chapterIndex];
   final title = titles == null || titles.isEmpty
       ? chapter.title
@@ -38,6 +40,8 @@ PageInformation readerInformation(
               titles,
               position: session.bookProgressAt(chapterIndex, fraction),
               chapterId: chapter.id,
+              // 信息行描述当前可见页，不能用全书比例容差提前报下一节。
+              allowAnchorTolerance: false,
             )]
             .title;
   final menu = ref.watch(searchMenuAppearanceProvider(session.book.id));

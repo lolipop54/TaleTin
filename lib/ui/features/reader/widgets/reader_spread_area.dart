@@ -252,8 +252,11 @@ class _ReaderSpreadAreaState extends ConsumerState<_ReaderSpreadArea> {
           widget.session.chapterProgress,
         );
         final options = LayoutOptions(
+          cssDark: widget.settings.theme.isNight,
           settings: settings,
           textScaler: MediaQuery.textScalerOf(context),
+          // 只有 TXT 补章题和短横线；EPUB／MOBI／AZW3 按原书内容与样式排。
+          insertChapterTitle: widget.session.book.format == BookFormat.txt,
           contentSize: Size(
             math.max(
               1,

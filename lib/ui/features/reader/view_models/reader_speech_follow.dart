@@ -4,10 +4,9 @@ part of 'reader_session_view_model.dart';
 mixin _ReaderSpeechFollow
     on
         AsyncNotifier<ReaderSession>,
+        _ReaderLayoutCoordinator,
         _ReaderScrollPosition,
         _ReaderOriginalPosition {
-  void _watchLayout(ChapterLayout layout);
-
   int _speechRequest = 0;
   ListeningFollowDiagnostics? _speechDiagnostics;
   void cancelSpeechFollow() {
@@ -64,6 +63,7 @@ mixin _ReaderSpeechFollow
         log('sessionDiscard', {'stage': 'originalContent'});
         return;
       }
+      _invalidateLayoutRequests();
       _originalExact = locator;
       _pendingOriginalFraction = 0;
       state = AsyncData(
@@ -118,7 +118,10 @@ mixin _ReaderSpeechFollow
     }
     log('ensureTargetBegin');
     layout = await layout.ensureTarget(locator);
-    if (!ref.mounted || request != _speechRequest) {
+    if (!ref.mounted ||
+        request != _speechRequest ||
+        _mode.isOriginal ||
+        options != _options) {
       log('sessionDiscard', {'stage': 'ensureTarget'});
       return;
     }
@@ -131,6 +134,8 @@ mixin _ReaderSpeechFollow
       });
       return;
     }
+    final changedChapter = session.chapterIndex != index;
+    if (changedChapter) _invalidateLayoutRequests();
     state = AsyncData(
       ReaderSession(
         book: session.book,
@@ -143,6 +148,10 @@ mixin _ReaderSpeechFollow
       ),
     );
     _watchLayout(layout);
+    if (changedChapter) {
+      _prefetchNext(index, options);
+      _prefetchPrevious(index, options);
+    }
     log('pagePublished', {'chapter': index, 'page': page});
   }
 }

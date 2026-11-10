@@ -14,6 +14,7 @@ import '../../domain/services/text_preparation.dart';
 import '../../domain/services/library_file_gate.dart';
 import '../../domain/repositories/book_repository.dart';
 import '../repositories/file_chapter_content_repository.dart';
+import '../../engine/normalization/content_fingerprint.dart';
 import '../../engine/parsers/parse_worker.dart';
 import 'book_source_path.dart';
 import 'indexed_chapter_reader.dart';
@@ -285,9 +286,10 @@ Future<void> _verifyWorker(
           File(p.join(directory, chapter.contentPath)).readAsStringSync(),
         ) as Map).cast<String, Object?>(),
       );
-      // 规则完成标记不是正文；其余字段（包括样式、表格、图片和脚注）逐项相同。
-      Map<String, Object?> body(ChapterContent c) =>
-          {...c.toJson()}..remove('epubDetailsRevision');
+      // 规则完成标记与批次 C 新增的样式传输字段不是正文；其余字段必须逐项相同。
+        // 迁移核对只看正文口径：文字、块号、权重、图片与表格；样式由样式表保证。
+        List<Object?> body(ChapterContent c) =>
+          ContentFingerprint.bodyProjection(c);
       if (jsonEncode(body(old)) != jsonEncode(body(generated))) {
         reply.send(false);
         return;

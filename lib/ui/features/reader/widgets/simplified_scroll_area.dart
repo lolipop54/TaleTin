@@ -13,12 +13,17 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
 import 'table_painter.dart';
+import 'reader_text_painter.dart';
+import 'block_background_paint.dart';
+import '../../../../engine/layout/chapter_paginator.dart';
+import '../../../core/theme/reading_theme.dart';
+import 'footnote_popover.dart';
 
 import '../../../../app/di/app_providers.dart';
 import '../../../../domain/models/locator.dart' show SelectionRange;
+import '../../../../domain/models/book.dart';
 import '../../../../engine/layout/layout_options.dart';
 import '../../../../engine/layout/scroll_chapter.dart';
-import '../../../../engine/layout/measured_block.dart';
 import '../../../../engine/selection/scroll_selection.dart';
 import '../../../../engine/selection/selection_range.dart';
 import '../../../core/theme/gt_tokens.dart';
@@ -34,6 +39,9 @@ import 'page_information.dart';
 import 'reader_information.dart';
 import 'book_paper.dart';
 import 'scroll_resources.dart';
+import 'scroll_css_background.dart';
+import 'css_background_paint.dart';
+import '../../../../engine/layout/book_background.dart';
 import 'scroll_selection_layer.dart';
 import 'reader_image_viewer.dart';
 import 'reader_image_gallery.dart';
@@ -110,6 +118,9 @@ class SimplifiedScrollAreaState extends ConsumerState<SimplifiedScrollArea>
             widget.session.book.contentVersion,
             path,
           ),
+      formulaColor: () => widget.settings.theme.primary,
+      readingTheme: () => widget.settings.theme,
+      pixelRatio: () => View.of(context).devicePixelRatio,
     );
     _window = ScrollWindow(
       bookId: widget.bookId,
@@ -118,6 +129,7 @@ class SimplifiedScrollAreaState extends ConsumerState<SimplifiedScrollArea>
       load: (chapter) => ref
           .read(chapterContentRepositoryProvider)
           .chapter(widget.bookId, chapter),
+      prepareFonts: ref.read(publicationFontLoaderProvider).prepare,
       onPosition: (content, anchor, token) {
         if (mounted) {
           if (_session.reportScrollPosition(
@@ -282,6 +294,7 @@ class SimplifiedScrollAreaState extends ConsumerState<SimplifiedScrollArea>
         settings.landscape ? box.maxWidth : GtSize.readingMaxWidth,
       );
       final options = LayoutOptions(
+        cssDark: widget.settings.theme.isNight,
         settings: settings,
         contentSize: Size(
           width -
@@ -291,6 +304,8 @@ class SimplifiedScrollAreaState extends ConsumerState<SimplifiedScrollArea>
           height - info.top - info.bottom - 48,
         ),
         textScaler: MediaQuery.textScalerOf(context),
+        // 只有 TXT 补章题和短横线；EPUB／MOBI／AZW3 按原书内容与样式排。
+        insertChapterTitle: widget.session.book.format == BookFormat.txt,
       );
       _prepare(options);
       if (_window.options == null) return const Center(child: BookLoading());
@@ -301,6 +316,18 @@ class SimplifiedScrollAreaState extends ConsumerState<SimplifiedScrollArea>
               painter: ReadingBackgroundPainter(
                 widget.settings.theme.background,
                 widget.settings.theme.texture?.image,
+              ),
+            ),
+          ),
+          Positioned.fill(
+            child: IgnorePointer(
+              child: CustomPaint(
+                painter: ScrollCssBackgroundPainter(
+                  _window,
+                  _resources,
+                  widget.settings.theme,
+                  info.top + 24,
+                ),
               ),
             ),
           ),
@@ -341,7 +368,12 @@ class SimplifiedScrollAreaState extends ConsumerState<SimplifiedScrollArea>
                   itemExtentBuilder: (i, _) => _window.cellAt(i).cell.height,
                   childrenDelegate: _ScrollCellsDelegate(
                     (context, i) {
-                      final cell = _window.cellAt(i).cell;
+                      final entry = _window.cellAt(i);
+                      final cell = entry.cell;
+                      final areas = scrollBackgroundAreas(
+                        entry.entry.layout,
+                        cell,
+                      );
                       if (cell.table.isNotEmpty) {
                         return Stack(
                           key: _window.keyAt(i),
@@ -353,6 +385,14 @@ class SimplifiedScrollAreaState extends ConsumerState<SimplifiedScrollArea>
                                   _window.options!,
                                   widget.settings.theme.primary,
                                   widget.settings.theme.secondary,
+                                  theme: widget.settings.theme,
+                                  images: _resources.backgroundInfo,
+                                  backgroundAreas: areas,
+                                  backdrop: _resources.backdropOf(
+                                    entry.entry.layout,
+                                    _window.options!,
+                                    widget.settings.theme,
+                                  ),
                                 ),
                               ),
                             ),
@@ -360,8 +400,16 @@ class SimplifiedScrollAreaState extends ConsumerState<SimplifiedScrollArea>
                               if (!fragment.frameOnly &&
                                   fragment.block.imageSize != null)
                                 Positioned(
-                                  left: fragment.block.inset,
-                                  top: fragment.y,
+                                  left: fragment
+                                      .imageRectIn(
+                                        _window.options!.contentWidth,
+                                      )!
+                                      .left,
+                                  top: fragment
+                                      .imageRectIn(
+                                        _window.options!.contentWidth,
+                                      )!
+                                      .top,
                                   child: _resources.view(
                                     fragment.block.resourcePath!,
                                     fragment.block.imageSize!,
@@ -369,33 +417,105 @@ class SimplifiedScrollAreaState extends ConsumerState<SimplifiedScrollArea>
                                     fragment.block.alt,
                                   ),
                                 ),
+                            for (final visual in cell.positionedInlineImages)
+                              Positioned(
+                                left: visual.rect.left,
+                                top: visual.rect.top,
+                                child: _resources.view(
+                                  visual.image.resourcePath,
+                                  visual.rect.size,
+                                  widget.settings.theme.primary,
+                                  visual.image.alt,
+                                ),
+                              ),
                           ],
                         );
                       }
                       final size = cell.measured.imageSize;
                       if (size == null) {
-                        return CustomPaint(
-                          key: _window.keyAt(i),
+                        final text = CustomPaint(
                           painter: ScrollTextPainter(
                             cell,
                             _window.options!,
                             widget.settings.theme.primary,
                             widget.settings.theme.secondary,
+                            theme: widget.settings.theme,
+                            images: _resources.backgroundInfo,
+                            backgroundAreas: areas,
+                            backdrop: _resources.backdropOf(
+                              entry.entry.layout,
+                              _window.options!,
+                              widget.settings.theme,
+                            ),
                           ),
                         );
+                        final inline = cell.positionedInlineImages.toList();
+                        if (inline.isEmpty) {
+                          return KeyedSubtree(
+                            key: _window.keyAt(i),
+                            child: text,
+                          );
+                        }
+                        return Stack(
+                          key: _window.keyAt(i),
+                          children: [
+                            Positioned.fill(child: text),
+                            for (final visual in inline)
+                              Positioned(
+                                left: visual.rect.left,
+                                top: visual.rect.top,
+                                child: _resources.view(
+                                  visual.image.resourcePath,
+                                  visual.rect.size,
+                                  widget.settings.theme.secondary,
+                                  visual.image.alt,
+                                ),
+                              ),
+                          ],
+                        );
                       }
-                      return Padding(
+                      return Stack(
                         key: _window.keyAt(i),
-                        padding: EdgeInsets.only(top: cell.gap),
-                        child: Align(
-                          alignment: Alignment.topCenter,
-                          child: _resources.view(
-                            cell.block.resourcePath!,
-                            size,
-                            widget.settings.theme.secondary,
-                            cell.block.alt,
+                        children: [
+                          Positioned.fill(
+                            child: CustomPaint(
+                              painter: ScrollTextPainter(
+                                cell,
+                                _window.options!,
+                                widget.settings.theme.primary,
+                                widget.settings.theme.secondary,
+                                theme: widget.settings.theme,
+                                images: _resources.backgroundInfo,
+                                backgroundAreas: areas,
+                                backdrop: _resources.backdropOf(
+                                  entry.entry.layout,
+                                  _window.options!,
+                                  widget.settings.theme,
+                                ),
+                              ),
+                            ),
                           ),
-                        ),
+                          Positioned(
+                            left: cell.measured
+                                .imageRectIn(
+                                  _window.options!.contentWidth,
+                                  top: cell.gap,
+                                )!
+                                .left,
+                            top: cell.measured
+                                .imageRectIn(
+                                  _window.options!.contentWidth,
+                                  top: cell.gap,
+                                )!
+                                .top,
+                            child: _resources.view(
+                              cell.block.resourcePath!,
+                              size,
+                              widget.settings.theme.secondary,
+                              cell.block.alt,
+                            ),
+                          ),
+                        ],
                       );
                     },
                     count: _window.cellCount,
@@ -414,13 +534,28 @@ class SimplifiedScrollAreaState extends ConsumerState<SimplifiedScrollArea>
                     widget.settings.theme.background,
                     backgroundImage: widget.settings.theme.texture?.image,
                     decorationOnly: true,
+                    preserveBackground: _window.entries.any(
+                      (e) =>
+                          chapterBackground(
+                            e.layout.content,
+                            _window.options!,
+                          ) !=
+                          null,
+                    ),
                   ),
                 ),
               ),
             ),
           Positioned.fill(
             child: IgnorePointer(
-              child: CustomPaint(painter: ScrollInformationPainter(info)),
+              child: CustomPaint(
+                painter: CssScrollInformationPainter(
+                  info,
+                  _window,
+                  _resources,
+                  widget.settings.theme,
+                ),
+              ),
             ),
           ),
         ],
@@ -448,7 +583,20 @@ class _ScrollCellsDelegate extends SliverChildBuilderDelegate {
 }
 
 class ScrollTextPainter extends CustomPainter {
-  ScrollTextPainter(this.cell, this.options, this.color, this.ruleColor);
+  ScrollTextPainter(
+    this.cell,
+    this.options,
+    this.color,
+    this.ruleColor, {
+    this.theme,
+    this.images,
+    this.backgroundAreas = const {},
+    this.backdrop,
+  });
+  final ReadingTheme? theme;
+  final BookImageLookup? images;
+  final Map<int, Rect> backgroundAreas;
+  final Color? backdrop;
   final ScrollCell cell;
   final LayoutOptions options;
   final Color color;
@@ -456,43 +604,59 @@ class ScrollTextPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     if (cell.table.isNotEmpty) {
-      paintTableFragments(canvas, cell.table, options, color, ruleColor);
+      paintBlockBackgrounds(
+        canvas,
+        cell.table,
+        options,
+        theme ?? ReadingTheme.paper,
+        images: images,
+        backgroundAreas: backgroundAreas,
+      );
+      paintTableFragments(
+        canvas,
+        cell.table,
+        options,
+        color,
+        ruleColor,
+        theme: theme,
+        images: images,
+        backdrop: backdrop,
+      );
       return;
     }
-    var top = cell.gap;
     final block = cell.measured;
-    for (var i = cell.from; i < cell.to; i++) {
-      final painter = block.createSingleLinePainter(
-        lineIndex: i,
-        textScaler: options.textScaler,
-        color: color,
-        letterSpacing: block.justifySpacingFor(
-          i,
-          maxWidth: options.contentWidthFor(block.kind),
-          textScaler: options.textScaler,
-          enabled: block.kind.name == 'paragraph',
-        ),
-      );
-      painter.paint(canvas, Offset(block.inset, top));
-      painter.dispose();
-      top += block.lines[i].height;
-    }
-    if (block.isTitleDecoration && cell.to == block.lines.length) {
-      canvas.drawRect(
-        Rect.fromLTWH(
-          0,
-          top + kTitleRuleGap,
-          kTitleRuleWidth,
-          kTitleRuleThickness,
-        ),
-        Paint()..color = ruleColor.withValues(alpha: 0.66),
-      );
-    }
+    final fragment = PageFragment(
+      block: block,
+      lineFrom: cell.from,
+      lineTo: cell.to,
+      y: cell.gap,
+      height: cell.height - cell.gap - cell.endGap,
+    );
+    // 所有正文统一交给分页共用的画法，不能因没有背景框就退回旧的整行绘制，
+    // 否则公式备用注释、分段位置、居中和字距会在滚动模式里失效。
+    final palette = theme ?? ReadingTheme.paper;
+    paintBlockBackgrounds(
+      canvas,
+      [fragment],
+      options,
+      palette,
+      images: images,
+      backgroundAreas: backgroundAreas,
+    );
+    ReaderTextPainter(
+      options,
+      palette,
+      images: images,
+      backgroundColor: backdrop,
+    ).paint(canvas, size, fragment);
   }
 
   @override
   bool shouldRepaint(ScrollTextPainter old) =>
-      old.cell != cell || old.color != color || old.ruleColor != ruleColor;
+      old.cell != cell ||
+      old.color != color ||
+      old.ruleColor != ruleColor ||
+      old.theme != theme;
 }
 
 class ScrollInformationPainter extends CustomPainter {

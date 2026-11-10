@@ -18,6 +18,7 @@ import '../ui/features/reader/widgets/original_font_assets.dart';
 import 'restorable_app.dart';
 import 'export_error_log.dart';
 import '../core/diagnostics/app_errors.dart';
+import '../core/diagnostics/app_resume_diagnostics.dart';
 
 import 'package:flutter/material.dart';
 import 'package:drift/drift.dart' show BooleanExpressionOperators;
@@ -345,7 +346,7 @@ class _StartupGateState extends State<StartupGate> {
     await SystemChrome.setPreferredOrientations(
       ReadingWindow.orientations(result.globalPreferences.typography.landscape),
     );
-    if (Platform.isAndroid) {
+    if (ReadingLayoutMode.originalIncluded && Platform.isAndroid) {
       final epub =
           await (result.database.select(result.database.books)
                 ..where(
@@ -360,6 +361,7 @@ class _StartupGateState extends State<StartupGate> {
         await OriginalWebViewWarmup.prepareFirstView(originalWebViewSettings());
       }
     }
+    AppResumeDiagnostics.record('startup_ready');
     return result;
     } catch (error, stack) {
       AppErrors.report(error, stack, operation: '启动准备失败');

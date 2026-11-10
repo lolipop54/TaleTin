@@ -14,6 +14,7 @@ import '../../domain/models/book_document.dart';
 import '../../domain/models/source_content_index.dart';
 import '../../domain/repositories/chapter_content_repository.dart';
 import '../../domain/services/text_preparation.dart';
+import '../../engine/normalization/content_fingerprint.dart';
 import 'chapter_disk_cache.dart';
 import 'chapter_manifest.dart';
 import 'indexed_chapter_reader.dart';
@@ -143,8 +144,17 @@ class ChapterContentWorker {
     String bookId,
     Chapter chapter, {
     bool textOnly = false,
-  }) async =>
-      await _request('chapter', (bookId, chapter, textOnly)) as ChapterContent;
+    bool prepareLayoutDigest = false,
+  }) async {
+    final (content, digest) = await _request('chapter', (
+      bookId,
+      chapter,
+      textOnly,
+      prepareLayoutDigest,
+    )) as (ChapterContent, String?);
+    if (digest != null) ContentFingerprint.remember(content, digest);
+    return content;
+  }
 
   Future<Object?> pdf(String operation, Object? argument) =>
       _request('pdf', (operation, argument));
@@ -177,6 +187,7 @@ Future<void> _run((SendPort, String, String?, int, String) start) async {
   final commands = ReceivePort();
   final readers = <String, IndexedChapterReader>{};
   final memory = <String, ChapterContent>{};
+  final layoutDigests = Expando<String>();
   final pdfCache = _PdfContentCache(libraryRoot, cacheRoot, cacheEpoch);
   final cache = ChapterDiskCache(
     cacheRoot == null ? null : p.join(cacheRoot, 'chapters'),
@@ -288,8 +299,8 @@ Future<void> _run((SendPort, String, String?, int, String) start) async {
               cache.read(key, chapter);
           if (!readers.containsValue(reader)) await reader.close();
         case 'chapter':
-          final (bookId, chapter, textOnly) =
-              argument as (String, Chapter, bool);
+          final (bookId, chapter, textOnly, prepareLayoutDigest) =
+              argument as (String, Chapter, bool, bool);
           trace?.details.addAll({
             'chapter': chapter.ordinal,
             'textOnly': textOnly,
@@ -320,6 +331,7 @@ Future<void> _run((SendPort, String, String?, int, String) start) async {
             final diskKey = store == null ? cacheKey : '${chapter.id}.json';
             var content = textOnly ? memory[cacheKey] : memory.remove(cacheKey);
             var hit = content == null ? 'miss' : 'memory';
+            Uint8List? encoded;
             if (content == null) {
               content = disk.read(diskKey, chapter);
               if (content != null) hit = 'disk';
@@ -341,20 +353,30 @@ Future<void> _run((SendPort, String, String?, int, String) start) async {
               trace?.mark('read_decode_convert');
               if (!textOnly) {
                 // 缓存写失败不影响已正确解析的正文，磁盘紧张时仍能阅读。
+                encoded =
+                    store != null || cacheRoot != null || prepareLayoutDigest
+                    ? content.encode()
+                    : null;
+                trace?.mark('cache_encode');
                 try {
-                  if (store == null) {
-                    cache.write(cacheKey, content);
-                  } else {
-                    store.write(
-                      store.file('chapters/$diskKey'),
-                      content.encode(),
-                    );
+                  if (store != null) {
+                    store.write(store.file('chapters/$diskKey'), encoded!);
+                  } else if (encoded != null) {
+                    cache.writeBytes(cacheKey, encoded);
                   }
                 } on FileSystemException {
                   trace?.details['cacheWriteFailed'] = true;
                 }
-                trace?.mark('cache_encode_write');
+                trace?.mark('cache_write');
               }
+            }
+            String? layoutDigest;
+            if (prepareLayoutDigest) {
+              // 新章复用缓存写入的规范字节；磁盘命中也在当前后台任务内计算，
+              // 不等整章传回界面后再把它复制给另一个 isolate。
+              layoutDigest = layoutDigests[content] ??=
+                  ContentFingerprint.digestBytes(encoded ?? content.encode());
+              trace?.mark('layout_digest');
             }
             if (!textOnly) await reader.prepareResources(content);
             if (!textOnly && content.textLength <= 500000) {
@@ -365,7 +387,7 @@ Future<void> _run((SendPort, String, String?, int, String) start) async {
                 memory.remove(memory.keys.first);
               }
             }
-            result = content;
+            result = (content, layoutDigest);
             trace?.details['characters'] = content.textLength;
           } finally {
             if (!textOnly) store?.endPreparation();

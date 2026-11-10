@@ -29,6 +29,8 @@ import io.flutter.embedding.engine.FlutterEngine
  * 原有 configureFlutterEngine / SAF 通道与它不是一回事，全部保留。
  */
 class MainActivity : AudioServiceActivity(), DocumentPicker {
+    private val resumeDiagnostics by lazy { AppResumeDiagnostics(this) }
+
     // 诊断包只记触摸边界，对照 Android 收到事件与 Flutter 接到事件的时差。
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         ReaderTurnLog.touch(event)
@@ -43,26 +45,51 @@ class MainActivity : AudioServiceActivity(), DocumentPicker {
         if (ReadingWindow.onKey(event)) true else super.dispatchKeyEvent(event)
 
     override fun onPause() {
+        resumeDiagnostics.record("pause")
         ReadingWindow.pause()
         super.onPause()
     }
 
     override fun onStart() {
         super.onStart()
+        resumeDiagnostics.record("start")
         PageCapture.setForeground(true)
     }
 
+    override fun onResume() {
+        super.onResume()
+        resumeDiagnostics.resume()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        resumeDiagnostics.record("focus")
+    }
+
+    override fun onFlutterUiDisplayed() {
+        super.onFlutterUiDisplayed()
+        resumeDiagnostics.flutterDisplayed(true)
+    }
+
+    override fun onFlutterUiNoLongerDisplayed() {
+        super.onFlutterUiNoLongerDisplayed()
+        resumeDiagnostics.flutterDisplayed(false)
+    }
+
     override fun onStop() {
+        resumeDiagnostics.stop()
         PageCapture.setForeground(false)
         super.onStop()
     }
 
     override fun onTrimMemory(level: Int) {
+        resumeDiagnostics.record("trim_memory", mapOf("level" to level))
         PageCapture.release()
         super.onTrimMemory(level)
     }
 
     override fun onDestroy() {
+        resumeDiagnostics.destroy()
         ReaderTurnLog.detach()
         PageCapture.setForeground(false)
         super.onDestroy()
@@ -74,6 +101,7 @@ class MainActivity : AudioServiceActivity(), DocumentPicker {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         ErrorDiagnostics.install(applicationContext)
+        resumeDiagnostics.record("create", mapOf("restored" to (savedInstanceState != null)))
         super.onCreate(savedInstanceState)
         // 进程被回收后重建时，选择器结果已经无法交付，清掉悬挂回调
         pendingPick = null

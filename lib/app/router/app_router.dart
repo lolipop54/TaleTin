@@ -1,4 +1,5 @@
 import '../../ui/features/bookshelf/view_models/bookshelf_view_model.dart';
+import '../../ui/features/bookshelf/view_models/visible_shelf_books.dart';
 import '../di/book_group_providers.dart';
 
 import 'package:flutter/material.dart';
@@ -196,6 +197,19 @@ class _MainShellState extends ConsumerState<MainShell> {
   Future<void> _goBranch(int index) async {
     if (_fadeKey.currentState?.busy == true) return;
     final request = ++_navigationRequest;
+    if (index == 0 && navigationShell.currentIndex != 0) {
+      // 隐藏分支的流可能已暂停；在旧主页仍显示时核对全书库，
+      // 书籍及当前筛选结果都准备好后才切回书架。
+      final subscription = ref.listenManual(libraryBooksProvider, (_, _) {});
+      try {
+        ref.invalidate(libraryBooksProvider);
+        await ref.read(libraryBooksProvider.future);
+        if (!mounted || request != _navigationRequest) return;
+        await ref.read(visibleShelfBooksProvider.future);
+      } finally {
+        subscription.close();
+      }
+    }
     await _prepareBranch(index);
     if (!mounted || request != _navigationRequest) return;
     navigationShell.goBranch(

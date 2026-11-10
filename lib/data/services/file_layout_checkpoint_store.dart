@@ -12,6 +12,8 @@ import '../../domain/services/layout_checkpoint_store.dart';
 import '../../engine/normalization/content_fingerprint.dart';
 import '../../core/diagnostics/reader_work_trace.dart';
 
+part 'layout_checkpoint_segments.dart';
+
 /// 源内容摘要、实际字体文件摘要与精确布局参数共同决定可重建文件身份。
 class FileLayoutCheckpointStore implements LayoutCheckpointStore {
   FileLayoutCheckpointStore(
@@ -20,10 +22,14 @@ class FileLayoutCheckpointStore implements LayoutCheckpointStore {
     this.engineFingerprint = const String.fromEnvironment(
       'FLUTTER_ENGINE_REVISION',
     ),
+    this.maxLayoutBytes = maxFileBytes,
   });
   final String root;
   final Future<String?> Function(String?) fontFingerprint;
   final String engineFingerprint;
+
+  /// 单布局预算，测试可缩小以覆盖多轮淘汰；不能超过正式读取的硬上限。
+  final int maxLayoutBytes;
   Future<void> _writes = Future.value();
   int _writeGeneration = 0;
   final _updates = <(String, int), Map<String, Object?>>{};
@@ -56,7 +62,7 @@ class FileLayoutCheckpointStore implements LayoutCheckpointStore {
         .convert(
           utf8.encode(
             jsonEncode([
-              'measured-prefix-3',
+              'measured-prefix-17',
               bookId,
               title,
               digest,
@@ -109,6 +115,7 @@ class FileLayoutCheckpointStore implements LayoutCheckpointStore {
     String identity, {
     int? throughCursor,
     int afterBlocks = 0,
+    PageCheckpointTarget? nearPage,
   }) async {
     final path = _path(bookId, identity);
     final generation = _writeGeneration;
@@ -118,9 +125,16 @@ class FileLayoutCheckpointStore implements LayoutCheckpointStore {
     final done = Completer<void>();
     _readers.add(done.future);
     try {
-      final result = await _readFile(path, throughCursor, afterBlocks);
-      if (result == null) _invalidReads.add(path);
-      return generation == _writeGeneration ? result : null;
+      final result = await _readFile(
+        path,
+        throughCursor,
+        afterBlocks,
+        nearPage,
+      );
+      if (result.damaged && generation == _writeGeneration) {
+        _invalidReads.add(path);
+      }
+      return generation == _writeGeneration ? result.checkpoint : null;
     } finally {
       _readers.remove(done.future);
       done.complete();
@@ -142,7 +156,12 @@ class FileLayoutCheckpointStore implements LayoutCheckpointStore {
     final next = _writes.then((_) async {
       final latest = _updates.remove(job)!;
       _queued.remove(job);
-      await _writeFile(path, latest, repair: _invalidReads.remove(path));
+      await _writeCheckpointSegments(
+        path,
+        latest,
+        repair: _invalidReads.remove(path),
+        budget: maxLayoutBytes.clamp(1, maxFileBytes),
+      );
       await _deleteExclusively(() => _prune(directory, path));
     });
     // 缓存写入失败不能破坏已可读页面或位置保存，也不能阻挡后续有效缓存。
@@ -150,71 +169,6 @@ class FileLayoutCheckpointStore implements LayoutCheckpointStore {
     _queued[job] = _writes;
     return _writes;
   }
-
-  // 静态函数只捕获可传输的数值数据，不能把含在途 Future 的仓库实例带进 isolate。
-  static Future<void> _writeFile(
-    String path,
-    Map<String, Object?> latest, {
-    bool repair = false,
-  }) => Isolate.run(() {
-    final blocks = latest['blocks'] as List;
-    final parts = <Map<String, Object?>>[];
-    var total = 0;
-    final directory = Directory(path)..createSync(recursive: true);
-    if (!repair) {
-      try {
-        // 部分恢复不能把磁盘上更长的有效前缀覆盖成短前缀。
-        final previous = _manifest(path);
-        if ((previous['metadata'] as Map)['cursor'] >= latest['cursor']) return;
-      } on Object {
-        /* 首次建立或坏清单，重新发布。 */
-      }
-    }
-    for (var from = 0; from < blocks.length;) {
-      var end = (from + 64).clamp(0, blocks.length);
-      // 表格一次整体测量；不能把恢复点留在同一张表格的中间。
-      while (end < blocks.length &&
-          (blocks[end - 1] as Map).containsKey('sourceCursor') &&
-          blocks[end - 1]['sourceCursor'] == null) {
-        end++;
-      }
-      final bytes = utf8.encode(jsonEncode(blocks.sublist(from, end)));
-      total += bytes.length;
-      if (total > maxFileBytes) return;
-      final digest = sha256.convert(bytes).toString();
-      final file = File(p.join(path, '$digest.segment.gz'));
-      // 已封口的64块分段不改写；增长中的最后一段按新摘要另存。
-      if (repair || !file.existsSync()) {
-        final temporary = File('${file.path}.pending');
-        temporary.writeAsBytesSync(gzip.encode(bytes), flush: true);
-        temporary.renameSync(file.path);
-      }
-      parts.add({
-        'sha256': digest,
-        'bytes': bytes.length,
-        'count': end - from,
-        'cursor': end == blocks.length
-            ? latest['cursor']
-            : (blocks[end - 1]['sourceCursor'] ?? end),
-      });
-      from = end;
-    }
-    final metadata = Map<String, Object?>.of(latest)..remove('blocks');
-    final payload = jsonEncode({
-      'version': 3,
-      'metadata': metadata,
-      'parts': parts,
-      'bytes': total,
-    });
-    if (utf8.encode(payload).length > 256 * 1024) return;
-    final temporary = File(p.join(directory.path, 'manifest.pending'));
-    temporary.writeAsStringSync(
-      jsonEncode([sha256.convert(utf8.encode(payload)).toString(), payload]),
-      flush: true,
-    );
-    // 全部分段落盘之后才一次替换清单；崩溃只留下不被引用的新段。
-    temporary.renameSync(p.join(path, 'manifest.json'));
-  });
 
   static Map<String, dynamic> _manifest(String path) {
     final file = File(p.join(path, 'manifest.json'));
@@ -225,30 +179,79 @@ class FileLayoutCheckpointStore implements LayoutCheckpointStore {
       throw const FormatException('清单摘要不一致');
     }
     final data = jsonDecode(payload) as Map<String, dynamic>;
-    if (data['version'] != 3 || (data['bytes'] as int) > maxFileBytes) {
+    if ((data['version'] != 15 && data['version'] != 16) ||
+        (data['bytes'] as int) > maxFileBytes) {
       throw const FormatException('缓存版本或预算不符');
+    }
+    // 旧清单从章首开始，新清单保留绝对测量行号，可直接追加和滚动淘汰。
+    var from = 0;
+    for (final part in data['parts'] as List) {
+      part['from'] ??= from;
+      from = (part['from'] as int) + (part['count'] as int);
     }
     return data;
   }
 
-  static Future<Map<String, dynamic>?> _readFile(
+  static Future<({Map<String, dynamic>? checkpoint, bool damaged})> _readFile(
     String path,
     int? throughCursor,
     int afterBlocks,
+    PageCheckpointTarget? nearPage,
   ) => Isolate.run(() {
     final trace = ReaderWorkTrace.start('layout.checkpoint.read', {
       'throughCursor': throughCursor,
       'afterBlocks': afterBlocks,
+      'pageWindow': nearPage != null,
     });
     try {
       final manifest = _manifest(path);
       final parts = manifest['parts'] as List;
+      final metadata = manifest['metadata'] as Map<String, dynamic>;
+      List<int>? restart;
+      if (nearPage != null) {
+        final points = metadata['pageRestarts'] as List? ?? const [];
+        for (final point in points.reversed) {
+          final row = (point as List).cast<int>();
+          if (row.length != 6 ||
+              row[0] <= 0 ||
+              row[1] <= 0 ||
+              row.any((value) => value < 0)) {
+            continue;
+          }
+          // 取严格更早的内容边界，保留页尾和图片定位倾向的原有语义。
+          if (nearPage.page case final page?) {
+            if (row[0] > page) continue;
+          } else if (row[3] > nearPage.block! ||
+              (row[3] == nearPage.block && row[4] >= nearPage.offset)) {
+            continue;
+          }
+          restart = row;
+          break;
+        }
+        if (restart == null) return (checkpoint: null, damaged: false);
+        // 前一测量块用于原规则的段距和防孤悬标题计算。
+        afterBlocks = restart[1] - 1;
+        final upper = restart[3] + 2;
+        final limit = throughCursor;
+        if (limit == null || limit < upper) {
+          throughCursor = upper;
+        }
+      }
+      final firstRow = parts.isEmpty ? 0 : parts.first['from'] as int;
+      final endRow = parts.isEmpty
+          ? 0
+          : (parts.last['from'] as int) + (parts.last['count'] as int);
+      // 淘汰掉的章首属于未命中，不能当作损坏而清掉仍有效的后半章。
+      if (afterBlocks < firstRow || afterBlocks > endRow) {
+        return (checkpoint: null, damaged: false);
+      }
       final blocks = <dynamic>[];
-      var total = 0, skipped = 0, count = 0, cursor = 0, partIndex = 0;
+      var total = 0, skipped = firstRow, count = 0, cursor = 0, partIndex = 0;
       var selectedEnd = parts.length;
-      if (throughCursor != null) {
+      final cursorLimit = throughCursor;
+      if (cursorLimit != null) {
         final targetPart = parts.indexWhere(
-          (p) => (p['cursor'] as int) >= throughCursor,
+          (p) => (p['cursor'] as int) >= cursorLimit,
         );
         if (targetPart >= 0) {
           selectedEnd = (targetPart + 2).clamp(0, parts.length);
@@ -268,20 +271,24 @@ class FileLayoutCheckpointStore implements LayoutCheckpointStore {
             size < 0 ||
             size > maxFileBytes ||
             total + size > maxFileBytes) {
-          return null;
+          return (checkpoint: null, damaged: true);
         }
         final file = File(p.join(path, '$digest.segment.gz'));
-        if (file.lengthSync() > maxFileBytes) return null;
+        if (file.lengthSync() > maxFileBytes) {
+          return (checkpoint: null, damaged: true);
+        }
         final bytes = _CacheBytes(size);
         final decoder = gzip.decoder.startChunkedConversion(bytes);
         decoder.add(file.readAsBytesSync());
         decoder.close();
         final raw = bytes.take();
         if (raw.length != size || sha256.convert(raw).toString() != digest) {
-          return null;
+          return (checkpoint: null, damaged: true);
         }
         final rows = jsonDecode(utf8.decode(raw)) as List;
-        if (rows.length != part['count']) return null;
+        if (rows.length != part['count']) {
+          return (checkpoint: null, damaged: true);
+        }
         blocks.addAll(rows.skip((afterBlocks - skipped).clamp(0, rows.length)));
         skipped = next;
         count++;
@@ -290,7 +297,7 @@ class FileLayoutCheckpointStore implements LayoutCheckpointStore {
       if (throughCursor == null &&
           afterBlocks == 0 &&
           total != manifest['bytes']) {
-        return null;
+        return (checkpoint: null, damaged: true);
       }
       File(p.join(path, 'manifest.json')).setLastModifiedSync(DateTime.now());
       trace?.details.addAll({
@@ -300,19 +307,26 @@ class FileLayoutCheckpointStore implements LayoutCheckpointStore {
         'blocks': blocks.length,
         'cursor': cursor,
       });
-      return {
-        ...manifest['metadata'] as Map<String, dynamic>,
-        if (throughCursor != null || afterBlocks != 0) ...{
-          'cursor': partIndex == 0
-              ? (manifest['metadata'] as Map)['cursor']
-              : cursor,
-          '_from': afterBlocks,
-          '_hasMore': selectedEnd < parts.length,
+      if (restart != null && blocks.length < 2) {
+        return (checkpoint: null, damaged: true);
+      }
+      return (
+        checkpoint: {
+          ...metadata,
+          '_pageRestart': ?restart,
+          if (throughCursor != null || afterBlocks != 0) ...{
+            'cursor': partIndex == 0
+                ? (manifest['metadata'] as Map)['cursor']
+                : cursor,
+            '_from': afterBlocks,
+            '_hasMore': selectedEnd < parts.length,
+          },
+          'blocks': blocks,
         },
-        'blocks': blocks,
-      };
+        damaged: false,
+      );
     } on Object {
-      return null;
+      return (checkpoint: null, damaged: true);
     } finally {
       trace?.finish();
     }

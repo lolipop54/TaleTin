@@ -15,6 +15,7 @@ import '../../engine/parsers/parse_worker.dart';
 import '../../engine/parsers/mobi/mobi_source.dart';
 import '../../engine/parsers/epub/image_sniff.dart';
 import 'book_source_path.dart';
+import '../../engine/normalization/content_fingerprint.dart';
 import 'indexed_chapter_reader.dart';
 
 /// A storage-only transaction. The database, locators, notes and their dates
@@ -359,8 +360,9 @@ Future<void> _verifyWorker(
         (_, _) async => throw StateError('非TXT'),
         textOnly: true,
       );
-      Map<String, Object?> body(ChapterContent value) =>
-          {...value.toJson()}..remove('epubDetailsRevision');
+      // 迁移核对只看正文口径：文字、块号、权重、图片与表格；样式由样式表保证。
+      List<Object?> body(ChapterContent value) =>
+          ContentFingerprint.bodyProjection(value);
       if (jsonEncode(body(generated)) != jsonEncode(body(previous))) {
         reply.send(false);
         return;

@@ -1,13 +1,13 @@
 import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 
 import '../../../../app/di/source_book_providers.dart';
 import '../../../../app/router/reader_route_page.dart';
 import '../../../core/widgets/book_loading.dart';
 import '../../../core/widgets/gt_button.dart';
 import '../../../../core/diagnostics/reader_work_trace.dart';
+import 'reader_leave.dart';
 
 /// 进入阅读路由时显式准备来源。完整提交后才创建阅读会话，重建界面不重导入。
 class SourceBookOpening extends ConsumerStatefulWidget {
@@ -76,7 +76,7 @@ class _SourceBookOpeningState extends ConsumerState<SourceBookOpening> {
                   GtButton.filled(onPressed: _prepare, child: const Text('重试')),
                   const SizedBox(height: 12),
                   GtButton.filled(
-                    onPressed: () => context.pop(),
+                    onPressed: () => leaveReaderPage(context),
                     child: const Text('退出'),
                   ),
                 ],

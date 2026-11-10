@@ -71,7 +71,6 @@ class _ListeningFollowState extends ConsumerState<ListeningFollow> {
           _diagnostics.lifecycle(state.name, _snapshot(), snapshot: _snapshot);
         }
         if (!_visible) {
-          _service.setPageBoundaries(this, const []);
           ref
               .read(readerSessionProvider(widget.bookId).notifier)
               .cancelSpeechFollow();
@@ -130,12 +129,8 @@ class _ListeningFollowState extends ConsumerState<ListeningFollow> {
       _layout = layout?.identity;
       _requested = null;
     }
-    _service.setPageBoundaries(
-      this,
-      session.scrolling || layout == null
-          ? const []
-          : [for (final page in layout.pages) layout.beginLocatorOf(page)],
-    );
+    // 跟随只需要当前朗读位置。不要在每次落页后枚举整章页首，
+    // 长章可能已有上万页，而朗读服务按句播放，并不消费这份页界。
     final state = _service.snapshot;
     final target = state.bookId == widget.bookId
         ? state.pageFollowLocator
@@ -216,7 +211,6 @@ class _ListeningFollowState extends ConsumerState<ListeningFollow> {
       'scheduled': _scheduled,
     });
     _diagnostics.dispose();
-    _service.setPageBoundaries(this, const []);
     _lifecycle.dispose();
     super.dispose();
   }

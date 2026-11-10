@@ -15,6 +15,8 @@ import '../../domain/repositories/chapter_content_repository.dart';
 import '../../engine/normalization/text_normalizer.dart';
 import '../../engine/parsers/epub/epub_archive.dart';
 import '../../engine/parsers/epub/xhtml_blocks.dart';
+import '../../engine/styles/chapter_styler.dart';
+import '../../engine/layout/book_background.dart';
 import '../../engine/parsers/epub/image_sniff.dart';
 import '../../engine/parsers/txt/txt_text_preparer.dart';
 import 'book_source_path.dart';
@@ -22,6 +24,7 @@ import 'source_verification_record.dart';
 import '../../engine/parsers/pdf/pdf_file.dart';
 import '../../engine/parsers/pdf/pdf_page_pictures.dart';
 import 'indexed_publication.dart';
+import 'inline_image_index_compatibility.dart';
 import 'publication_cache.dart';
 import '../../core/io/source_fingerprint.dart';
 
@@ -121,6 +124,24 @@ class IndexedChapterReader {
     _verified = stat;
   }
 
+  final _cssTexts = <String, String?>{};
+
+  /// 章节引用的样式文件：按归档条目读原始文本，解析交给 Rust 统一 CSS。
+  String? _cssText(String path) {
+    if (_cssTexts.containsKey(path)) return _cssTexts[path];
+    final archive = _archive;
+    if (archive == null) return null;
+    try {
+      if (!archive.contains(path)) return _cssTexts[path] = null;
+      return _cssTexts[path] = utf8.decode(
+        archive.readBytes(path),
+        allowMalformed: true,
+      );
+    } on Object {
+      return _cssTexts[path] = null;
+    }
+  }
+
   Future<ChapterContent> read(
     Chapter chapter,
     DecodeBytes decodeBytes, {
@@ -157,6 +178,7 @@ class IndexedChapterReader {
       final parsed = XhtmlBlockBuilder(
         basePath: path,
         buildTextMap: false,
+        styleTextResolver: _cssText,
         resolveImage: (entry) {
           final size = index.images[entry];
           if (cache != null && size != null) {
@@ -204,6 +226,9 @@ class IndexedChapterReader {
         blocks: parsed.blocks,
         tables: parsed.tables,
         epubDetailsRevision: kEpubDetailsRevision,
+        // Rust 转换时已经算好样式表与编号，直接带上；Dart 不用再补。
+        stylesJson: parsed.stylesJson,
+        displaySourceJson: parsed.displaySourceJson,
       );
     } else {
       final start = location[0] as int, end = location[1] as int;
@@ -239,14 +264,30 @@ class IndexedChapterReader {
           ),
         );
       }
-      content = ChapterContent(chapterId: chapter.id, blocks: blocks);
+      // 原始 TXT 只有默认样式，生成正文时直接带上这张表，省掉整章复制。
+      content = ChapterContent(
+        chapterId: chapter.id,
+        blocks: blocks,
+        stylesJson: ChapterStyler.emptyTableJson,
+      );
+    }
+    if (index.format != 'txt' && index.format != 'pdf') {
+      content = matchInlineImageIndex(content, chapter.textLength);
     }
     // PDF补入的图片使用自己的块ID，不改变已有文字；图片块会增加分隔计数。
     if (index.format != 'pdf' && content.textLength != chapter.textLength) {
-      throw const ContentFailure(ContentErrorCode.corrupted, '正文长度与章节索引不一致');
+      throw ContentFailure(
+        ContentErrorCode.corrupted,
+        '正文长度与章节索引不一致（正文 ${content.textLength}，索引 ${chapter.textLength}）',
+      );
     }
     await verifySource();
-    return content;
+    if (index.format == 'txt') return content;
+    // 批次 F：给正文挂上样式表与 styleId，然后丢掉旧显示字段——ContentBlock 的样式字段
+    // 只作为「建表原料」在解析阶段存在，读出后的正文只有样式表与 sid。
+    // 批次 F：挂上样式表与 styleId 后丢掉旧显示字段；块上的样式字段只在解析阶段
+    // 作为「建表原料」存在，读出后的正文只有样式表与 `sid`。
+    return ChapterStyler.toStylesOnly(ChapterStyler.apply(content));
   }
 
   ResolvedImage _prepareImage(String entry) {
@@ -314,11 +355,30 @@ class IndexedChapterReader {
       return;
     }
     final files = <File>[store.file('chapters/${content.chapterId}.json')];
-    for (final block in content.blocks) {
-      final path = block.resourcePath;
-      if (path == null || !path.startsWith('res/')) continue;
+    for (final path in chapterImageResources(content)) {
+      if (!path.startsWith('res/')) continue;
       final entry = path.substring(4);
-      if (!index.images.containsKey(entry)) continue;
+      if (!index.images.containsKey(entry)) {
+        // 有些 EPUB 的 CSS 图片漏列在 OPF 中，只接受归档内真实图片条目。
+        final archive = _archive ??= openIndexedPublication(
+          source.path,
+          verification.file.parent.path,
+          index,
+        );
+        if (!{
+              '.png',
+              '.jpg',
+              '.jpeg',
+              '.gif',
+              '.webp',
+              '.bmp',
+              '.svg',
+            }.contains(p.extension(entry).toLowerCase()) ||
+            !archive.contains(entry)) {
+          continue;
+        }
+        index.images[entry] = [-1, -1];
+      }
       _prepareImage(entry);
       if (!_persistentImages.contains(entry)) {
         files.add(store.file(p.join('assets', entry)));

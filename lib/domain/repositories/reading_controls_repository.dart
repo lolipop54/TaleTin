@@ -2,10 +2,11 @@ class ReadingControls {
   const ReadingControls({
     this.keepAwake = false,
     this.volumeKeys = false,
+    this.swipeUpToExit = false,
     this.statusBar = true,
     this.navigationBar = true,
   });
-  final bool keepAwake, volumeKeys, statusBar, navigationBar;
+  final bool keepAwake, volumeKeys, swipeUpToExit, statusBar, navigationBar;
 }
 
 abstract interface class ReadingControlsRepository {

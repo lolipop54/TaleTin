@@ -6,29 +6,22 @@ class ChapterLayoutTask {
     required this.bookId,
     required this.contentVersion,
     required this.chapter,
-    required this.content,
+    required ChapterContent content,
     required this.options,
-    BlockMeasurementCache? measurementCache,
+    this.measurementCache,
     this.onCheckpoint,
     this.readCheckpoint,
-  }) {
-    _source = _LazyMeasuredBlocks(
-      chapter,
-      content,
-      options,
-      measurementCache,
-      cacheEnabled: onCheckpoint != null,
-    );
-    _steps = ChapterPaginator(
-      pageHeight: options.contentHeight,
-      gapBefore: _source.measurer.gapBefore,
-    ).steps(_source).iterator;
+    this.readPageWindow,
+  }) : content = CssLayoutStyles.resolve(content, options) {
+    _displayTree = DisplayTree.build(this.content);
+    _source = _newSource();
+    _steps = _paginate(_source);
     _mapper = LocatorMapper(
       bookId: bookId,
       contentVersion: contentVersion,
       chapterId: chapter.id,
     );
-    _totalLength = _mapper.totalLength(content.blocks);
+    _totalLength = _mapper.totalLength(this.content.blocks);
   }
 
   final String bookId;
@@ -36,17 +29,25 @@ class ChapterLayoutTask {
   final Chapter chapter;
   final ChapterContent content;
   final LayoutOptions options;
+  final BlockMeasurementCache? measurementCache;
   final void Function(Map<String, Object?>)? onCheckpoint;
   final Future<Map<String, dynamic>?> Function(
     int? throughCursor,
     int afterBlocks,
   )?
   readCheckpoint;
-  late final _LazyMeasuredBlocks _source;
-  late final Iterator<PageSlice?> _steps;
+  final Future<Map<String, dynamic>?> Function(PageCheckpointTarget, int?)?
+  readPageWindow;
+  late final DisplayTree _displayTree;
+  late _LazyMeasuredBlocks _source;
+  late Iterator<PageSlice?> _steps;
   late final LocatorMapper _mapper;
   late final int _totalLength;
   final _pages = <PageSlice>[];
+  final _pageRestarts = <List<int>>[];
+  List<int>? _restart;
+  int get _firstPage => _restart?[0] ?? 0;
+  int get _pageCount => _firstPage + _pages.length;
   final _events = StreamController<ChapterLayout>.broadcast(sync: true);
   Future<void> _flight = Future.value();
   bool _complete = false,
@@ -56,13 +57,119 @@ class ChapterLayoutTask {
   Object? _failure;
   int _foreground = 0;
   int _savedPages = 0;
+  int _checkpointLimit = 0;
   Timer? _timer;
   Completer<void>? _wake;
   ChapterLayout? _snapshot;
   Stream<ChapterLayout> get updates => _events.stream;
   bool get isInUse => _foreground > 0 || _wantBackground;
   int _maxStepUs = 0;
+  int _stepUs = 0;
   bool _cacheMore = true;
+
+  _LazyMeasuredBlocks _newSource([int rowBase = 0]) => _LazyMeasuredBlocks(
+    chapter,
+    content,
+    options,
+    measurementCache,
+    cacheEnabled: onCheckpoint != null,
+    displayTree: _displayTree,
+    rowBase: rowBase,
+  );
+
+  Iterator<PageSlice?> _paginate(
+    _LazyMeasuredBlocks source, [
+    List<int>? restart,
+  ]) =>
+      ChapterPaginator(
+            pageHeight: options.contentHeight,
+            gapBefore: source.measurer.gapBefore,
+          )
+          .steps(
+            source,
+            firstPage: restart?[0] ?? 0,
+            firstBlock: restart == null ? 0 : 1,
+            firstLine: restart?[2] ?? 0,
+            onBoundary: onCheckpoint != null || readPageWindow != null
+                ? _recordBoundary
+                : null,
+          )
+          .iterator;
+
+  void _recordBoundary(int page, int row, int line) {
+    if (row < 1 || page - (_pageRestarts.lastOrNull?[0] ?? 0) < 24) return;
+    final block = _source.values[row];
+    final ordinal = _displayTree.blockIndexById[block.blockId];
+    if (ordinal == null || block.isDecoration || block.tableId != null) return;
+    final offset = block.lines.isEmpty
+        ? 0
+        : (block.lines[line].start - block.displayPrefixLength).clamp(
+            0,
+            block.text.length,
+          );
+    _pageRestarts.add([
+      page,
+      _source.rowBase + row,
+      line,
+      ordinal,
+      offset,
+      (_restart?[5] ?? 0) + _source.consumedBefore[row - 1],
+    ]);
+  }
+
+  void _replaceWindow(
+    _LazyMeasuredBlocks source,
+    List<int>? restart, {
+    bool cacheMore = true,
+  }) {
+    _source = source;
+    _restart = restart;
+    _steps = _paginate(source, restart);
+    _pages.clear();
+    _pageRestarts.clear();
+    if (restart != null) _pageRestarts.add(restart);
+    _complete = false;
+    _snapshot = null;
+    _cacheMore = cacheMore;
+    _savedPages = _checkpointLimit = 0;
+  }
+
+  Future<bool> _tryPageRestart(
+    PageCheckpointTarget target,
+    int? through,
+    LayoutToken? token, {
+    required bool earlier,
+  }) async {
+    final read = readPageWindow;
+    if (read == null) return false;
+    final data = await read(target, through);
+    if (_disposed || (token?.isCancelled ?? false)) {
+      throw const LayoutCancelled();
+    }
+    if (data == null) return false;
+    try {
+      final point = (data['_pageRestart'] as List).cast<int>();
+      if (point.length != 6 ||
+          (!earlier && point[0] < _pageCount) ||
+          point[3] >= content.blocks.length) {
+        return false;
+      }
+      final source = _newSource(point[1] - 1);
+      if (!source.restore(data) || source.values.length < 2) return false;
+      final first = source.values[1];
+      if (first.blockId != content.blocks[point[3]].id ||
+          first.isDecoration ||
+          first.tableId != null ||
+          point[2] >= (first.lines.isEmpty ? 1 : first.lines.length)) {
+        return false;
+      }
+      _replaceWindow(source, point, cacheMore: data['_hasMore'] == true);
+      return true;
+    } on Object {
+      // 缓存异常回到常规排版，已交付页面仍持有原快照。
+      return false;
+    }
+  }
 
   Future<void> _restoreTo(int? cursor) async {
     if (readCheckpoint == null ||
@@ -70,7 +177,10 @@ class ChapterLayoutTask {
         (cursor != null && cursor <= _source.cursor)) {
       return;
     }
-    final data = await readCheckpoint!(cursor, _source.values.length);
+    final data = await readCheckpoint!(
+      cursor,
+      _source.rowBase + _source.values.length,
+    );
     if (_disposed) throw const LayoutCancelled();
     final trace = ReaderWorkTrace.start('layout.checkpoint.restore', {
       'chapter': chapter.ordinal,
@@ -100,30 +210,56 @@ class ChapterLayoutTask {
   }
 
   void _saveCheckpoint() {
-    if (onCheckpoint == null || _source.encoded.isEmpty) return;
+    if (onCheckpoint == null) return;
+    final limit = _source.checkpointRowCount;
+    if (limit == 0) return;
     _savedPages = _pages.length;
+    if (_source.encodedThrough < limit) {
+      _checkpointLimit = limit;
+      return;
+    }
+    _publishCheckpoint(limit);
+  }
+
+  void _publishCheckpoint(int limit) {
+    _checkpointLimit = 0;
     onCheckpoint!({
-      'cursor': _source.cursor,
-      'blocks': List.of(_source.encoded),
+      // 用「已交付」的游标：等待下一块的 pending 块不能算进断点。
+      'cursor': _source.checkpointCursorAt(limit - 1),
+      if (_source.rowBase != 0) '_from': _source.rowBase,
+      'blocks': _source.checkpointRows(limit),
+      if (_pageRestarts.isNotEmpty)
+        'pageRestarts': [
+          for (final point in _pageRestarts)
+            if (point[1] < _source.rowBase + limit) point,
+        ],
     });
   }
 
-  ChapterLayout get snapshot => _snapshot ??= ChapterLayout._(
+  ChapterLayout get snapshot => _snapshot ??= _view(copy: true);
+
+  /// 交给界面的快照冻结列表；同步查目标时直接读任务自己的追加列表。
+  /// 内部视图不能交付或跨 await 持有，否则旧画面会看见后续追加的页面。
+  ChapterLayout _view({required bool copy}) => ChapterLayout._(
     bookId: bookId,
     contentVersion: contentVersion,
     chapterId: chapter.id,
     chapterTitle: chapter.title,
-    blocks: List.unmodifiable(_source.values),
-    pages: List.unmodifiable(_pages),
+    blocks: copy ? List.unmodifiable(_source.values) : _source.values,
+    pages: copy ? List.unmodifiable(_pages) : _pages,
     mapper: _mapper,
     totalLength: _totalLength,
     content: content,
     options: options,
     task: this,
     isComplete: _complete,
+    firstPage: _firstPage,
+    consumedBeforeWindow: _restart?[5] ?? 0,
     // 只追加索引，不修改既有页或块顺序。旧快照未覆盖的目标仍返回 null。
     measuredById: _source.measuredById,
     blockOrders: _source.orders,
+    // 和块索引一样只追加；恢复更早窗口时旧快照仍持有原来的累计表。
+    consumedBefore: _source.consumedBefore,
   );
 
   Future<T> _serial<T>(Future<T> Function() work) {
@@ -141,8 +277,10 @@ class ChapterLayoutTask {
     if (_complete) return false;
     final watch = readerWorkTraceEnabled ? (Stopwatch()..start()) : null;
     final moved = _steps.moveNext();
-    if (watch != null && watch.elapsedMicroseconds > _maxStepUs) {
-      _maxStepUs = watch.elapsedMicroseconds;
+    if (watch != null) {
+      final elapsed = watch.elapsedMicroseconds;
+      _stepUs += elapsed;
+      if (elapsed > _maxStepUs) _maxStepUs = elapsed;
     }
     if (!moved) {
       _complete = true;
@@ -157,62 +295,114 @@ class ChapterLayoutTask {
     return true;
   }
 
-  /// 请求页与直接后页。前页已在确定的前缀里；真正章末必须推进至 EOF。
+  /// 请求目标页及指定数量的后页。前页已在确定的前缀里；章末须推进至 EOF。
   Future<ChapterLayout> ensure({
     Locator? target,
     int? page,
     bool atEnd = false,
     LayoutToken? token,
     int lookAhead = 4,
+    int foregroundBudgetUs = 2000,
+    bool deferCheckpointEncoding = false,
+    bool allowPageRestart = false,
   }) async {
     _foreground++;
     try {
       return await _serial(() async {
         await EnglishHyphenation.prepare();
+        await _source.measurer.prepareMath(content);
+        final targetBlock = target == null
+            ? null
+            : _displayTree.blockIndexById[target.blockId];
+        final restart = _restart;
+        final earlier =
+            restart != null &&
+            (target == null
+                ? !atEnd && (page ?? 0) < _firstPage
+                : targetBlock == null ||
+                      targetBlock < restart[3] ||
+                      targetBlock == restart[3] &&
+                          target.utf16Offset <= restart[4]);
+        var resumed = false;
+        if (earlier ||
+            (allowPageRestart &&
+                targetBlock != null &&
+                _view(copy: false)._pageIndexOf(target!) == null)) {
+          resumed = await _tryPageRestart(
+            (
+              block: targetBlock,
+              offset: target?.utf16Offset ?? 0,
+              page: target == null ? page ?? 0 : null,
+            ),
+            targetBlock == null ? null : targetBlock + 1,
+            token,
+            earlier: earlier,
+          );
+          if (earlier && !resumed) _replaceWindow(_newSource(), null);
+        }
         if (atEnd) {
           await _restoreTo(null);
-        } else if (target != null) {
-          final index = content.blocks.indexWhere(
-            (b) => b.id == target.blockId,
-          );
-          if (index >= 0) await _restoreTo(index + 1);
-        } else if (_pages.length <= (page ?? 0)) {
+        } else if (targetBlock != null) {
+          await _restoreTo(targetBlock + 1);
+        } else if (_pageCount <= (page ?? 0)) {
           await _restoreTo(_source.cursor + 1);
         }
         final trace = ReaderWorkTrace.start('layout.window', {
           'chapter': chapter.ordinal,
           'blocks': content.blocks.length,
           'atEnd': atEnd,
+          'checkpointPage': resumed ? _firstPage : null,
+          'preparedPages': _pages.length,
         });
         final batch = Stopwatch()..start();
+        final startStepUs = _stepUs;
+        final startMeasureUs = _source.measureUs;
+        final startEncodeUs = _source.encodeUs;
+        _source.deferCheckpointEncoding = deferCheckpointEncoding;
+        int? targetPage;
+        var searchedPages = 0;
         try {
           while (true) {
             if (token?.isCancelled ?? false) throw const LayoutCancelled();
-            final index = target == null
-                ? page ?? 0
-                : snapshot.pageIndexOf(target);
+            if (target != null &&
+                targetPage == null &&
+                (_pages.length > searchedPages || _complete)) {
+              // 封口页不再变化，已经查过且没有目标的页无需反复扫描。
+              // 不为每个测量步骤复制全部块/页；长章冷跳转保持线性推进。
+              targetPage = _view(copy: false)
+                  ._pageIndexOf(target, fromPage: searchedPages);
+              searchedPages = _pages.length;
+            }
+            final index = target == null ? page ?? 0 : targetPage;
             if (_complete ||
-                (!atEnd &&
-                    index != null &&
-                    _pages.length > index + lookAhead)) {
+                (!atEnd && index != null && _pageCount > index + lookAhead)) {
               break;
             }
-            if (_source.needsCachedRows) await _restoreTo(_source.cursor + 1);
+            // 已确认磁盘没有后续分段时，纯计算步骤无需反复挂起再恢复。
+            if (_cacheMore &&
+                readCheckpoint != null &&
+                _source.needsCachedRows) {
+              await _restoreTo(_source.cursor + 1);
+            }
             _step();
-            if (batch.elapsedMicroseconds >= 2000) {
+            if (batch.elapsedMicroseconds >= foregroundBudgetUs) {
               await Future<void>.delayed(Duration.zero);
               batch.reset();
             }
           }
           trace?.details.addAll({
-            'pages': _pages.length,
+            'pages': _pageCount,
             'complete': _complete,
             'measuredBlocks': _source.values.length,
             'maxStepUs': _maxStepUs,
+            'measureUs': _source.measureUs - startMeasureUs,
+            'checkpointEncodeUs': _source.encodeUs - startEncodeUs,
+            'stepUs': _stepUs - startStepUs,
           });
           if (_complete || _pages.length - _savedPages >= 48) _saveCheckpoint();
           return snapshot;
         } finally {
+          _source.deferCheckpointEncoding = false;
           trace?.finish();
         }
       });
@@ -223,7 +413,9 @@ class ChapterLayoutTask {
 
   void resumeBackground() {
     _wantBackground = true;
-    if (_background || _complete || _disposed) return;
+    if (_background || (_complete && _checkpointLimit == 0) || _disposed) {
+      return;
+    }
     _background = true;
     unawaited(_pump());
   }
@@ -237,8 +429,11 @@ class ChapterLayoutTask {
   Future<void> _pump() async {
     var published = _pages.length;
     var saved = _pages.length;
+    var source = _source;
     try {
-      while (_wantBackground && !_complete && !_disposed) {
+      while (_wantBackground &&
+          (!_complete || _checkpointLimit != 0) &&
+          !_disposed) {
         final wake = _wake = Completer<void>();
         _timer = Timer(const Duration(milliseconds: 8), () {
           if (!wake.isCompleted) wake.complete();
@@ -246,14 +441,32 @@ class ChapterLayoutTask {
         await wake.future;
         if (!_wantBackground || _disposed) break;
         if (LayoutWorkGate.blocked || _foreground > 0) continue;
+        if (!identical(source, _source)) {
+          source = _source;
+          published = saved = _pages.length;
+        }
+        final wasComplete = _complete;
         await _serial(() async {
           final batch = Stopwatch()..start();
+          if (_checkpointLimit != 0 &&
+              _wantBackground &&
+              !_disposed &&
+              !LayoutWorkGate.blocked &&
+              _foreground == 0 &&
+              _source.encodeCheckpointRows(_checkpointLimit, batch)) {
+            _publishCheckpoint(_checkpointLimit);
+          }
           while (_wantBackground &&
               !_complete &&
               !_disposed &&
               !LayoutWorkGate.blocked &&
-              _foreground == 0) {
-            if (_source.needsCachedRows) await _restoreTo(_source.cursor + 1);
+              _foreground == 0 &&
+              batch.elapsedMicroseconds < 1500) {
+            if (_cacheMore &&
+                readCheckpoint != null &&
+                _source.needsCachedRows) {
+              await _restoreTo(_source.cursor + 1);
+            }
             if (LayoutWorkGate.blocked || _foreground > 0 || !_wantBackground) {
               break;
             }
@@ -261,9 +474,10 @@ class ChapterLayoutTask {
             if (batch.elapsedMicroseconds >= 1500) break;
           }
         });
-        if (!_disposed && (_complete || _pages.length - published >= 12)) {
+        if (!_disposed &&
+            ((!wasComplete && _complete) || _pages.length - published >= 12)) {
           published = _pages.length;
-          _events.add(snapshot);
+          if (_events.hasListener) _events.add(snapshot);
           if (_complete || _pages.length - saved >= 48) {
             saved = _pages.length;
             _saveCheckpoint();
@@ -275,7 +489,7 @@ class ChapterLayoutTask {
       if (error is! LayoutCancelled) _failure = error;
     } finally {
       _background = false;
-      if (_wantBackground && !_complete && !_disposed && _failure == null) {
+      if (_wantBackground && !_disposed && _failure == null) {
         resumeBackground();
       }
     }
@@ -285,139 +499,5 @@ class ChapterLayoutTask {
     _disposed = true;
     pauseBackground();
     unawaited(_events.close());
-  }
-}
-
-class _LazyMeasuredBlocks implements MeasuredBlockSource {
-  _LazyMeasuredBlocks(
-    this.chapter,
-    this.content,
-    this.options,
-    BlockMeasurementCache? cache, {
-    required this.cacheEnabled,
-  }) : measurementCache = cache,
-       measurer = BlockMeasurer(options, cache: cache) {
-    _byId = {for (final b in content.blocks) b.id: b};
-    _tables = {for (final t in content.tables) t.blockIds.first: t};
-    _tableIds = content.tables.expand((t) => t.blockIds).toSet();
-    _contentTitle = ChapterLayout.firstBlockIsChapterTitle(
-      content,
-      chapter.title,
-    );
-  }
-  final Chapter chapter;
-  final ChapterContent content;
-  final LayoutOptions options;
-  final BlockMeasurer measurer;
-  final BlockMeasurementCache? measurementCache;
-  final bool cacheEnabled;
-  final values = <MeasuredBlock>[];
-  final measuredById = <String, MeasuredBlock>{};
-  final orders = <String, int>{};
-  final encoded = <Map<String, Object?>>[];
-  late final Map<String, ContentBlock> _byId;
-  late final Map<String, ContentTable> _tables;
-  late final Set<String> _tableIds;
-  late final bool _contentTitle;
-  var _cursor = 0;
-  bool _started = false;
-  int _requested = -1;
-  int get cursor => _cursor;
-  bool get needsCachedRows => values.length - _requested <= 3;
-
-  void _add(MeasuredBlock block, {bool inTable = false}) {
-    measuredById.putIfAbsent(block.blockId, () => block);
-    orders.putIfAbsent(block.blockId, () => values.length);
-    values.add(block);
-    if (cacheEnabled) {
-      encoded.add({
-        ...MeasuredBlockCodec.encode(block),
-        'sourceCursor': inTable ? null : _cursor,
-      });
-    }
-  }
-
-  bool restore(Map<String, dynamic> checkpoint) {
-    final cursor = checkpoint['cursor'] as int;
-    if (cursor < _cursor ||
-        cursor > content.blocks.length ||
-        (checkpoint['_from'] as int? ?? 0) != values.length) {
-      return false;
-    }
-    final raw = (checkpoint['blocks'] as List)
-        .map((x) => Map<String, dynamic>.from(x as Map))
-        .toList();
-    final restored = raw.map(MeasuredBlockCodec.decode).toList();
-    final allowed = {
-      BlockMeasurer.titleBlockId,
-      ...content.blocks.take(cursor).map((b) => b.id),
-    };
-    // 表格按整体测量：游标刚越过首格时，后面格子的测量也已经完成。
-    for (final table in content.tables) {
-      if (!allowed.contains(table.blockIds.first)) continue;
-      allowed.addAll(table.blockIds);
-      for (final cell in table.cells.where((c) => c.blocks.isEmpty)) {
-        allowed.add(
-          '__empty_${table.blockIds.first}_${cell.row}_${cell.column}',
-        );
-      }
-    }
-    if (restored.any((b) => !allowed.contains(b.blockId))) {
-      return false;
-    }
-    for (final block in restored) {
-      measuredById.putIfAbsent(block.blockId, () => block);
-      orders.putIfAbsent(block.blockId, () => values.length);
-      values.add(block);
-    }
-    if (cacheEnabled) encoded.addAll(raw);
-    _cursor = cursor;
-    _started = true;
-    return true;
-  }
-
-  @override
-  bool has(int index) {
-    if (index > _requested) _requested = index;
-    if (!_started) {
-      _started = true;
-      // PDF的章节只是用于定位的物理页，不把“第N页”插入电子书正文。
-      if (content.pdfPage == null && !_contentTitle && chapter.title.trim().isNotEmpty) {
-        _add(measurer.measureChapterTitle(chapter.title));
-      }
-    }
-    while (values.length <= index && _cursor < content.blocks.length) {
-      final ordinal = _cursor++;
-      final block = content.blocks[ordinal];
-      final table = _tables[block.id];
-      if (table != null) {
-        final before = encoded.length;
-        for (final measured in measureTable(
-          table,
-          _byId,
-          options,
-          cache: measurementCache,
-        )) {
-          _add(measured, inTable: true);
-        }
-        if (encoded.length > before) encoded.last['sourceCursor'] = _cursor;
-      }
-      if (_tableIds.contains(block.id)) continue;
-      _add(
-        measurer.measure(
-          block,
-          withIndent:
-              options.settings.indent && block.kind == BlockKind.paragraph,
-          asChapterTitle: _contentTitle && ordinal == 0,
-        ),
-      );
-    }
-    return index < values.length;
-  }
-
-  @override
-  MeasuredBlock operator [](int index) {
-    if (!has(index)) throw RangeError.index(index, values);
-    return values[index];
   }
 }

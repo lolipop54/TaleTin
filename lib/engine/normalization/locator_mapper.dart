@@ -87,12 +87,12 @@ class LocatorMapper {
   }
 
   /// 章节内文本总长度，口径与 `ChapterContent.textLength` 一致
-  /// （每块额外计 1，让图片、分隔线这类空块也有位置权重），
-  /// 这样章内百分比与全书百分比的分母是同一套算法。
+  /// （每块额外计 1，让图片、分隔线这类空块也有位置权重；
+  /// 行内图片合并后的块带有覆盖权重，也必须走同一口径）。
   int totalLength(List<ContentBlock> blocks) {
     var total = 0;
     for (final block in blocks) {
-      total += blockTextOf(block).length + 1;
+      total += block.textLength;
     }
     return total;
   }

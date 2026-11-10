@@ -39,7 +39,12 @@ Future<void> showReaderImage(
       Size(image.image.width.toDouble(), image.image.height.toDouble()),
     );
   } catch (error, stack) {
-    AppErrors.report(error, stack, operation: '图片无法打开', notify: context.mounted);
+    AppErrors.report(
+      error,
+      stack,
+      operation: '图片无法打开',
+      notify: context.mounted,
+    );
   } finally {
     stream.removeListener(listener);
     image?.dispose();
@@ -47,9 +52,20 @@ Future<void> showReaderImage(
 }
 
 /// 矢量插图直接绘制已解析的图形，放大后仍保持清晰。
-Future<void> showReaderSvg(BuildContext context, BytesLoader loader) async {
+Future<void> showReaderSvg(
+  BuildContext context,
+  BytesLoader loader, {
+  bool formula = false,
+}) async {
   PictureInfo? info;
   try {
+    // 查看器使用黑色背景；公式默认继承黑色会消失，需在这里统一转为白色。
+    if (formula && loader is SvgFileLoader) {
+      loader = SvgFileLoader(
+        loader.file,
+        theme: const SvgTheme(currentColor: Colors.white),
+      );
+    }
     info = await vg.loadPicture(loader, context);
     if (!context.mounted) return;
     await _showContent(
@@ -64,7 +80,12 @@ Future<void> showReaderSvg(BuildContext context, BytesLoader loader) async {
       info.size,
     );
   } catch (error, stack) {
-    AppErrors.report(error, stack, operation: '矢量图片无法打开', notify: context.mounted);
+    AppErrors.report(
+      error,
+      stack,
+      operation: '矢量图片无法打开',
+      notify: context.mounted,
+    );
   } finally {
     info?.picture.dispose();
   }

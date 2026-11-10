@@ -39,7 +39,8 @@ extension _ReaderProgressNavigation on ReaderSessionNotifier {
         }
         if (_mode.isOriginal && ReaderDeliveryExperiments.contentTarget) {
           final chapterRequest = ++_originalChapterRequest;
-          if (session.book.format.usesOriginalWebView && ReaderDeliveryExperiments.originalPriority &&
+          if (session.book.format.usesOriginalWebView &&
+              ReaderDeliveryExperiments.originalPriority &&
               length >= 64 * 1024 &&
               i != session.chapterIndex) {
             _sessionRef
@@ -127,7 +128,8 @@ extension _ReaderProgressNavigation on ReaderSessionNotifier {
               : null;
           _progressLanding = landing;
           // 短章读取很快，提前挂载反而增加一轮帧调度；只并行读取较慢的大章。
-          if (session.book.format.usesOriginalWebView && FirstSeekExperiments.parallelChapter &&
+          if (session.book.format.usesOriginalWebView &&
+              FirstSeekExperiments.parallelChapter &&
               length >= 64 * 1024 &&
               i != session.chapterIndex) {
             _sessionRef
@@ -167,6 +169,7 @@ extension _ReaderProgressNavigation on ReaderSessionNotifier {
           options: _options,
           anchor: null,
           chapterOffset: within,
+          targetFirst: _options?.settings.spreadEnabled == false,
         );
         return;
       }

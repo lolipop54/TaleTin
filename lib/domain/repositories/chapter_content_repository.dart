@@ -1,6 +1,6 @@
 /// 章节正文与资源的读取契约（纯 Dart，不引用 Flutter / drift）。
 ///
-/// 路径基准见 `docs/EPUB渲染引擎实现计划.md` 4.5 节：
+/// 路径基准见 `docs/EPUB引擎与直接阅读260921-261013/EPUB渲染引擎实现计划.md` 4.5 节：
 /// - 章节正文：`Chapter.contentPath` 相对**书籍目录** → `library/<bookId>/content/<版本>/<章>.json`
 /// - 正文图片：`ContentBlock.resourcePath` 相对 **content/<版本>/** → `library/<bookId>/content/<版本>/res/...`
 /// - 目录：`library/<bookId>/content/<版本>/manifest.json` 的嵌套 `toc`
@@ -52,6 +52,12 @@ abstract class ChapterContentRepository {
     Chapter chapter, {
     bool textOnly = false,
   });
+
+  /// 简化分页需要正文的精确排版摘要。文件仓库可复用写缓存的字节。
+  Future<ChapterContent> chapterForProgressLayout(
+    String bookId,
+    Chapter chapter,
+  ) => this.chapter(bookId, chapter);
 
   /// 阅读窗口持有的章节不参与图片回收；空列表释放该窗口的保护。
   /// 文件仓库只登记已有/即将生成的资料，不在这里渲染邻页。

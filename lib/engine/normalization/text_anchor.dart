@@ -68,8 +68,9 @@ List<String> _probesOf(String needle) {
   final probes = <String>[];
   for (final length in _matchLadder) {
     if (length <= 0) continue;
-    final probe =
-        needle.length <= length ? needle : needle.substring(0, length);
+    final probe = needle.length <= length
+        ? needle
+        : needle.substring(0, length);
     if (probe.length < _minMatchChars) continue;
     if (probes.isNotEmpty && probes.last == probe) continue;
     probes.add(probe);
@@ -100,12 +101,12 @@ Locator? locatorForFraction({
   var consumed = 0;
   for (final block in content.blocks) {
     final text = blockTextOf(block);
-    // 每块占 text.length + 1（与 totalLength 同口径）
-    if (consumed + text.length + 1 > target) {
+    // 权重口径与 LocatorMapper.totalLength 一致（行内图片块带覆盖权重）
+    if (consumed + block.textLength > target) {
       final offset = (target - consumed).clamp(0, text.length);
       return mapper.at(block, offset);
     }
-    consumed += text.length + 1;
+    consumed += block.textLength;
   }
   // 落在末尾之后：取最后一块的末尾
   final last = content.blocks.last;
@@ -124,24 +125,28 @@ double fractionOfLocator({
   required String chapterId,
   required Locator locator,
 }) {
-  final mapper = LocatorMapper(
-    bookId: bookId,
-    contentVersion: contentVersion,
-    chapterId: chapterId,
-  );
-  final total = mapper.totalLength(content.blocks);
-  if (total <= 0) return 0;
-  var consumed = 0;
-  for (final block in content.blocks) {
-    final text = blockTextOf(block);
-    if (block.id == locator.blockId) {
-      final offset = locator.utf16Offset.clamp(0, text.length);
-      return ((consumed + offset) / total).clamp(0.0, 1.0);
-    }
-    consumed += text.length + 1;
-  }
+  final index = _offsets[content] ??= _ContentOffsets(content);
+  final block = index.blocks[locator.blockId];
   // 块 ID 不在这一章（例如内容版本变了）：按章首处理，由调用方再校正
-  return 0;
+  if (index.total <= 0 || block == null) return 0;
+  final offset = locator.utf16Offset.clamp(0, block.$2);
+  return ((block.$1 + offset) / index.total).clamp(0.0, 1.0);
+}
+
+// 正文交付后不再修改；改正文会生成新的 ChapterContent。随正文对象释放索引，
+// 避免每次显示、确认和保存进度都重新扫描整章，也不另存正文字符串。
+final _offsets = Expando<_ContentOffsets>();
+
+class _ContentOffsets {
+  _ContentOffsets(ChapterContent content) {
+    for (final block in content.blocks) {
+      blocks.putIfAbsent(block.id, () => (total, block.runLength));
+      // 行内图片的覆盖权重与文字长度不一定相同，累计位置仍使用原权重。
+      total += block.textLength;
+    }
+  }
+  final blocks = <String, (int, int)>{};
+  int total = 0;
 }
 
 /// 去掉全部空白字符：原书页面的换行/缩进与标准化正文的口径不同，

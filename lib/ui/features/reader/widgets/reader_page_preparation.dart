@@ -54,6 +54,16 @@ extension _ReaderPagePreparation on _PageAreaState {
     if (_windowKey == key) return;
     _windowKey = key;
     _textPreparationTimer?.cancel();
+    _preparedLayout = source;
+    _preparedPage = index;
+    // 当前页自己的材料已就绪。邻页解码慢时仍可先交付当前画面。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _windowKey != key) return;
+      if (!ReaderDisplayTransition.isCovering(context)) {
+        _presenter?.confirmSimplifiedPage(source, index);
+      }
+    });
+    WidgetsBinding.instance.scheduleFrame();
     unawaited(() async {
       if (widget.session.book.format == BookFormat.pdf) {
         final ids = {
@@ -74,19 +84,9 @@ extension _ReaderPagePreparation on _PageAreaState {
           _pageMaterials.prepare(page, configuration),
       ]);
       if (!mounted || _windowKey != key) return;
-      _preparedLayout = source;
-      _preparedPage = index;
-      // 首屏当前及邻页材料齐备后才允许无关补排，触摸和动画仍可暂停它。
-      WidgetsBinding.instance.addPostFrameCallback((_) async {
-        if (!mounted || _windowKey != key) return;
-        if (!ReaderDisplayTransition.isCovering(context)) {
-          _presenter?.confirmSimplifiedPage(source, index);
-        }
-        final shown = ReaderPageReady.shownOf(context);
-        if (shown != null) await shown;
-        _prepareNeighborText(key, neighbors, source, current);
-      });
-      WidgetsBinding.instance.scheduleFrame();
+      final shown = ReaderPageReady.shownOf(context);
+      if (shown != null) await shown;
+      _prepareNeighborText(key, neighbors, source, current);
     }());
   }
 
@@ -118,7 +118,16 @@ extension _ReaderPagePreparation on _PageAreaState {
         _prepareNeighborText(key, neighbors, source, current, index);
         return;
       }
-      neighbors[index].prepareText();
+      final page = neighbors[index];
+      final prepared =
+          _pageMaterials.find(page, createLocalImageConfiguration(context)) ??
+          PreparedPage.textOnly(page);
+      try {
+        // 书内图片背景的采样颜色已经随材料准备好，不在这里重新解码或采样。
+        prepared?.prepareText();
+      } finally {
+        prepared?.dispose();
+      }
       _prepareNeighborText(key, neighbors, source, current, index + 1);
     });
   }

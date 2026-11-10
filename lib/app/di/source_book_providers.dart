@@ -11,6 +11,7 @@ import '../../data/services/refresh_saved_annotations.dart';
 import '../../domain/use_cases/prepare_source_book.dart';
 import '../../domain/models/book.dart';
 import '../../domain/models/annotation.dart';
+import '../../domain/models/source_position_preparation.dart';
 import '../../domain/use_cases/import_books.dart';
 import 'app_providers.dart';
 import '../../core/io/source_fingerprint.dart';
@@ -38,7 +39,7 @@ final prepareSourceBookProvider = Provider<PrepareSourceBook>((ref) {
           !await File(p.join(content, 'pdf-1.json')).exists()) {
         return true;
       }
-      return _legacyNeedsPreparation(
+      return _manifestNeedsPreparation(
         p.join(
           root,
           book.id,
@@ -89,8 +90,7 @@ final prepareSavedAnnotationProvider =
       };
     });
 
-// 老 JSON 没有可信来源摘要。首次打开重新建立索引，并核对旧位置，不能猜测相同。
-Future<bool> _legacyNeedsPreparation(
+Future<bool> _manifestNeedsPreparation(
   String path,
   Map<String, (String, Future<bool>)> cache,
 ) async {
@@ -101,8 +101,20 @@ Future<bool> _legacyNeedsPreparation(
   final read = Isolate.run(() {
     final manifest = File(path);
     if (!manifest.existsSync()) return false;
-    return (jsonDecode(manifest.readAsStringSync()) as Map)['sourceIndex'] ==
-        null;
+    final data = jsonDecode(manifest.readAsStringSync()) as Map;
+    final index = data['sourceIndex'] as Map?;
+    // 老 JSON 没有可信来源摘要，首次打开重新建立索引并核对旧位置。
+    if (index == null) return true;
+    final revision = data['txtHeadingRevision'] as int? ?? 0;
+    if (index['format'] != 'txt' || revision >= txtHeadingRulesRevision) {
+      return false;
+    }
+    // 旧目录可能已识别部分章节。自动模式重扫一次，保留手动分节或正则。
+    final options = File(p.join(manifest.parent.path, 'txt.options'));
+    if (!options.existsSync()) return true;
+    final choice = jsonDecode(options.readAsStringSync()) as Map;
+    return choice['forceSectionFallback'] != true &&
+        choice['chapterPattern'] == null;
   });
   cache[path] = (stamp, read);
   return read;

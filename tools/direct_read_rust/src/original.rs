@@ -63,55 +63,50 @@ fn stylesheets(source: &str) -> Vec<String> {
     result
 }
 pub(crate) fn sanitize_dom(dom: &Dom) {
-        // Inspect the original arena so detached subtrees never enter the output.
-        for node in dom.nodes.borrow().iter() {
-            let name = tag(node);
+    crate::note_links::repair(dom);
+    // Inspect the original arena so detached subtrees never enter the output.
+    for node in dom.nodes.borrow().iter() {
+        let name = tag(node);
+        if matches!(
+            name,
+            "script"
+                | "noscript"
+                | "iframe"
+                | "frame"
+                | "frameset"
+                | "embed"
+                | "object"
+                | "applet"
+                | "base"
+        ) || (name == "meta"
+            && attr(node, "http-equiv")
+                .or_else(|| attr(node, "http_equiv"))
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+                == "refresh")
+        {
+            dom.remove_from_parent(node);
+            continue;
+        }
+        node.attrs
+            .borrow_mut()
+            .retain(|a| !a.name.local.to_ascii_lowercase().starts_with("on"));
+        for a in node.attrs.borrow_mut().iter_mut() {
             if matches!(
-                name,
-                "script"
-                    | "noscript"
-                    | "iframe"
-                    | "frame"
-                    | "frameset"
-                    | "embed"
-                    | "object"
-                    | "applet"
-                    | "base"
-            ) || (name == "meta"
-                && attr(node, "http-equiv")
-                    .or_else(|| attr(node, "http_equiv"))
-                    .unwrap_or_default()
-                    .to_ascii_lowercase()
-                    == "refresh")
-            {
-                dom.remove_from_parent(node);
-                continue;
-            }
-            node.attrs
-                .borrow_mut()
-                .retain(|a| !a.name.local.to_ascii_lowercase().starts_with("on"));
-            for a in node.attrs.borrow_mut().iter_mut() {
-                if matches!(
-                    &*a.name.local,
-                    "href"
-                        | "src"
-                        | "xlink:href"
-                        | "action"
-                        | "formaction"
-                        | "background"
-                        | "poster"
-                ) {
-                    let value: String = a.value.chars().filter(|&c| !whitespace(c)).collect();
-                    let value = value.to_ascii_lowercase();
-                    if value.starts_with("javascript:")
-                        || value.starts_with("vbscript:")
-                        || value.starts_with("data:text/html")
-                    {
-                        a.value = "#".into();
-                    }
+                &*a.name.local,
+                "href" | "src" | "xlink:href" | "action" | "formaction" | "background" | "poster"
+            ) {
+                let value: String = a.value.chars().filter(|&c| !whitespace(c)).collect();
+                let value = value.to_ascii_lowercase();
+                if value.starts_with("javascript:")
+                    || value.starts_with("vbscript:")
+                    || value.starts_with("data:text/html")
+                {
+                    a.value = "#".into();
                 }
             }
         }
+    }
 }
 impl Original {
     pub fn new(dictionary: &[u8]) -> Self {
@@ -194,8 +189,11 @@ impl Original {
                             let changed = {
                                 let raw = child.text.borrow();
                                 let (text, positions) = english.display(&raw);
-                                if positions.is_empty() { None }
-                                else { Some((text.into_owned(), positions)) }
+                                if positions.is_empty() {
+                                    None
+                                } else {
+                                    Some((text.into_owned(), positions))
+                                }
                             };
                             if let Some((text, positions)) = changed {
                                 *child.text.borrow_mut() = text;

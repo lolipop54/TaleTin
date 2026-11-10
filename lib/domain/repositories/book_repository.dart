@@ -41,8 +41,9 @@ class ImportCommit {
 }
 
 abstract class BookRepository {
-  /// 书架观察流：只包含 `active` 与 `contentMissing` 状态的书籍，
-  /// 按导入时间倒序。
+  /// 书架观察流：不含已删除书籍，按导入时间倒序。
+  /// 首次订阅核对来源；后续元数据更新不重复检查文件。
+  /// 返回书架或恢复前台时，由应用重新订阅以核对完整书库。
   Stream<List<Book>> watchActiveBooks();
 
   Future<Book?> findById(String id);

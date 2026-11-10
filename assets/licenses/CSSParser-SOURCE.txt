@@ -1,0 +1,5 @@
+cssparser 0.38.0 与 selectors 0.41.0 以 Mozilla Public License 2.0 使用。
+对应源码可从 crates.io 获取：
+https://crates.io/crates/cssparser/0.38.0
+https://crates.io/crates/selectors/0.41.0
+本应用未修改这两个 crate 的源码；Rust 侧只在 src/css/ 中调用它们的公开 API。

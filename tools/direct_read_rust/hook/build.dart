@@ -76,9 +76,10 @@ Future<void> main(List<String> args) async {
     output.dependencies.addAll([
       input.packageRoot.resolve('Cargo.toml'),
       input.packageRoot.resolve('Cargo.lock'),
-      ...Directory.fromUri(
-        input.packageRoot.resolve('src/'),
-      ).listSync().whereType<File>().map((f) => f.uri),
+      ...Directory.fromUri(input.packageRoot.resolve('src/'))
+          .listSync(recursive: true, followLinks: false)
+          .whereType<File>()
+          .map((f) => f.uri),
     ]);
   });
 }

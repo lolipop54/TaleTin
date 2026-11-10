@@ -141,10 +141,7 @@ class ReadingBackgrounds extends AsyncNotifier<ReadingBackgroundCatalog> {
   });
 }
 
-/// 留在设置主页备齐字体、背景缩略图和选项，再打开完整页面。
+/// 留在设置主页备齐当前字体，再打开全局排版页。
 final globalTypographyReadyProvider = FutureProvider<void>((ref) async {
-  await Future.wait([
-    ref.watch(currentTypographyFontsProvider.future),
-    ref.watch(readingBackgroundsProvider.future),
-  ]);
+  await ref.watch(currentTypographyFontsProvider.future);
 });

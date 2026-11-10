@@ -298,7 +298,7 @@ class ReaderViewModel extends Notifier<ReaderState> {
 }
 
 /// 控制层、面板和选区只属于本次阅读；退出页面后释放，下次从正文开始。
-/// 阅读位置与单书设置由各自的 Provider 保存，不依赖这里的临时状态。
+/// 阅读位置按书保存，阅读设置统一全局保存，均不依赖这里的临时状态。
 final readerProvider =
     NotifierProvider.autoDispose<ReaderViewModel, ReaderState>(
       ReaderViewModel.new,

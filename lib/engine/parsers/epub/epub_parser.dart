@@ -18,15 +18,21 @@ import '../../../core/diagnostics/import_timing.dart';
 import '../../../core/errors/import_error.dart';
 import '../../../core/io/source_fingerprint.dart';
 import '../../../core/io/source_digest.dart';
+import '../../../domain/models/book.dart';
 import '../../../domain/models/book_document.dart';
 import '../../../domain/models/source_content_index.dart';
 import '../../../domain/services/book_parser.dart';
+import '../../../domain/services/toc_entry_index.dart';
 import 'epub_archive.dart';
 import 'epub_package.dart';
 import 'epub_source_reader.dart';
 import 'image_sniff.dart';
 import 'xhtml_blocks.dart';
 import '../../normalization/source_position_matcher.dart';
+import '../../normalization/text_decoding.dart';
+import 'toc_target_recovery.dart';
+import 'toc_cover_groups.dart';
+import '../mobi/mobi_html_toc.dart';
 
 class EpubParser {
   const EpubParser();
@@ -151,13 +157,14 @@ class EpubParser {
       // 目录先行：章节标题优先取目录标题
       final tocTitles = <String, String>{};
       final navigationDocuments = <String, String>{};
-      final rawToc = _readRawToc(
+      var rawToc = _readRawToc(
         archive,
         package,
         tocTitles,
         navigationDocuments: navigationDocuments,
       );
       timing?.mark('navigation_read');
+      final tocRecovery = TocTargetRecovery(rawToc);
       if (rawToc.isEmpty) warnings.add(warningNoToc);
 
       final tocFragments = <String, List<String>>{};
@@ -173,11 +180,34 @@ class EpubParser {
       }
 
       collectFragments(rawToc);
-      // A single TOC entry already points to chapter start in the reader.
-      tocFragments.removeWhere((_, fragments) => fragments.length < 2);
+      // EPUB 即使每个正文文件只有一条目录项，带锚点的标题也可能在章内。
+      // 用统计阶段已建好的 DOM 求位置，避免首开时再逐章打开文件。
+      final prepareSingleAnchors = request.format == BookFormat.epub;
+      tocFragments.removeWhere(
+        (_, fragments) =>
+            (!prepareSingleAnchors && fragments.length < 2) ||
+            fragments.every((fragment) => fragment.isEmpty),
+      );
       final tocPositions = <String, Map<String, double?>>{};
       final tocHeadings = <String, Map<String, double>>{};
+      // 样式文件按需读取并缓存：同一本书的章节共用同一份文本。
+      final styleTexts = <String, String>{};
+      String? resolveCssText(String path) {
+        final cached = styleTexts[path];
+        if (cached != null) return cached;
+        try {
+          if (!archive.contains(path)) return null;
+          return styleTexts[path] = archive.readText(path);
+        } on Object {
+          return null;
+        }
+      }
+
+      // 统一 CSS 需要书内全部 CSS 文本，才能在规则原位置展开 @import。
+      // 实际由 XhtmlBlockBuilder 按章收集本章真正引用的文件与 @import，避免每次
+      // 转换都把整本书的样式表塞进元数据。
       final chapters = <Chapter>[];
+      final coverPaths = <String>{};
       final sources = <String, List<Object>>{};
       final tocNodes = <TocNode>[];
       final spineHrefs = <String, String>{};
@@ -195,6 +225,7 @@ class EpubParser {
           basePath: item.entryPath,
           resolveImage: resolveImage,
           importTiming: timing,
+          styleTextResolver: resolveCssText,
           buildTextMap: false,
           statisticsOnly: request.indexedContent,
         );
@@ -253,6 +284,14 @@ class EpubParser {
               }
             }
             timing?.mark('chapter_read_decode');
+            if (tocRecovery.needed) {
+              for (var at = 0; at < paths.length; at++) {
+                tocRecovery.record(
+                  paths[at],
+                  rawHtml ? decodeTextBytes(rawSources[at]) : texts[at],
+                );
+              }
+            }
             preparedStatistics = XhtmlBlockBuilder.statisticsBatch(
               texts,
               paths,
@@ -271,10 +310,12 @@ class EpubParser {
               navigationDocuments.remove(item.entryPath) ??
               archive.readText(item.entryPath);
           timing?.mark('chapter_read_decode');
+          tocRecovery.record(item.entryPath, source);
           result = builder.convert(source);
         }
         timing?.mark('chapter_convert');
         warnings.addAll(result.warnings);
+        if (result.singleImagePath != null) coverPaths.add(item.entryPath);
 
         final title = _chapterTitle(
           tocTitles[item.entryPath],
@@ -286,6 +327,8 @@ class EpubParser {
           blocks: result.blocks,
           tables: result.tables,
           epubDetailsRevision: kEpubDetailsRevision,
+          stylesJson: result.stylesJson,
+          displaySourceJson: result.displaySourceJson,
         );
         if (!matches.isEmpty) matches.add(chapterId, content.blocks);
         final contentPath = 'content/${request.contentVersion}/$chapterId.json';
@@ -337,8 +380,57 @@ class EpubParser {
         );
       }
 
-      tocNodes.addAll(_buildToc(rawToc, spineHrefs, chapters));
+      rawToc = tocRecovery.recover(rawToc);
+      tocNodes.addAll(
+        _buildToc(
+          rawToc,
+          spineHrefs,
+          chapters,
+          coverBoundaries: tocBookCoverBoundaries(
+            archive,
+            package,
+            rawToc,
+            spineHrefs,
+            chapters,
+            knownCoverPaths: coverPaths,
+          ),
+        ),
+      );
       timing?.mark('toc_build');
+      if (request.indexedContent && tocRecovery.needed) {
+        // 修复旧目录后，只有新增或改了锚点的正文文件需要重新准备位置。
+        final finalTitles = collectTocTitles(tocNodes);
+        for (final MapEntry(key: path, value: chapterId)
+            in spineHrefs.entries) {
+          final titles = finalTitles[chapterId];
+          if (titles == null || (!prepareSingleAnchors && titles.length < 2)) {
+            continue;
+          }
+          final fragments = {for (final title in titles) title.anchorId ?? ''};
+          if (fragments.every((fragment) => fragment.isEmpty)) continue;
+          final original = tocFragments[path];
+          if (original != null && fragments.every(original.contains)) {
+            tocPositions[path]?.removeWhere(
+              (key, _) => !fragments.contains(key),
+            );
+            continue;
+          }
+          if (isCancelled()) {
+            throw const ImportFailure(ImportErrorCode.cancelled);
+          }
+          tocPositions.remove(path);
+          XhtmlBlockBuilder.statisticsBatch(
+            const [],
+            [path],
+            resolveImage,
+            timing: timing,
+            rawSources: [archive.readBytes(path)],
+            tocFragments: {path: fragments.toList()},
+            tocPositions: tocPositions,
+            tocHeadings: tocHeadings,
+          );
+        }
+      }
 
       final metaTitle = _titleFromFileName(request.displayName, package.title);
       final metaAuthor = package.author;
@@ -468,25 +560,51 @@ class EpubParser {
   ) {
     final archive = EpubArchive.open(sourcePath);
     try {
-      final package = EpubPackage.parse(
-        archive,
-        EpubPackage.readOpfPath(archive),
-      );
-      final raw = const EpubParser()._readRawToc(archive, package, {});
-      // 旧章节保存的是 OPF 相对 href，NCX 解析后则是归档内完整路径。
-      final idsByHref = {
-        for (final c in chapters)
-          if (c.href != null) c.href!: c.id,
-      };
-      final hrefs = <String, String>{};
-      for (final item in package.spine) {
-        final id = idsByHref[item.href];
-        if (id != null) hrefs[item.entryPath] = id;
-      }
-      return const EpubParser()._buildToc(raw, hrefs, chapters);
+      return resolveTocInArchive(archive, chapters);
     } finally {
       archive.close();
     }
+  }
+
+  /// EPUB归档、MOBI读取索引和旧出版物目录共用恢复，不重建章节或改正文。
+  static List<TocNode> resolveTocInArchive(
+    EpubArchive archive,
+    List<Chapter> chapters,
+  ) {
+    final package = EpubPackage.parse(
+      archive,
+      EpubPackage.readOpfPath(archive),
+    );
+    var raw = const EpubParser()._readRawToc(archive, package, {});
+    final recovery = TocTargetRecovery(raw);
+    if (recovery.needed) {
+      for (final item in package.spine) {
+        recovery.record(item.entryPath, archive.readText(item.entryPath));
+      }
+      raw = recovery.recover(raw);
+    }
+    // 旧章节保存的是 OPF 相对 href，NCX 解析后则是归档内完整路径。
+    final idsByHref = {
+      for (final c in chapters)
+        if (c.href != null) c.href!: c.id,
+    };
+    final hrefs = <String, String>{};
+    for (final item in package.spine) {
+      final id = idsByHref[item.href];
+      if (id != null) hrefs[item.entryPath] = id;
+    }
+    return const EpubParser()._buildToc(
+      raw,
+      hrefs,
+      chapters,
+      coverBoundaries: tocBookCoverBoundaries(
+        archive,
+        package,
+        raw,
+        hrefs,
+        chapters,
+      ),
+    );
   }
 
   /// 读取目录：优先 EPUB3 nav，其次 NCX；同时收集 href→标题。
@@ -515,6 +633,7 @@ class EpubParser {
         );
       }
     }
+    entries = mobiHtmlToc(archive, package) ?? entries;
     _collectTitles(entries, titles);
     return entries;
   }
@@ -527,64 +646,46 @@ class EpubParser {
     }
   }
 
-  /// 原始目录 → 嵌套 TocNode；扁平 NCX（只列册名）按 spine 范围合成子目录。
+  /// 保留书内明确给出的目录层级；读取文件数较多不能证明目录只列了卷名。
   List<TocNode> _buildToc(
     List<RawTocEntry> raw,
     Map<String, String> spineHrefs,
-    List<Chapter> chapters,
-  ) {
-    final indexOfChapter = {for (final c in chapters) c.id: c.ordinal};
-
+    List<Chapter> chapters, {
+    Map<String, int> coverBoundaries = const {},
+  }) {
+    final covers = <TocNode, int>{};
     List<TocNode> mapEntries(List<RawTocEntry> entries) {
       final nodes = <TocNode>[];
       for (final entry in entries) {
         final chapterId = entry.href == null ? null : spineHrefs[entry.href];
         final children = mapEntries(entry.children);
-        if (chapterId == null && children.isEmpty) continue;
-        nodes.add(
-          TocNode(
-            title: entry.title,
-            chapterId: chapterId,
-            fragment: entry.fragment,
-            children: children,
-          ),
+        if (chapterId == null &&
+            children.isEmpty &&
+            !coverBoundaries.containsKey(entry.href)) {
+          continue;
+        }
+        final node = TocNode(
+          title: entry.title,
+          chapterId: chapterId,
+          fragment: entry.fragment,
+          children: children,
         );
+        nodes.add(node);
+        if (coverBoundaries[entry.href] case final boundary?) {
+          covers[node] = boundary;
+        }
       }
       return nodes;
     }
 
-    var nodes = mapEntries(raw);
+    final nodes = mapEntries(raw);
     if (nodes.isEmpty) {
       return [
         for (final c in chapters) TocNode(title: c.title, chapterId: c.id),
       ];
     }
 
-    // 全部是叶子且数量少于章节数：目录只列了卷册，按 spine 范围补出子目录
-    final allLeaves = nodes.every((n) => n.children.isEmpty && n.isLeaf);
-    if (allLeaves && nodes.length < chapters.length) {
-      final grouped = <TocNode>[];
-      for (var i = 0; i < nodes.length; i++) {
-        final start = indexOfChapter[nodes[i].chapterId] ?? 0;
-        final end = i + 1 < nodes.length
-            ? (indexOfChapter[nodes[i + 1].chapterId] ?? chapters.length)
-            : chapters.length;
-        final children = <TocNode>[
-          for (
-            var index = start;
-            index < end && index < chapters.length;
-            index++
-          )
-            TocNode(
-              title: chapters[index].title,
-              chapterId: chapters[index].id,
-            ),
-        ];
-        grouped.add(TocNode(title: nodes[i].title, children: children));
-      }
-      nodes = grouped;
-    }
-    return nodes;
+    return groupTocBookCovers(nodes, chapters, covers);
   }
 
   /// 容器宽松探测：mimetype 缺失、非首条目或被压缩时提示，但不拒绝导入。

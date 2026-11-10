@@ -3,7 +3,7 @@
 /// 三件事：
 /// 1. **虚拟源**：所有资源都挂在 `https://gtbook.internal/<bookId>/<版本>/<归档内路径>`。
 ///    域名不存在，每个请求都由拦截器直接应答（本地字节或 404），因此书里写的外网
-///    图片、外链样式也不会有任何真实网络请求（docs/原书排版模式实现计划.md 3.2）。
+///    图片、外链样式也不会有任何真实网络请求（docs/原书排版260929-261016/原书排版模式实现计划.md 3.2）。
 /// 2. **解出内容落盘**：章节净化后、字体解混淆后写 `cache/original/...`，
 ///    属可重建缓存（设计文档 7.3）。这是必须的：归档层「一个条目只能读一次」
 ///    （见 [EpubSourceReader.readEntry]），不落盘第二次请求就没法应答。
@@ -29,8 +29,8 @@ import 'package:flutter/services.dart';
 
 import 'epub_source_worker.dart';
 
-import '../../../domain/models/book_document.dart';
-import '../../../domain/repositories/chapter_content_repository.dart';
+import '../../domain/models/book_document.dart';
+import '../../domain/repositories/chapter_content_repository.dart';
 import '../../engine/parsers/epub/epub_archive.dart';
 import '../../engine/parsers/epub/epub_source_reader.dart';
 
@@ -152,11 +152,12 @@ class EpubSourceRepository {
     required String bookId,
     required int contentVersion,
     required List<Chapter> chapters,
+    bool fontsOnly = false,
   }) {
     if (_closed) throw StateError('原书服务已关闭');
     if (_changing.contains(bookId)) throw StateError('这本书正在更新正文');
     // 打开期间也保护缓存与源文件，恢复/重导入必须等待后台归档关闭。
-    final opening = _open(bookId, contentVersion, chapters);
+    final opening = _open(bookId, contentVersion, chapters, fontsOnly: fontsOnly);
     _opening[opening] = bookId;
     return opening.whenComplete(() => _opening.remove(opening));
   }
@@ -164,10 +165,11 @@ class EpubSourceRepository {
   Future<EpubSourceSession> _open(
     String bookId,
     int contentVersion,
-    List<Chapter> chapters,
-  ) async {
+    List<Chapter> chapters, {
+    required bool fontsOnly,
+  }) async {
     // 平台资源只读取字节，词典解析留给后台；缓存命中时不解析词典。
-    final dictionary = hyphenateText
+    final dictionary = hyphenateText && !fontsOnly
         ? await rootBundle.load('assets/hyphenation/hyph_en_US.dic')
         : null;
     final worker = await EpubSourceWorker.open(
@@ -422,6 +424,14 @@ class EpubSourceSession {
     final result = await _read(() => _worker.resource(entryPath));
     if (result == null) return null;
     return EpubResource(bytes: result.bytes, contentType: result.contentType);
+  }
+
+  /// 简化排版使用同一份书内资源和解混淆规则，直接按归档条目读取。
+  Future<({Uint8List bytes, String digest})?> fontResource(String entry) async {
+    if (normalizeEntryPath(entry) != entry || isChapterEntry(entry)) {
+      return null;
+    }
+    return _read(() => _worker.fontResource(entry));
   }
 
   /// 第 [ordinal] 章的净化文档（HTML 字符串）；条目缺失返回 null。

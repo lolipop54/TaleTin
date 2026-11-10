@@ -151,7 +151,12 @@ class DomTextMapBuilder {
   /// 记录一块的来源。
   ///
   /// 按正文 run 的边界折叠、裁剪，再累计块偏移，保留旧书正文口径。
-  void addBlock(String blockId, String blockText, List<SourcePiece> pieces) {
+  void addBlock(
+    String blockId,
+    String blockText,
+    List<SourcePiece> pieces, {
+    Set<int> keepTrailingRuns = const {},
+  }) {
     final joined = StringBuffer();
     var from = 0;
     while (from < pieces.length) {
@@ -160,16 +165,27 @@ class DomTextMapBuilder {
           pieces[to].runIndex == pieces[from].runIndex) {
         to++;
       }
-      joined.write(_addRun(blockId, joined.length, pieces.sublist(from, to)));
+      joined.write(
+        _addRun(
+          blockId,
+          joined.length,
+          pieces.sublist(from, to),
+          keepTrailing: keepTrailingRuns.contains(pieces[from].runIndex),
+        ),
+      );
       from = to;
     }
-    assert(
-      joined.toString() == blockText,
-      '对照表与块文本口径不一致：$joined != $blockText',
-    );
+    final actual = joined.toString();
+    // 每个来源偏移必须对应最终正文；不能忽略空格，否则换行后的定位会错一字。
+    assert(actual == blockText, '对照表与块文本口径不一致：$actual != $blockText');
   }
 
-  String _addRun(String blockId, int blockStart, List<SourcePiece> pieces) {
+  String _addRun(
+    String blockId,
+    int blockStart,
+    List<SourcePiece> pieces, {
+    bool keepTrailing = false,
+  }) {
     final buffer = StringBuffer();
     final starts = <int>[];
     final texts = <String>[];
@@ -194,7 +210,7 @@ class DomTextMapBuilder {
     }
 
     final joined = buffer.toString();
-    final runText = joined.trim();
+    final runText = keepTrailing ? joined.trimLeft() : joined.trim();
     final leading = joined.length - joined.trimLeft().length;
     final limit = leading + runText.length;
 

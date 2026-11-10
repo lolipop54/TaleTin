@@ -17,6 +17,9 @@ encoding_rs = "=0.8.41"
 sha2 = "=0.11.1"
 flate2 = "=1.1.10"
 memchr = "=2.8.3"
+cssparser = "=0.38.0"
+selectors = "=0.41.0"
+precomputed-hash = "=0.1.1"
 
 [profile.release]
 opt-level = 3

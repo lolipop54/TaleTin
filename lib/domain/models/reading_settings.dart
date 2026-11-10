@@ -9,7 +9,7 @@ library;
 ///
 /// - [simplified]：简化排版，Flutter 自研分页（默认）；
 /// - [original]：原书排版，WebView 按原书 CSS 渲染（支持原书样式的格式，见
-///   `docs/原书排版模式实现计划.md`）。
+///   `docs/原书排版260929-261016/原书排版模式实现计划.md`）。
 ///
 /// EPUB、MOBI、AZW3 可选原书排版；PDF 对应原页模式，TXT 不显示此开关。
 enum ReadingLayoutMode {
@@ -18,7 +18,17 @@ enum ReadingLayoutMode {
 
   const ReadingLayoutMode(this.code);
 
+  static const originalIncluded = bool.fromEnvironment(
+    'GT_INCLUDE_ORIGINAL_LAYOUT',
+    defaultValue: true,
+  );
+
   final String code;
+
+  /// 只限制电子书的原书排版。PDF 的 original 代表原页模式。
+  /// 保存值保持原样，供 PDF 和重新启用原书排版的构建使用。
+  ReadingLayoutMode forBuild({required bool pdf}) =>
+      originalIncluded || pdf ? this : simplified;
 
   /// 解码：值不认识时回退简化排版（单项越界只回退该项，设计文档 7.2）
   static ReadingLayoutMode fromCode(Object? code) => values.firstWhere(
@@ -55,7 +65,7 @@ abstract final class ReadingLimits {
   static const double minParagraphGapEm = 0;
   // 面板允许 30px 段距，在最小字号下也必须能完整保存。
   static const double maxParagraphGapEm = 30 / minFontSize;
-  static const double minHorizontalPadding = 16;
+  static const double minHorizontalPadding = 0;
   static const double maxHorizontalPadding = 40;
 
   static const int defaultFontSize = 17;
@@ -98,6 +108,7 @@ class ReadingSettings {
     this.fontOnlyInReader = true,
     this.fontWeight = 400,
     this.useOriginalFont = true,
+    this.useBookFontsInSimplified = false,
     this.layoutMode = ReadingLayoutMode.simplified,
     this.pageTurnEffect = PageTurnEffect.curl,
     this.autoScrollSpeed = 24,
@@ -133,6 +144,24 @@ class ReadingSettings {
   /// 正文字重：正常 400、半粗 500、粗体 700；原书字体另行保存。
   final int fontWeight;
   final bool useOriginalFont;
+  // 旧原书排版默认开启原书字体。简化排版必须单独记录用户的主动选择。
+  final bool useBookFontsInSimplified;
+
+  bool usesBookFont(ReadingLayoutMode mode) =>
+      mode.isOriginal ? useOriginalFont : useBookFontsInSimplified;
+
+  ReadingSettings withFontChoice(String id, ReadingLayoutMode mode) {
+    if (id == '__original') {
+      return mode.isOriginal
+          ? copyWith(useOriginalFont: true)
+          : copyWith(useBookFontsInSimplified: true);
+    }
+    return copyWith(
+      fontFamily: id,
+      useOriginalFont: false,
+      useBookFontsInSimplified: false,
+    );
+  }
 
   /// 排版模式（简化 / 原书）；PDF 对应原页模式，TXT 不显示此设置
   final ReadingLayoutMode layoutMode;
@@ -171,6 +200,7 @@ class ReadingSettings {
     bool? fontOnlyInReader,
     int? fontWeight,
     bool? useOriginalFont,
+    bool? useBookFontsInSimplified,
     bool clearFontFamily = false,
     ReadingLayoutMode? layoutMode,
     PageTurnEffect? pageTurnEffect,
@@ -200,6 +230,8 @@ class ReadingSettings {
     indent: indent ?? this.indent,
     fontWeight: fontWeight ?? this.fontWeight,
     useOriginalFont: useOriginalFont ?? this.useOriginalFont,
+    useBookFontsInSimplified:
+        useBookFontsInSimplified ?? this.useBookFontsInSimplified,
     fontOnlyInReader: fontOnlyInReader ?? this.fontOnlyInReader,
     fontFamily: clearFontFamily ? null : (fontFamily ?? this.fontFamily),
     layoutMode: layoutMode ?? this.layoutMode,
@@ -224,6 +256,7 @@ class ReadingSettings {
         indent: overrides.indent ?? indent,
         fontWeight: overrides.fontWeight ?? fontWeight,
         useOriginalFont: overrides.useOriginalFont ?? useOriginalFont,
+        useBookFontsInSimplified: useBookFontsInSimplified,
         fontFamily: overrides.fontFamily ?? fontFamily,
         fontOnlyInReader: fontOnlyInReader,
         layoutMode: overrides.layoutMode ?? layoutMode,
@@ -244,6 +277,7 @@ class ReadingSettings {
     'indent': indent,
     'fontWeight': fontWeight,
     'useOriginalFont': useOriginalFont,
+    if (useBookFontsInSimplified) 'useBookFontsInSimplified': true,
     'fontOnlyInReader': fontOnlyInReader,
     if (fontFamily != null) 'fontFamily': fontFamily,
     // 老数据没有这一项：读出来就是默认的简化排版（加键不迁移 schema）
@@ -294,6 +328,7 @@ class ReadingSettings {
       useOriginalFont: json['useOriginalFont'] is bool
           ? json['useOriginalFont'] as bool
           : true,
+      useBookFontsInSimplified: json['useBookFontsInSimplified'] == true,
       fontOnlyInReader: json['fontOnlyInReader'] as bool? ?? true,
       fontFamily: family is String && family.isNotEmpty ? family : null,
       layoutMode: ReadingLayoutMode.fromCode(json['layoutMode']),
@@ -319,6 +354,7 @@ class ReadingSettings {
       other.indent == indent &&
       other.fontWeight == fontWeight &&
       other.useOriginalFont == useOriginalFont &&
+      other.useBookFontsInSimplified == useBookFontsInSimplified &&
       other.fontFamily == fontFamily &&
       other.fontOnlyInReader == fontOnlyInReader &&
       other.layoutMode == layoutMode &&
@@ -339,6 +375,7 @@ class ReadingSettings {
     indent,
     fontWeight,
     useOriginalFont,
+    useBookFontsInSimplified,
     fontFamily,
     fontOnlyInReader,
     layoutMode,

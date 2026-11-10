@@ -109,6 +109,39 @@ extension _OriginalLandingCoordinator on _OriginalReaderAreaState {
     String? anchorId,
     double? fraction,
   }) async {
+    final host = _host, navigation = _navigation;
+    try {
+      await _performLanding(
+        exact: exact,
+        text: text,
+        title: title,
+        anchorId: anchorId,
+        fraction: fraction,
+      );
+    } catch (error, stack) {
+      // 旧页面的失败没有资格终止新跳转；仅结束仍属于本次导航的等待。
+      if (!mounted || host != _host || navigation != _navigation) return;
+      _landingFlight = null;
+      _endSwitching();
+      _finishCurlHandover(false);
+      _neighborReadiness.cancelAll();
+      _preload.requestChapter(null);
+      _preload.release('landing');
+      AppErrors.report(error, stack, operation: '原书落页准备失败');
+      // 不把尚未确认的画面当成落页成功；交给已有的阅读失败界面处理。
+      ref
+          .read(readerSessionProvider(widget.bookId).notifier)
+          .reportPositionFailure(error, stack);
+    }
+  }
+
+  Future<void> _performLanding({
+    Locator? exact,
+    String? text,
+    String? title,
+    String? anchorId,
+    double? fraction,
+  }) async {
     final host = _host;
     if (host == null) return;
     final navigation = _navigation;
@@ -264,10 +297,97 @@ extension _OriginalLandingCoordinator on _OriginalReaderAreaState {
       _syncNeighbors(requiredChapter: chapter);
       final slot = _slotMounted(chapter);
       if (slot?.ready == true) continue;
-      final ready = _pageReady.putIfAbsent(chapter, () => Completer<bool>());
-      if (!await ready.future.timeout(const Duration(seconds: 10))) {
+      if (!await _awaitNeighborReady(chapter, const Duration(seconds: 10))) {
         throw StateError('相邻章尚未就绪');
       }
+    }
+  }
+
+  Future<bool> _awaitNeighborReady(int chapter, Duration timeout) async {
+    try {
+      return await _neighborReadiness.wait(chapter, timeout);
+    } on TimeoutException {
+      final host = _hosts[chapter], slot = _slotMounted(chapter);
+      // 只在失败时记录内部状态，不记录书名、正文、文件路径或书籍编号。
+      unawaited(
+        AppErrors.store
+            .append({
+              'kind': 'originalNeighborTimeout',
+              'time': DateTime.now().toIso8601String(),
+              'chapter': chapter,
+              'current': widget.session.chapterIndex,
+              'navigation': _navigation,
+              'mountedSlot': slot != null,
+              'slotReady': slot?.ready,
+              'hasHost': host != null,
+              'stage': host?.preparationStage,
+              'pages': host?.pageCount,
+              'knownPages': host?.knownPageCount,
+              'requestedChapter': _preload.requestedChapter,
+              'backgroundBlocked': _preload.blocked,
+            })
+            .catchError((Object _) {}),
+      );
+      throw TimeoutException('相邻章节尚未准备好，请重试', timeout);
+    }
+  }
+
+  /// 脚注引用：先弹气泡展示脚注内容，气泡里的“跳转”再走书内链接跳转。
+  ///
+  /// [localPoint] 是阅读区本地坐标；[viewportPoint] 是宿主页视口坐标（点击
+  /// 由宿主页上报）。两者都用于把气泡尖角指到用户点的那个脚注标记上。
+  Future<void> _openFootnote(
+    String href, {
+    Offset? localPoint,
+    Offset? viewportPoint,
+  }) async {
+    final source = widget.controller.source;
+    final target = source.resolveLink(
+      source.chapterUrl(widget.session.chapterIndex),
+      href,
+    );
+    if (target == null || target.fragment.isEmpty) {
+      _notice('没有找到脚注内容');
+      return;
+    }
+    try {
+      final html = await source.chapterDocument(target.ordinal);
+      final content = html == null
+          ? (text: null, backLink: false)
+          : footnoteContent(html, target.fragment);
+      if (!mounted) return;
+      if (content.backLink) {
+        // 点的是注释里的“返回正文”链接：按普通书内跳转回原位置
+        _openLink(href, rememberReturn: true);
+        return;
+      }
+      if (content.text == null) {
+        _notice('没有找到脚注内容');
+        return;
+      }
+      final box = context.findRenderObject() as RenderBox?;
+      final scale = _selection.scale <= 0 ? 1.0 : _selection.scale;
+      final local =
+          localPoint ??
+          (viewportPoint == null
+              ? null
+              : viewportPoint * scale + _webViewOrigin);
+      final center = local == null || box == null
+          ? Offset(
+              MediaQuery.sizeOf(context).width / 2,
+              MediaQuery.sizeOf(context).height * 0.3,
+            )
+          : box.localToGlobal(local);
+      await showFootnotePopover(
+        context,
+        anchor: Rect.fromCenter(center: center, width: 1, height: 1),
+        theme: widget.theme,
+        text: content.text!,
+        // 从脚注跳过去也要能“返回原进度”，和目录跳转一致
+        onJump: () => _openLink(href, rememberReturn: true),
+      );
+    } catch (error) {
+      if (mounted) _notice('脚注读取失败，请重试');
     }
   }
 
@@ -275,7 +395,7 @@ extension _OriginalLandingCoordinator on _OriginalReaderAreaState {
   ///
   /// [href] 可能是相对路径（宿主页元素上原样取来的），也可能是绝对地址
   /// （WebView 导航回调给的），统一按当前章的文档地址解析。
-  void _openLink(String href) async {
+  void _openLink(String href, {bool rememberReturn = false}) async {
     final base = widget.controller.source.chapterUrl(
       widget.session.chapterIndex,
     );
@@ -295,7 +415,7 @@ extension _OriginalLandingCoordinator on _OriginalReaderAreaState {
         await notifier.goToChapterFromToc(
           widget.session.chapters[target.ordinal].id,
           anchorId: target.fragment,
-          rememberReturn: false,
+          rememberReturn: rememberReturn,
         );
         await notifier.waitForTocPosition();
       });

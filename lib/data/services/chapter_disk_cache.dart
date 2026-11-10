@@ -1,3 +1,5 @@
+import '../../engine/styles/chapter_styler.dart';
+
 import 'dart:convert';
 import 'dart:io';
 
@@ -17,7 +19,7 @@ class ChapterDiskCache {
     final file = File(_path(key));
     if (!file.existsSync()) return null;
     try {
-      final content = ChapterContent.fromJson(
+      final content = ChapterStyler.decode(
         (jsonDecode(file.readAsStringSync()) as Map).cast<String, Object?>(),
       );
       if (content.chapterId != chapter.id ||
@@ -37,7 +39,11 @@ class ChapterDiskCache {
 
   void write(String key, ChapterContent content) {
     if (root == null) return;
-    final bytes = content.encode();
+    writeBytes(key, content.encode());
+  }
+
+  void writeBytes(String key, List<int> bytes) {
+    if (root == null) return;
     final file = File(_path(key));
     // 不按容量淘汰，不扫描其他书或改写命中章的访问时间。只替换本章缓存。
     file.parent.createSync(recursive: true);

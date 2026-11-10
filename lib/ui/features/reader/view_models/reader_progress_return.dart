@@ -35,6 +35,7 @@ class ReaderProgressReturn extends Notifier<ReaderProgressReturnState> {
   /// 阅读层先把完整旧页盖住；位置请求必须在遮盖真正上屏后再执行。
   Future<void> Function()? prepareJumpCover;
   Future<void> Function()? finishJumpCover;
+  Future<void> Function()? finishSeekCover;
 
   /// 上下章只改变位置，不创建“返回原进度”，但仍等待完整交接。
   Future<void> transition(Future<void> Function() action) async {
@@ -100,7 +101,7 @@ class ReaderProgressReturn extends Notifier<ReaderProgressReturnState> {
                 fromSlider: true,
               )
             : const ReaderProgressReturnState();
-        await finishJumpCover?.call();
+        await (finishSeekCover ?? finishJumpCover)?.call();
       }
       trace?.mark('reveal_animation');
       trace?.finish(status: version == _seekVersion ? status : 'superseded');

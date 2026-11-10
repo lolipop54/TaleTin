@@ -31,8 +31,11 @@ extension _ReaderVisualConfirmation on ReaderSessionNotifier {
     }
     final key = (layout.identity, page);
     if (_confirmedPage == key) return;
+    final trace = ReaderWorkTrace.start('reader.confirm_page');
     _confirmedPage = key;
     _confirmedVisualPosition = _visualPosition(latest);
+    trace?.mark('position');
     unawaited(persist());
+    trace?.finish();
   }
 }

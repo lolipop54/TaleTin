@@ -14,14 +14,15 @@ import 'reader_font_sheet.dart';
 import 'reader_font_controls.dart';
 import 'reader_layout_option.dart';
 import '../../settings/widgets/settings_slider.dart';
+import '../../settings/widgets/font_weight_tabs.dart';
+import '../../settings/widgets/settings_row.dart';
 import '../../../core/widgets/gt_icon.dart';
 
 /// 字体与排版面板（参考图 03-3）。
-/// 排版模式、字号/字体、排版滑条，以及翻页方式／其他设置的二级入口。
+/// 排版模式、字号/字体、排版滑条，以及翻页方式／更多设置的二级入口。
 ///
-/// 每一项写进本书覆盖：二级面板收起后、滑条松手后保存；
-/// 重排仍停在原句子上，
-/// 退出应用再进来仍然是这套设置；面板不再提供恢复全局入口。
+/// 所有选项写入全局偏好；字体及目标排版准备好后再交接正文。
+/// 重排保留当前文字位置，设置页与其它书籍共用保存结果。
 ///
 /// EPUB／MOBI／AZW3 有「简化 / 原书」两选。两种模式都能调整行高、
 /// 段落间距；首行缩进可保留或关闭，图片段落始终不缩进。
@@ -44,10 +45,11 @@ class PanelTypography extends ConsumerWidget {
     final colors = context.gtColors;
     // 这里只显示当前字体名称，打开字体选择页才准备整份名单与预览。
     final fontNames = ReadingFonts.loadedNames;
-    // 原书排版只对 EPUB 开放；TXT 没有原书样式，不出现这个开关
-    final showLayoutMode = bookFormat?.supportsOriginalLayout == true;
     final pdf = bookFormat == BookFormat.pdf;
-    if (pdf && settings.settings.layoutMode.isOriginal) {
+    final supportsOriginalFont = bookFormat?.usesOriginalWebView == true;
+    final showLayoutMode =
+        pdf || (ReadingLayoutMode.originalIncluded && supportsOriginalFont);
+    if (pdf && settings.layoutMode.isOriginal) {
       return ReaderSheet(
         title: '设置',
         onClose: () => ref.read(readerProvider.notifier).closePanel(),
@@ -91,14 +93,27 @@ class PanelTypography extends ConsumerWidget {
             ReaderFontControls(
               settings: settings.fontSettings,
               fontNames: fontNames,
-              // TXT 没有书内字体，旧的原书排版设置也不能显示该选项。
-              supportsOriginalFont: showLayoutMode && !pdf,
+              supportsOriginalFont: supportsOriginalFont,
               onSize: vm.setFontSize,
               onFont: () => showReaderFontSheet(
                 context,
                 ref,
                 bookId,
-                supportsOriginalFont: showLayoutMode && !pdf,
+                supportsOriginalFont: supportsOriginalFont,
+              ),
+            ),
+            SettingsRow(
+              divider: false,
+              label: '字体加粗',
+              trailing: SizedBox(
+                width: (MediaQuery.sizeOf(context).width * .52).clamp(
+                  132.0,
+                  204.0,
+                ),
+                child: FontWeightTabs(
+                  value: settings.fontSettings.fontWeight,
+                  onChanged: vm.setFontWeight,
+                ),
               ),
             ),
             const SizedBox(height: GtSpacing.s0),
@@ -131,9 +146,12 @@ class PanelTypography extends ConsumerWidget {
               ref,
               label: '页边距',
               value: settings.settings.horizontalPadding,
-              min: 16,
-              max: 40,
-              divisions: 24,
+              min: ReadingLimits.minHorizontalPadding,
+              max: ReadingLimits.maxHorizontalPadding,
+              divisions:
+                  (ReadingLimits.maxHorizontalPadding -
+                          ReadingLimits.minHorizontalPadding)
+                      .round(),
               format: (v) => v.round().toString(),
               onChanged: vm.setPagePadding,
             ),
@@ -164,8 +182,8 @@ class PanelTypography extends ConsumerWidget {
       Expanded(
         child: _optionButton(
           context,
-          '其他设置',
-          '其他设置',
+          '更多设置',
+          '更多设置',
           () => showReaderLayoutOption(context, ref, bookId, turn: false),
         ),
       ),
@@ -326,7 +344,7 @@ class PanelTypography extends ConsumerWidget {
         save: enabled
             ? (value) async {
                 onChanged(value);
-                // 保留手柄的临时值，等本书设置真正保存并发布后再撤掉。
+                // 保留手柄的临时值，等全局设置真正保存并发布后再撤掉。
                 await ref
                     .read(readerSettingsProvider(bookId).notifier)
                     .pendingWrites;

@@ -6,6 +6,32 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
   ChapterLayout? _observedLayout;
   final _neighborPreparations = <Object, Future<ChapterLayout>>{};
 
+  /// 切章入口共用的排版失效处理：旧邻章和未完成请求必须一起失效。
+  /// 听书追赶不经过手动排版入口，也不能继续沿用追赶前的翻页材料。
+  LayoutToken _invalidateLayoutRequests() {
+    _observedLayout?.task?.pauseBackground();
+    _token?.cancel();
+    final token = _token = LayoutToken(++_tokenVersion);
+    _nextChapterLayout = null;
+    _previousChapterLayout = null;
+    return token;
+  }
+
+  /// 预取和动画准备的排版只能交给同一本书、同一目标章及同一版式。
+  ChapterLayout? _matchingChapterLayout(
+    ChapterLayout? layout,
+    ReaderSession session,
+    int index,
+    LayoutOptions options,
+  ) =>
+      layout != null &&
+          layout.bookId == session.book.id &&
+          layout.contentVersion == session.book.contentVersion &&
+          layout.chapterId == session.chapters[index].id &&
+          layout.options.layoutSignature == options.layoutSignature
+      ? layout
+      : null;
+
   /// 预取和用户翻页同时请求同一邻章时，共用正文准备与排版任务。
   Future<ChapterLayout> _prepareNeighborChapter(
     ReaderSession session,
@@ -39,9 +65,13 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
           options: options,
         );
         final engine = ref.read(readerEngineProvider);
-        return await (full
+        final layout = await (full
             ? engine.layoutChapter(request)
             : engine.layoutWindow(request, atEnd: atEnd));
+        if (!ref.mounted || _tokenVersion != version) {
+          throw const LayoutCancelled();
+        }
+        return layout;
       } finally {
         _neighborPreparations.remove(key);
       }
@@ -54,9 +84,14 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
     unawaited(_layoutUpdates?.cancel());
     _layoutUpdates = layout.updates.listen((updated) {
       final latest = state.value;
-      if (!ref.mounted || latest?.layout?.identity != updated.identity) return;
+      if (!ref.mounted ||
+          latest == null ||
+          latest.layout?.identity != updated.identity ||
+          !updated.samePageAs(latest.layout, latest.pageIndex)) {
+        return;
+      }
       // 后文只能补索引；不选择目标、不回报落点、不保存当前位置。
-      state = AsyncData(latest!.copyWith(layout: updated));
+      state = AsyncData(latest.copyWith(layout: updated));
     });
   }
 
@@ -171,7 +206,15 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
       return (layout: session.layout!, pageIndex: session.pageIndex + 1);
     }
     if (!session.layout!.isComplete) return null;
-    final next = _nextChapterLayout;
+    final index = session.chapterIndex + 1;
+    final next = index >= session.chapters.length
+        ? null
+        : _matchingChapterLayout(
+            _nextChapterLayout,
+            session,
+            index,
+            session.layout!.options,
+          );
     if (next != null && next.pageCount > 0) {
       return (layout: next, pageIndex: 0);
     }
@@ -186,9 +229,18 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
     final session = state.value;
     if (session == null || !session.isReady) return null;
     if (session.pageIndex > 0) {
+      if (session.layout!.page(session.pageIndex - 1) == null) return null;
       return (layout: session.layout!, pageIndex: session.pageIndex - 1);
     }
-    final previous = _previousChapterLayout;
+    final index = session.chapterIndex - 1;
+    final previous = index < 0
+        ? null
+        : _matchingChapterLayout(
+            _previousChapterLayout,
+            session,
+            index,
+            session.layout!.options,
+          );
     if (previous != null && previous.pageCount > 0) {
       return (layout: previous, pageIndex: previous.pageCount - 1);
     }
@@ -229,14 +281,27 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
         return (layout: layout, pageIndex: session.pageIndex + 1);
       }
     }
+    if (!forward && session.pageIndex > 0) {
+      final pageIndex = session.pageIndex - 1;
+      final layout = await session.layout!.ensurePage(pageIndex);
+      return current() && layout.page(pageIndex) != null
+          ? (layout: layout, pageIndex: pageIndex)
+          : null;
+    }
     final index = session.chapterIndex + (forward ? 1 : -1);
     if (index < 0 || index >= session.chapters.length) return null;
-    final layout = await _prepareNeighborChapter(
-      session,
-      index,
-      options,
-      atEnd: !forward,
-    );
+    final ChapterLayout layout;
+    try {
+      layout = await _prepareNeighborChapter(
+        session,
+        index,
+        options,
+        atEnd: !forward,
+      );
+    } on LayoutCancelled {
+      // 听书追赶或新导航已经改变页面，旧手势准备正常结束即可。
+      return null;
+    }
     if (current()) {
       // 动画和落页共用这一份页片段，不能在提交时重新生成另一份排版。
       if (forward) {
@@ -268,6 +333,7 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
     int? chapterOffset,
     bool prefetch = true,
     ChapterLayout? preparedLayout,
+    bool targetFirst = false,
   }) async {
     final session = state.value;
     if (session == null || options == null) return false;
@@ -275,16 +341,7 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
     final contents = ref.read(chapterContentRepositoryProvider);
     final engine = ref.read(readerEngineProvider);
 
-    // 旧排版作废：切章或改参数后回来的结果不再上屏
-    _observedLayout?.task?.pauseBackground();
-    final token = LayoutToken(++_tokenVersion);
-    _token?.cancel();
-    _token = token;
-
-    // 相邻章的预取结果一并作废：换了章或改了参数，旧的相邻页会画错内容。
-    // 先清掉，等这次排版完成后的新预取填回来。
-    _nextChapterLayout = null;
-    _previousChapterLayout = null;
+    final token = _invalidateLayoutRequests();
 
     final ChapterContent content;
     try {
@@ -294,7 +351,9 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
               chapterIndex == session.chapterIndex &&
               session.content != null
           ? session.content!
-          : await contents.chapter(bookId, chapter);
+          : await (targetFirst && session.book.format.usesOriginalWebView
+                ? contents.chapterForProgressLayout(bookId, chapter)
+                : contents.chapter(bookId, chapter));
     } on Object catch (error, stack) {
       if (!token.isCancelled) {
         state = AsyncError(error, stack);
@@ -324,9 +383,20 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
         chapter: chapter,
         content: content,
         options: options,
+        targetFirst: targetFirst,
+        allowPageRestart:
+            chapterOffset != null &&
+            !_mode.isOriginal &&
+            !session.scrolling &&
+            session.book.format.usesOriginalWebView,
       );
       layout =
-          preparedLayout ??
+          _matchingChapterLayout(
+            preparedLayout,
+            session,
+            chapterIndex,
+            options,
+          ) ??
           await traceTurnStep(
             'load simplified-layout',
             () =>
@@ -358,6 +428,7 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
       // 后面的预取仍准备相邻页，用户立刻翻页时也沿用等待目标就绪的流程。
       if (ReaderDeliveryExperiments.incremental &&
           prefetch &&
+          !targetFirst &&
           session.book.format != BookFormat.pdf) {
         Future<ChapterLayout> neighbor(int index, bool atEnd) async {
           final nextChapter = session.chapters[index];
@@ -377,12 +448,16 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
 
         // 只把直接可翻到的跨章页列为首屏必需，普通中部目标不排无关前章。
         if (pageIndex == 0 && chapterIndex > 0) {
-          _previousChapterLayout = await neighbor(chapterIndex - 1, true);
+          final previous = await neighbor(chapterIndex - 1, true);
+          if (token.isCancelled) return false;
+          _previousChapterLayout = previous;
         }
         if (layout.isComplete &&
             pageIndex + 1 >= layout.pageCount &&
             chapterIndex + 1 < session.chapters.length) {
-          _nextChapterLayout = await neighbor(chapterIndex + 1, false);
+          final next = await neighbor(chapterIndex + 1, false);
+          if (token.isCancelled) return false;
+          _nextChapterLayout = next;
         }
         if (token.isCancelled) return false;
       }

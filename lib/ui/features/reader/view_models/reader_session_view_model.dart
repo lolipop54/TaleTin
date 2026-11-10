@@ -103,6 +103,32 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
   ({int request, Locator target, Completer<void> done})?
   _contentProgressLanding;
 
+  /// 落页失败也要结束等待画面的调用者，否则跳转遮盖仍会把错误页挡住。
+  @override
+  void reportPositionFailure(Object error, StackTrace stack) {
+    final waiting = [
+      _progressLanding?.done,
+      _contentProgressLanding?.done,
+      _tocLanding?.done,
+      _tocPresentation?.done,
+      _annotationDone,
+    ];
+    _progressLanding = null;
+    _contentProgressLanding = null;
+    _tocLanding = null;
+    _tocPresentation = null;
+    _annotationDone = null;
+    ++_progressRequest;
+    ++_originalChapterRequest;
+    state = AsyncError(error, stack);
+    for (final done in waiting) {
+      if (done == null || done.isCompleted) continue;
+      // 创建目标与调用方开始等待之间也可能失败；稍后等待仍会收到原始错误。
+      done.future.ignore();
+      done.completeError(error, stack);
+    }
+  }
+
   /// 新的阅读动作接管导航；旧等待正常结束，但失去保存和撤图资格。
   @override
   void cancelProgressNavigation() {
@@ -326,13 +352,16 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
       _pendingOriginalText = null;
     }
     // 只读当前章正文；整书按需读取，不整本进内存
+    final currentChapter = chapters[chapterIndex];
     final first = await traceTurnStep(
       'load current-content',
-      () => contents.chapter(
-        bookId,
-        chapters[chapterIndex],
-        textOnly: book.format == BookFormat.pdf && _mode.isOriginal,
-      ),
+      () => book.format == BookFormat.txt && !scrolling
+          ? contents.chapterForProgressLayout(bookId, currentChapter)
+          : contents.chapter(
+              bookId,
+              currentChapter,
+              textOnly: book.format == BookFormat.pdf && _mode.isOriginal,
+            ),
     );
     // 目录跳转保存的是标题锚点；该标题可能在页中部。续读只按页比例上报
     // 会把标题前的上一章页首存回去，导致“下一章”的章名又倒退。
@@ -549,9 +578,15 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
     cancelProgressNavigation();
     await beginManualReading();
     _clearRestoredPosition();
-    final session = state.value;
+    var session = state.value;
     if (session == null || !session.isReady) return PageTurnResult.moved;
     if (session.pageIndex > 0) {
+      final layout = session.layout!;
+      if (layout.page(session.pageIndex - 1) == null) {
+        final prepared = await prepareAdjacent(false);
+        if (!ref.mounted || prepared == null) return PageTurnResult.moved;
+        session = session.copyWith(layout: prepared.layout);
+      }
       state = AsyncData(session.copyWith(pageIndex: session.pageIndex - 1));
       unawaited(persist());
       return PageTurnResult.moved;
@@ -681,6 +716,8 @@ final readerSessionProvider =
     AsyncNotifierProvider.family<ReaderSessionNotifier, ReaderSession, String>(
       ReaderSessionNotifier.new,
       isAutoDispose: true,
+      // 本地正文校验失败不会通过重复读取自行恢复；交给既有错误页和手动重试。
+      retry: (_, _) => null,
     );
 
 /// 这本书的书签（最近加的在前）：加/删之后列表自动刷新。

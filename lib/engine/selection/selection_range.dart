@@ -9,7 +9,6 @@
 /// 章节 ID 与块 ID 是生成的字符串，不能拿它们的字典序当阅读顺序。
 library;
 
-
 import '../../domain/models/book_document.dart';
 import '../../domain/models/locator.dart';
 import '../normalization/locator_mapper.dart';
@@ -22,12 +21,12 @@ const int kUnknownChapterOrdinal = 1 << 30;
 
 /// 章节顺序表（章节 ID → 阅读序号），取自 `chapters` 表的 ordinal。
 Map<String, int> chapterOrdinalsOf(List<Chapter> chapters) => {
-      for (final chapter in chapters) chapter.id: chapter.ordinal,
-    };
+  for (final chapter in chapters) chapter.id: chapter.ordinal,
+};
 
 /// 章内块序号：`b12` → 12。解析器按文档顺序编号，因此数字就是阅读顺序。
 int blockOrderOf(String blockId) {
-  if (blockId.length > 1 && blockId.codeUnitAt(0) == 0x62 /* b */) {
+  if (blockId.length > 1 && blockId.codeUnitAt(0) == 0x62 /* b */ ) {
     final index = int.tryParse(blockId.substring(1));
     if (index != null) return index;
   }
@@ -43,8 +42,10 @@ int compareLocators(
   Locator b, {
   required Map<String, int> chapterOrdinals,
 }) {
-  final byChapter = _ordinalOf(a, chapterOrdinals)
-      .compareTo(_ordinalOf(b, chapterOrdinals));
+  final byChapter = _ordinalOf(
+    a,
+    chapterOrdinals,
+  ).compareTo(_ordinalOf(b, chapterOrdinals));
   if (byChapter != 0) return byChapter;
   final byBlock = blockOrderOf(a.blockId).compareTo(blockOrderOf(b.blockId));
   if (byBlock != 0) return byBlock;
@@ -58,11 +59,7 @@ SelectionRange normalizeRange(
   SelectionRange range, {
   required Map<String, int> chapterOrdinals,
 }) =>
-    compareLocators(
-          range.start,
-          range.end,
-          chapterOrdinals: chapterOrdinals,
-        ) <=
+    compareLocators(range.start, range.end, chapterOrdinals: chapterOrdinals) <=
         0
     ? range
     : SelectionRange(start: range.end, end: range.start);
@@ -101,7 +98,8 @@ SelectionRange unionRange(
   final first = normalizeRange(a, chapterOrdinals: chapterOrdinals);
   final second = normalizeRange(b, chapterOrdinals: chapterOrdinals);
   return SelectionRange(
-    start: compareLocators(
+    start:
+        compareLocators(
               first.start,
               second.start,
               chapterOrdinals: chapterOrdinals,
@@ -109,7 +107,8 @@ SelectionRange unionRange(
             0
         ? first.start
         : second.start,
-    end: compareLocators(
+    end:
+        compareLocators(
               first.end,
               second.end,
               chapterOrdinals: chapterOrdinals,
@@ -191,7 +190,9 @@ String extractQuote({
   final endOrdinal = _ordinalOf(ordered.end, ordinals);
   final buffer = StringBuffer();
   for (final chapter in chapters) {
-    if (chapter.ordinal < startOrdinal || chapter.ordinal > endOrdinal) continue;
+    if (chapter.ordinal < startOrdinal || chapter.ordinal > endOrdinal) {
+      continue;
+    }
     final text = _sliceChapter(
       contentOf(chapter.id),
       from: chapter.id == ordered.start.chapterId ? ordered.start : null,

@@ -16,6 +16,7 @@ import '../../../domain/models/locator.dart';
 import '../../normalization/locator_mapper.dart';
 import 'dom_text_map.dart';
 import 'xhtml_blocks.dart';
+import 'html_anchor_index.dart';
 
 /// 锚点映射口径版本。
 ///
@@ -89,7 +90,9 @@ class ChapterAnchorMap {
 
   final Map<String, ContentBlock> _blocksById = {};
   Map<Node, int>? _indexOf;
-  Map<String, Element>? _anchorById, _anchorByName;
+  late final _anchors = HtmlAnchorIndex(documentOrder.whereType<Element>());
+
+  bool hasAnchor(String fragment) => _anchors.find(fragment) != null;
 
   /// [fragment]（目录里的 `#` 后面那段）在这一章里的标准化位置。
   ///
@@ -127,40 +130,7 @@ class ChapterAnchorMap {
 
   /// 锚点元素：优先 `id`，其次 `<a name>`（EPUB2 里的老写法）。
   Element? _findAnchorElement(String fragment) {
-    // html 包的 getElementById 实际使用 CSS 选择器；合法的 id 中也可能有
-    // 百分号、冒号或点号。按属性原值比较，不能把书内 id 当选择器解释。
-    if (_anchorById == null) {
-      // A collection can contain thousands of TOC targets. Index the static
-      // parsed document once instead of running a CSS query for each target.
-      // Preserve the old selector: any [id], plus a[name]; id always wins and
-      // duplicate values keep their first element in document order.
-      final ids = <String, Element>{}, names = <String, Element>{};
-      for (final element in documentOrder.whereType<Element>()) {
-        final hasId = element.attributes.containsKey('id');
-        if (hasId) ids.putIfAbsent(element.id, () => element);
-        final name = element.attributes['name'];
-        if (name != null && (hasId || element.localName == 'a')) {
-          names.putIfAbsent(name, () => element);
-        }
-      }
-      _anchorById = ids;
-      _anchorByName = names;
-    }
-    Element? find(String value) => _anchorById![value] ?? _anchorByName![value];
-
-    final raw = find(fragment);
-    if (raw != null) return raw;
-    // 原样优先，兼容旧书库保存的编码片段，不需要重新导入。
-    if (fragment.contains('%')) {
-      try {
-        return find(Uri.decodeComponent(fragment));
-      } on FormatException {
-        // 外部书籍的坏转义不是有效锚点，继续返回未找到。
-      } on ArgumentError {
-        // Uri.decodeComponent 对不完整的百分号转义抛 ArgumentError。
-      }
-    }
-    return null;
+    return _anchors.find(fragment);
   }
 }
 

@@ -14,11 +14,13 @@ import '../../../core/errors/import_error.dart';
 import '../../../core/diagnostics/import_timing.dart';
 import '../../../core/io/source_fingerprint.dart';
 import '../../../domain/models/book_document.dart';
-import '../../../domain/models/source_content_index.dart';
 import '../../../domain/models/locator.dart';
+import '../../../domain/models/source_content_index.dart';
+import '../../../domain/models/source_position_preparation.dart';
 import '../../../domain/services/book_parser.dart';
-import '../../normalization/text_normalizer.dart';
 import '../../normalization/source_position_matcher.dart';
+import '../../normalization/text_normalizer.dart';
+import '../../styles/chapter_styler.dart';
 import 'txt_chapter_rule.dart';
 import 'txt_source_lines.dart';
 
@@ -62,6 +64,8 @@ class TxtParser {
       anchors: request.locationAnchors,
     );
     var useHeadings = false;
+    var usesIndentedTxtHeadings = false;
+    var usesCombinedTxtHeadings = false;
     var headingCount = 0;
     var section = 1;
     var started = false;
@@ -70,7 +74,6 @@ class TxtParser {
 
     void addSectionLine(TxtSourceLine sourceLine) {
       final line = sourceLine.text;
-      if (isBlankLine(line)) return;
       builder.addParagraph(
         sourceLine.normalizedText ?? normalizeParagraph(line),
         sourceLine,
@@ -82,11 +85,16 @@ class TxtParser {
       }
     }
 
-    void addHeadingLine(TxtSourceLine sourceLine) {
+    void addHeadingLine(TxtSourceLine sourceLine, TxtHeading? heading) {
       final line = sourceLine.text;
-      final heading = rule.matchLine(line, 0);
       if (heading != null) {
         builder.closeChapter();
+        if (heading.volumeTitle case final volume?) {
+          usesCombinedTxtHeadings = true;
+          builder.useHeadingGroups(heading.partTitle, volume);
+        } else {
+          usesIndentedTxtHeadings |= TxtChapterRule.hasIndent(line);
+        }
         if (heading.kind == TxtHeadingKind.volume) {
           builder.startVolume(heading.title);
           pendingVolume = true;
@@ -95,7 +103,7 @@ class TxtParser {
           pendingVolume = false;
           started = true;
         }
-      } else if (!isBlankLine(line)) {
+      } else {
         if (!builder.hasOpenChapter && (!started || pendingVolume)) {
           builder.startChapter(prefaceTitle);
           started = true;
@@ -117,6 +125,7 @@ class TxtParser {
     ).length();
     var readBytes = 0;
     var lineCount = 0;
+    var afterBlankLine = true;
     var locationMatches = <String, Locator?>{};
     final sourceLines = request.indexedContent
         ? sourceLinesFactory?.call(
@@ -137,15 +146,23 @@ class TxtParser {
         onBytes: (n) => readBytes += n,
       )) {
         for (final line in batch) {
+          final blank = isBlankLine(line.text);
+          final heading = forceSections || blank
+              ? null
+              : rule.matchLine(
+                  line.text,
+                  lineCount,
+                  afterBlankLine: afterBlankLine,
+                );
+          afterBlankLine = blank;
           if (forceSections) {
-            addSectionLine(line);
+            if (!blank) addSectionLine(line);
           } else if (useHeadings) {
-            addHeadingLine(line);
+            if (!blank) addHeadingLine(line, heading);
           } else {
             prefix.add(line);
-            addSectionLine(line);
-            if (rule.matchLine(line.text, lineCount)?.kind ==
-                TxtHeadingKind.chapter) {
+            if (!blank) addSectionLine(line);
+            if (heading?.kind == TxtHeadingKind.chapter) {
               headingCount++;
             }
             if (headingCount == 2) {
@@ -158,8 +175,20 @@ class TxtParser {
                 anchors: request.locationAnchors,
               );
               var replayed = 0;
+              var afterReplayBlank = true;
               await for (final previous in prefix.lines()) {
-                addHeadingLine(previous);
+                final blank = isBlankLine(previous.text);
+                if (!blank) {
+                  addHeadingLine(
+                    previous,
+                    rule.matchLine(
+                      previous.text,
+                      replayed,
+                      afterBlankLine: afterReplayBlank,
+                    ),
+                  );
+                }
+                afterReplayBlank = blank;
                 if (++replayed % 2048 == 0) _checkCancelled(isCancelled);
               }
               prefix.dispose();
@@ -200,6 +229,8 @@ class TxtParser {
       toc: builder.toc,
       encoding: request.txt?.charset ?? '',
       tocRevision: kTocRevision,
+      usesIndentedTxtHeadings: usesIndentedTxtHeadings,
+      usesCombinedTxtHeadings: usesCombinedTxtHeadings,
       locationMatches: locationMatches,
       sourceIndex: !request.indexedContent
           ? null
@@ -213,7 +244,7 @@ class TxtParser {
               charset: request.txt?.charset ?? 'UTF-8',
               chapters: builder.ranges,
             ),
-      warnings: useHeadings ? const [] : const ['未识别到章节标题，已按固定长度分成小节'],
+      warnings: useHeadings ? const [] : const [txtSectionFallbackWarning],
     );
   }
 
@@ -270,6 +301,7 @@ class _ChapterBuilder {
 
   final List<Chapter> chapters = [];
   final List<TocNode> toc = [];
+  String? _partTitle, _volumeTitle;
   List<TocNode>? _volumeChildren;
   final List<ContentBlock> _blocks = [];
   int _blockSeq = 0;
@@ -281,8 +313,17 @@ class _ChapterBuilder {
   int get currentTextLength => _currentTextLength;
 
   void startVolume(String title) {
-    _volumeChildren = [];
-    toc.add(TocNode(title: title, children: _volumeChildren!));
+    final children = <TocNode>[];
+    _volumeTitle = title;
+    _volumeChildren = children;
+    toc.add(TocNode(title: title, children: children));
+  }
+
+  void useHeadingGroups(String? part, String volume) {
+    _partTitle = part ?? _partTitle;
+    final title = _partTitle == null ? volume : '$_partTitle·$volume';
+    // 目录按卷展开。把篇名保留在卷头，区分不同篇里的同编号卷。
+    if (title != _volumeTitle) startVolume(title);
   }
 
   void startChapter(String title) {
@@ -326,7 +367,11 @@ class _ChapterBuilder {
     if (indexedContent) {
       ranges[id] = [_start, _end];
     } else {
-      final content = ChapterContent(chapterId: id, blocks: List.of(_blocks));
+      final content = ChapterContent(
+        chapterId: id,
+        blocks: List.of(_blocks),
+        stylesJson: ChapterStyler.emptyTableJson,
+      );
       File(p.join(workDir, '$id.json'))
           .writeAsBytesSync(content.encode(), flush: false);
     }

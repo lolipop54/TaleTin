@@ -11,6 +11,7 @@ class SettingsRow extends StatelessWidget {
     super.key,
     required this.label,
     this.value,
+    this.subtitle,
     this.trailing,
     this.onTap,
     this.divider = true,
@@ -18,6 +19,7 @@ class SettingsRow extends StatelessWidget {
 
   final String label;
   final String? value;
+  final String? subtitle;
   final Widget? trailing;
 
   final VoidCallback? onTap;
@@ -38,9 +40,23 @@ class SettingsRow extends StatelessWidget {
         child: Row(
           children: [
             Expanded(
-              child: Text(
-                label,
-                style: GtText.body(colors.textPrimary).copyWith(fontSize: 14),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    label,
+                    style: GtText.body(colors.textPrimary)
+                        .copyWith(fontSize: 14),
+                  ),
+                  if (subtitle != null) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle!,
+                      style: GtText.caption(colors.textSecondary),
+                    ),
+                  ],
+                ],
               ),
             ),
             const SizedBox(width: GtSpacing.s3),

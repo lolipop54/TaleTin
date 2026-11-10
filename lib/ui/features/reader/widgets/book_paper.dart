@@ -63,13 +63,14 @@ void paintBookPaper(
   bool edges = true,
   bool spread = false,
   ui.Image? backgroundImage,
+  bool preserveBackground = false,
 }) {
   if (size.isEmpty) return;
   final dark = Color.lerp(paper, Colors.black, .58)!;
   final light = Color.lerp(paper, Colors.white, .22)!;
   // 没有背景图时用深色垫出页与页之间的缝；有背景图时保留纸面图片，
   // 只在书边区补一次图片，页叠的半透明明暗不会把书边盖成纯色方块。
-  if (backgroundImage != null && edges) {
+  if (!preserveBackground && backgroundImage != null && edges) {
     final path = Path()
       ..addRect(
         Rect.fromLTWH(
@@ -86,7 +87,7 @@ void paintBookPaper(
     canvas.clipPath(path);
     paintReadingBackground(canvas, size, paper, backgroundImage);
     canvas.restore();
-  } else if (backgroundImage == null) {
+  } else if (!preserveBackground && backgroundImage == null) {
     canvas.drawRect(Offset.zero & size, Paint()..color = dark);
   }
   void stack(bool left) {
@@ -107,7 +108,9 @@ void paintBookPaper(
       );
       canvas.save();
       canvas.clipRect(rect);
-      if (backgroundImage == null) {
+      if (preserveBackground) {
+        canvas.drawRect(rect, Paint()..color = _bookEdgeTint(i));
+      } else if (backgroundImage == null) {
         canvas.drawRect(rect, Paint()..color = _bookEdgeFace(paper, i));
       } else {
         // 每层是一张独立的纸：先取自己在整页背景图里的那一条，再压一层
@@ -178,12 +181,12 @@ void paintBookPaper(
 
   void sheet(double l, double r, bool spineRight) {
     final path = leaf(l, r, spineRight);
-    canvas.drawPath(path, Paint()..color = paper);
+    if (!preserveBackground) canvas.drawPath(path, Paint()..color = paper);
     final w = math.min(bookSpineWidth, (r - l) / 6);
     final rect = Rect.fromLTWH(spineRight ? r - w : l, 0, w, size.height);
     canvas.save();
     canvas.clipPath(path);
-    if (backgroundImage != null) {
+    if (!preserveBackground && backgroundImage != null) {
       paintReadingBackground(canvas, size, paper, backgroundImage);
     }
     canvas.drawRect(
@@ -218,10 +221,12 @@ class BookPaperPainter extends CustomPainter {
     this.spread = false,
     this.decorationOnly = false,
     this.backgroundImage,
+    this.preserveBackground = false,
   });
   final Color paper;
   final ui.Image? backgroundImage;
   final bool edges, spread, decorationOnly;
+  final bool preserveBackground;
   @override
   void paint(Canvas canvas, Size size) {
     canvas.save();
@@ -262,6 +267,7 @@ class BookPaperPainter extends CustomPainter {
       edges: edges,
       spread: spread,
       backgroundImage: backgroundImage,
+      preserveBackground: preserveBackground,
     );
     canvas.restore();
   }
@@ -270,6 +276,7 @@ class BookPaperPainter extends CustomPainter {
   bool shouldRepaint(BookPaperPainter old) =>
       old.paper != paper ||
       old.backgroundImage != backgroundImage ||
+      old.preserveBackground != preserveBackground ||
       old.edges != edges ||
       old.spread != spread ||
       old.decorationOnly != decorationOnly;

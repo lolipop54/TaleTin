@@ -1,5 +1,8 @@
 import '../models/book_document.dart';
 
+/// 目标按规范正文块及偏移查找。向前翻出已恢复区间时按绝对页序查找。
+typedef PageCheckpointTarget = ({int? block, int offset, int? page});
+
 /// 可重建排版资料，与正文、书签和阅读位置分开保存。
 abstract interface class LayoutCheckpointStore {
   Future<String?> identity({
@@ -17,6 +20,7 @@ abstract interface class LayoutCheckpointStore {
     String identity, {
     int? throughCursor,
     int afterBlocks = 0,
+    PageCheckpointTarget? nearPage,
   });
   Future<void> write(
     String bookId,

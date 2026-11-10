@@ -54,8 +54,19 @@ object ErrorDiagnostics {
             .setMethodCallHandler { call, result ->
                 try {
                     when (call.method) {
-                        "readerExitLog" -> ReaderExitLog.export(app, result)
+                        "readerExitLog" -> NativeDiagnosticLog.readerExit.export(app, result)
                         "readerTurnLog" -> ReaderTurnLog.export(app, result)
+                        "appResumeLog" -> NativeDiagnosticLog.appResume.export(app, result)
+                        "appResumeStep" -> {
+                            AppResumeDiagnostics.dart(
+                                app,
+                                call.argument<String>("event"),
+                                call.argument<Number>("timeMs")?.toLong(),
+                                call.argument<Number>("frameWaitMs")?.toLong(),
+                                call.argument<Boolean>("sendingFrames"),
+                            )
+                            result.success(null)
+                        }
                         "environment" -> {
                             val info = app.packageManager.getPackageInfo(app.packageName, 0)
                             result.success(mapOf(

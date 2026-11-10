@@ -271,15 +271,49 @@ extension _SpreadPageContent on _ReaderSpreadAreaState {
         return true;
       }
     }
-    for (final f in page.layout.page(page.pageIndex)!.fragments) {
-      final image = f.imageSize, path = f.block.resourcePath;
-      if (f.frameOnly ||
-          image == null ||
-          path == null ||
-          !(Offset(f.block.tableId == null ? 0 : f.block.inset, f.y) & image)
-              .contains(local)) {
-        continue;
+    final footnote = readerLinkNearPoint(page.layout, page.pageIndex, local);
+    if (footnote != null) {
+      if (!mounted) return true;
+      final box = context.findRenderObject()! as RenderBox;
+      final shown = await openReaderLink(
+        context,
+        ref: ref,
+        bookId: widget.bookId,
+        chapters: widget.session.chapters,
+        link: footnote.link,
+        footnote: footnote.footnote,
+        anchor: box.localToGlobal(point),
+        theme: widget.settings.theme,
+      );
+      if (!shown && mounted) {
+        ref
+            .read(readerProvider.notifier)
+            .showNotice(footnote.footnote ? '没有找到脚注内容' : '书内链接读取失败，请重试');
       }
+      return true;
+    }
+    // 行内图片只做单张大图预览，不进入连续图片窗口。
+    for (final f in page.layout.page(page.pageIndex)!.fragments) {
+      final image = f.inlineImageAt(local);
+      if (image == null) continue;
+      if (!mounted) return true;
+      final path = image.resourcePath;
+      final file = File(canvas.resolveResource(path));
+      if (path.toLowerCase().endsWith('.svg')) {
+        await showReaderSvg(
+          context,
+          SvgFileLoader(file),
+          formula: image.formula != null,
+        );
+      } else {
+        await showReaderImage(context, FileImage(file));
+      }
+      return true;
+    }
+    for (final f in page.layout.page(page.pageIndex)!.fragments) {
+      final path = f.block.resourcePath;
+      final rect = f.imageRectIn(page.layout.contentSize.width);
+      if (rect == null || path == null || !rect.contains(local)) continue;
       if (!mounted) return true;
       if (await tryReaderImageGallery(
         context,

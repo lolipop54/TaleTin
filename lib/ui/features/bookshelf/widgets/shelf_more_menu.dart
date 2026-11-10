@@ -72,11 +72,19 @@ class ShelfMoreMenu extends ConsumerWidget {
                 icon: icon,
                 selected: shelf.gridView == grid,
                 colors: colors,
+                enabled: !shelf.savingLayout,
                 onPressed: () async {
-                  if (ref.read(bookshelfProvider).gridView != grid) {
-                    vm.toggleViewMode();
+                  try {
+                    // 布局先存库，成功后才切换并收起菜单；失败保留原布局。
+                    await vm.setGridView(grid);
+                    if (context.mounted) await controller.hide();
+                  } catch (appError, appStack) {
+                    AppErrors.report(
+                      appError,
+                      appStack,
+                      operation: '布局设置未保存',
+                    );
                   }
-                  await controller.hide();
                 },
               ),
           ],

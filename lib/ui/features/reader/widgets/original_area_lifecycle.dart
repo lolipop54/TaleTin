@@ -41,15 +41,12 @@ extension _OriginalAreaLifecycle on _OriginalReaderAreaState {
     _speechLog('disposed');
     _speech.diagnostics.dispose();
     _speech.lifecycle.dispose();
-    _speech.service.setPageBoundaries(this, const []);
     widget.controller.holdPageDuringJump = null;
     widget.controller.prepareProgressChapter = null;
     widget.controller.visiblePageAnchor = null;
     _jumpCover?.dispose();
     _finishCurlHandover(false);
-    for (final ready in _pageReady.values) {
-      if (!ready.isCompleted) ready.complete(false);
-    }
+    _neighborReadiness.cancelAll();
     _slideAnim.dispose();
     _slidePosition.dispose();
     _switchGuard?.cancel();

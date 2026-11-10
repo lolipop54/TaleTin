@@ -5,6 +5,7 @@ import 'dart:math' as math;
 
 import 'package:taletin/ui/core/widgets/gt_button.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 
 import '../../../../domain/models/import_job.dart';
 
@@ -21,10 +22,11 @@ import '../../../core/widgets/gt_icon.dart';
 import '../../../core/widgets/state_views.dart';
 import '../../../core/widgets/frame_fade.dart';
 import '../../../../domain/models/book.dart';
+import '../../../../domain/models/reading_settings.dart';
 import '../widgets/invalid_book_dialog.dart';
 import '../view_models/bookshelf_view_model.dart';
 import '../view_models/visible_shelf_books.dart';
-import '../view_models/shelf_sort_controller.dart';
+import '../view_models/shelf_preferences_controller.dart';
 import '../widgets/bookshelf_widgets.dart';
 import '../widgets/shelf_header.dart';
 import '../widgets/shelf_scroll_area.dart';
@@ -45,14 +47,15 @@ class BookshelfView extends ConsumerWidget {
     final library = ref.watch(libraryBooksProvider);
     final visible = ref.watch(visibleShelfBooksProvider);
     final groups = ref.watch(bookGroupsProvider);
-    final sort = ref.watch(shelfSortProvider);
-    if (!sort.hasValue) {
+    // 排序和布局一起等：偏好没读好之前不显示书架，避免先闪默认网格。
+    final preferences = ref.watch(shelfPreferencesProvider);
+    if (!preferences.hasValue) {
       return Scaffold(
-        body: sort.hasError
+        body: preferences.hasError
             ? GtErrorView(
-                title: '排序设置读取失败',
-                message: '${sort.error}',
-                onRetry: () => ref.invalidate(shelfSortProvider),
+                title: '书架设置读取失败',
+                message: '${preferences.error}',
+                onRetry: () => ref.invalidate(shelfPreferencesProvider),
               )
             : const GtLoadingView(label: '正在整理书架…'),
       );
@@ -71,7 +74,8 @@ class BookshelfView extends ConsumerWidget {
     }
 
     final route = ModalRoute.of(context);
-    if (route?.isCurrent != false &&
+    if (ReadingLayoutMode.originalIncluded &&
+        route?.isCurrent != false &&
         library.value?.any((book) => book.format.usesOriginalWebView) == true) {
       OriginalWebViewWarmup.schedule(
         allowed: () => context.mounted && (route?.isCurrent ?? true),
@@ -256,6 +260,8 @@ class BookshelfView extends ConsumerWidget {
               );
           if (!gridView) {
             return ListView.separated(
+              // 提前一屏准备条目及图片，避免封面刚进入视口才开始解码。
+              scrollCacheExtent: const ScrollCacheExtent.viewport(1),
               padding: EdgeInsets.fromLTRB(
                 GtSize.shelfPagePadding,
                 GtSpacing.s4,
@@ -268,6 +274,7 @@ class BookshelfView extends ConsumerWidget {
             );
           }
           return GridView.builder(
+            scrollCacheExtent: const ScrollCacheExtent.viewport(1),
             // 分类下原有的 16dp 留白放进滚动区，供书本上滑时渐隐；
             // 另留 20dp 容纳封面顶部标签，静止时的书本位置保持一致。
             padding: EdgeInsets.fromLTRB(

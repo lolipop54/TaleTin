@@ -20,7 +20,7 @@ pub struct Node {
     pub comment: bool,
     pub attrs: RefCell<Vec<Attribute>>,
     pub children: RefCell<Vec<Handle>>,
-    parent: RefCell<Weak<Node>>,
+    pub(crate) parent: RefCell<Weak<Node>>,
     pub template: Option<Handle>,
     integration: bool,
 }
@@ -53,6 +53,85 @@ impl Dom {
             doctypes: RefCell::new(std::collections::HashMap::new()),
             document,
         }
+    }
+    /// 样式程序只保存选择器所需节点和属性，不保存正文文字。
+    pub fn style_nodes(&self) -> serde_json::Value {
+        serde_json::json!(
+            self.nodes
+                .borrow()
+                .iter()
+                .map(|n| {
+                    let attrs: Vec<_> = n
+                        .attrs
+                        .borrow()
+                        .iter()
+                        .map(|a| {
+                            serde_json::json!([
+                                a.name.local.to_string(),
+                                a.name.ns.to_string(),
+                                a.value.to_string()
+                            ])
+                        })
+                        .collect();
+                    serde_json::json!([
+                        n.id,
+                        n.parent.borrow().upgrade().map(|p| p.id),
+                        n.name.as_ref().map(|q| q.local.to_string()),
+                        n.name.as_ref().map(|q| q.ns.to_string()),
+                        attrs,
+                        !n.text.borrow().is_empty(),
+                        n.comment
+                    ])
+                })
+                .collect::<Vec<_>>()
+        )
+    }
+    pub fn from_style_nodes(records: &[serde_json::Value]) -> Self {
+        let mut dom = Self::new();
+        let mut nodes = Vec::new();
+        for record in records {
+            let id = record[0].as_u64().unwrap() as usize;
+            let name = record[2].as_str().map(|local| {
+                QualName::new(None, record[3].as_str().unwrap_or("").into(), local.into())
+            });
+            let attrs = record[4]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| Attribute {
+                    name: QualName::new(
+                        None,
+                        a[1].as_str().unwrap_or("").into(),
+                        a[0].as_str().unwrap().into(),
+                    ),
+                    value: a[2].as_str().unwrap_or("").into(),
+                })
+                .collect();
+            nodes.push(Self::node(
+                id,
+                name,
+                if record[5].as_bool() == Some(true) {
+                    "x".into()
+                } else {
+                    String::new()
+                },
+                record[6].as_bool().unwrap_or(false),
+                attrs,
+                None,
+                false,
+                true,
+            ));
+        }
+        for record in records {
+            if let Some(parent) = record[1].as_u64() {
+                let node = nodes[record[0].as_u64().unwrap() as usize].clone();
+                *node.parent.borrow_mut() = Rc::downgrade(&nodes[parent as usize]);
+                nodes[parent as usize].children.borrow_mut().push(node);
+            }
+        }
+        dom.document = nodes[0].clone();
+        *dom.nodes.borrow_mut() = nodes;
+        dom
     }
     pub fn for_original() -> Self {
         let mut dom = Self::with_options(true);

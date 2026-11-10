@@ -24,7 +24,7 @@ class DriftReadingSettingsRepository implements ReadingSettingsRepository {
   /// 阅读主题的键
   static const _themeKey = 'readingTheme';
 
-  /// 窗口亮度覆盖的键（一本书一行；没有这行表示跟随系统）
+  /// 全局窗口亮度键，旧单书接口仅为兼容历史数据保留。
   static const _brightnessKey = 'brightness';
 
   /// 状态信息显示开关的键（全局；没有这行表示显示）
@@ -183,10 +183,10 @@ class DriftReadingSettingsRepository implements ReadingSettingsRepository {
   }
 
   @override
-  Future<double?> loadBrightness(String bookId) async {
+  Future<double?> loadBrightness(String? bookId) async {
     final json = await _readJson(
-      scope: _bookScope,
-      scopeId: bookId,
+      scope: bookId == null ? _globalScope : _bookScope,
+      scopeId: bookId ?? _globalScopeId,
       key: _brightnessKey,
     );
     final value = json?['value'];
@@ -194,10 +194,10 @@ class DriftReadingSettingsRepository implements ReadingSettingsRepository {
   }
 
   @override
-  Future<double?> loadCustomBrightness(String bookId) async {
+  Future<double?> loadCustomBrightness(String? bookId) async {
     final json = await _readJson(
-      scope: _bookScope,
-      scopeId: bookId,
+      scope: bookId == null ? _globalScope : _bookScope,
+      scopeId: bookId ?? _globalScopeId,
       key: _brightnessKey,
     );
     final value = json?['custom'] ?? json?['value'];
@@ -205,11 +205,11 @@ class DriftReadingSettingsRepository implements ReadingSettingsRepository {
   }
 
   @override
-  Future<void> saveBrightness(String bookId, double? value) async {
+  Future<void> saveBrightness(String? bookId, double? value) async {
     final custom = value?.clamp(0.0, 1.0) ?? await loadCustomBrightness(bookId);
     await _writeJson(
-      scope: _bookScope,
-      scopeId: bookId,
+      scope: bookId == null ? _globalScope : _bookScope,
+      scopeId: bookId ?? _globalScopeId,
       key: _brightnessKey,
       json: {'value': value?.clamp(0.0, 1.0), 'custom': custom},
     );

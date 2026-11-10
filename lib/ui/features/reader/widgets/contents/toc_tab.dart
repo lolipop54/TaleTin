@@ -41,7 +41,10 @@ class TocTab extends ConsumerStatefulWidget {
 
 class _TocTabState extends ConsumerState<TocTab> {
   Set<int>? _expanded;
+  Set<int>? _searchExpanded;
+  String _expansionQuery = '';
   List<TocVolume>? _shownVolumes, _defaultVolumes;
+  (String?, String?, String?)? _defaultTarget;
   Set<int> _defaultExpanded = {}, _shownExpanded = {};
   TocRowsResult? _shownRows;
   bool _shownDescending = false, _rowsReady = false;
@@ -98,18 +101,43 @@ class _TocTabState extends ConsumerState<TocTab> {
     final currentTocTitle =
         currentEntry?.title ?? currentTocTitleOf(session, volumes);
     final currentAnchorId = currentEntry?.anchorId;
-    if (!identical(_defaultVolumes, volumes)) {
+    final target = (currentChapterId, currentAnchorId, currentTocTitle);
+    final volumesChanged = !identical(_defaultVolumes, volumes);
+    if (volumesChanged || _defaultTarget != target) {
       _defaultVolumes = volumes;
-      _defaultExpanded = {for (var i = 0; i < volumes.length; i++) i};
+      _defaultTarget = target;
+      // 同一正文文件可能对应不同分卷的目录锚点，沿用当前项的定位规则，
+      // 只展开它所在的分卷；独立章节没有需要展开的父级。
+      final currentVolume = volumes.indexWhere(
+        (volume) => volume.chapters.any(
+          (entry) =>
+              entry.chapterId == currentChapterId &&
+              (currentAnchorId != null
+                  ? entry.anchorId == currentAnchorId
+                  : currentTocTitle == null || entry.title == currentTocTitle),
+        ),
+      );
+      _defaultExpanded = {
+        if (currentVolume >= 0 && volumes[currentVolume].collapsible)
+          currentVolume,
+      };
+      _expanded = null;
     }
-    final requestedExpanded = _expanded ?? _defaultExpanded;
+    if (volumesChanged || _expansionQuery != query) {
+      _expansionQuery = query;
+      // 新搜索按是否存在匹配章节决定默认开合，不改变普通目录的状态。
+      _searchExpanded = null;
+    }
+    final requestedExpanded = query.isEmpty
+        ? _expanded ?? _defaultExpanded
+        : _searchExpanded;
     final prepared = ref.watch(
       tocRowsProvider((volumes, requestedExpanded, query, _descending)),
     );
     _rowsReady = tree.hasValue && prepared.hasValue;
     if (_rowsReady) {
       _shownRows = prepared.requireValue;
-      _shownExpanded = requestedExpanded;
+      _shownExpanded = prepared.requireValue.expanded;
       _shownDescending = _descending;
       _shownQuery = query;
     }
@@ -347,17 +375,29 @@ class _TocTabState extends ConsumerState<TocTab> {
   }
 
   void _toggleVolume(TocVolume volume, int index, Set<int> expanded) {
-    final current = _expanded ?? expanded;
+    final searching = _shownQuery.isNotEmpty;
+    final current = searching ? expanded : _expanded ?? expanded;
     final open = current.contains(index);
     final controller = _listController;
     setState(() {
-      _expanded = open ? ({...current}..remove(index)) : {...current, index};
-      if (_descending &&
-          widget.query.trim().isEmpty &&
-          controller?.hasClients == true) {
+      final next = open ? ({...current}..remove(index)) : {...current, index};
+      if (searching) {
+        _searchExpanded = next;
+      } else {
+        _expanded = next;
+      }
+      if (_descending && controller?.hasClients == true) {
         // 倒序时章节插在卷头上方；同帧补偿新增／移除的高度，让卷头留在手指附近。
         final metrics = TocRowMetrics.resolve(context, context.gtColors);
-        final change = volume.chapters.length * metrics.chapter;
+        final matchingCount = searching
+            ? volume.chapters
+                  .where((entry) => entry.matches(_shownQuery))
+                  .length
+            : 0;
+        final count = matchingCount > 0
+            ? matchingCount
+            : volume.chapters.length;
+        final change = count * metrics.chapter;
         _pendingScrollOffset = controller!.offset + (open ? -change : change);
       }
     });

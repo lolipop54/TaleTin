@@ -1,6 +1,9 @@
 import 'package:taletin/core/diagnostics/app_errors.dart';
+
 import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
 import '../../../../app/di/app_providers.dart';
 import '../../../../domain/models/reading_settings.dart';
 import '../../../../platform/channels/reading_window.dart';
@@ -11,17 +14,27 @@ import 'reader_view_model.dart';
 import 'listening_view_state.dart';
 
 class AutomaticReadingState {
-  const AutomaticReadingState({this.running = false, this.preparing = false,
-    this.advancing = false});
+  const AutomaticReadingState({
+    this.running = false,
+    this.preparing = false,
+    this.advancing = false,
+  });
   final bool running, preparing;
+
   /// 显示器实际推进才为真；准备、等待和暂停不能供统计累计时长。
   final bool advancing;
 }
 
 /// 两种显示各自按帧推进，控制器只管开始、暂停、听书交接和保存。
 class AutomaticScrollBackend {
-  const AutomaticScrollBackend({required this.start, required this.stop,
-    required this.speed, required this.ready, this.discard, this.retained});
+  const AutomaticScrollBackend({
+    required this.start,
+    required this.stop,
+    required this.speed,
+    required this.ready,
+    this.discard,
+    this.retained,
+  });
   final Future<void> Function(double) start;
   final Future<void> Function() stop;
   final void Function(double) speed;
@@ -69,7 +82,9 @@ class AutomaticReadingNotifier extends Notifier<AutomaticReadingState> {
   }
 
   bool consumePauseTap() {
-    final paused = _pausedByTap; _pausedByTap = false; return paused;
+    final paused = _pausedByTap;
+    _pausedByTap = false;
+    return paused;
   }
 
   /// 手动滚动也要取停下来的真实位置，不能只取上次节流回报。
@@ -86,9 +101,14 @@ class AutomaticReadingNotifier extends Notifier<AutomaticReadingState> {
   AutomaticReadingState build() {
     _window = ref.read(readingWindowProvider);
     final tasks = ref.read(automaticReadingTasksProvider);
-    tasks.attach(this, bookId, discard, changed: () {
-      if (ref.mounted) ref.invalidate(readerSessionProvider(bookId));
-    });
+    tasks.attach(
+      this,
+      bookId,
+      discard,
+      changed: () {
+        if (ref.mounted) ref.invalidate(readerSessionProvider(bookId));
+      },
+    );
     ref.listen(listeningViewStateProvider, (_, next) {
       if (next.value?.desiredPlaying == true) unawaited(discard());
     });
@@ -117,8 +137,11 @@ class AutomaticReadingNotifier extends Notifier<AutomaticReadingState> {
     // 新的开始命令必须等撤图、临时页还原和保存全部完成，不能被迟到的旧撤图取消。
     final task = _stopping = () async {
       await previous;
-      if (backend?.discard != null) { await backend!.discard!(); }
-      else { await backend?.stop(); }
+      if (backend?.discard != null) {
+        await backend!.discard!();
+      } else {
+        await backend?.stop();
+      }
       if (save) {
         await _window.keepAwake(_awakeOwner, false);
         if (ref.mounted) {
@@ -127,11 +150,17 @@ class AutomaticReadingNotifier extends Notifier<AutomaticReadingState> {
       }
       if (ref.mounted && version == _version) state = AutomaticReadingState();
     }();
-    try { await task; } finally { if (identical(task, _stopping)) _stopping = null; }
+    try {
+      await task;
+    } finally {
+      if (identical(task, _stopping)) _stopping = null;
+    }
   }
+
   void detach(AutomaticScrollBackend backend) {
     if (!identical(_backend, backend)) return;
-    ++_version; _backend = null;
+    ++_version;
+    _backend = null;
     _hasSession = false;
     final version = _version;
     // 显示器在页面销毁或模式交接时解绑，树更新完后再通知仍在监听的面板。
@@ -148,8 +177,10 @@ class AutomaticReadingNotifier extends Notifier<AutomaticReadingState> {
     if (!ref.read(automaticReadingTasksProvider).canStart(bookId)) return;
     if (state.running || state.preparing) return;
     final reader = ref.read(readerProvider);
-    if (reader.selection != null || reader.note != null ||
-        (reader.panel != ReaderPanel.none && reader.panel != ReaderPanel.auto)) {
+    if (reader.selection != null ||
+        reader.note != null ||
+        (reader.panel != ReaderPanel.none &&
+            reader.panel != ReaderPanel.auto)) {
       ref.read(readerProvider.notifier).showNotice('请先关闭面板或选文，再开始自动阅读');
       return;
     }
@@ -164,23 +195,35 @@ class AutomaticReadingNotifier extends Notifier<AutomaticReadingState> {
       if (!ref.mounted || !_foreground || version != _version) return;
       await ref.read(listeningServiceProvider).pause();
       if (!ref.mounted || !_foreground || version != _version) return;
-      await ref.read(readerSessionProvider(bookId).notifier).beginAutomaticReading();
+      await ref
+          .read(readerSessionProvider(bookId).notifier)
+          .beginAutomaticReading();
       if (!ref.mounted || version != _version) return;
       if (!ref.read(automaticReadingTasksProvider).canStart(bookId)) {
-        state = const AutomaticReadingState(); return;
+        state = const AutomaticReadingState();
+        return;
       }
-      if (backend == null || !identical(backend, _backend) || !backend.ready()) {
+      if (backend == null ||
+          !identical(backend, _backend) ||
+          !backend.ready()) {
         state = const AutomaticReadingState();
         ref.read(readerProvider.notifier).showNotice('正文正在准备，请稍后开始');
         return;
       }
       ref.read(readerProvider.notifier).closePanel();
-      await backend.start(settings.pageTurnEffect == PageTurnEffect.scroll
-        ? settings.autoScrollSpeed : settings.autoScanSeconds.toDouble());
-      if (!ref.mounted || version != _version) { await backend.stop(); return; }
+      await backend.start(
+        settings.pageTurnEffect == PageTurnEffect.scroll
+            ? settings.autoScrollSpeed
+            : settings.autoScanSeconds.toDouble(),
+      );
+      if (!ref.mounted || version != _version) {
+        await backend.stop();
+        return;
+      }
       _hasSession = true;
       state = AutomaticReadingState(running: true, advancing: _moving);
-      await _window.keepAwake(_awakeOwner, settings.autoKeepAwake);
+      // 自动推进始终保持亮屏；旧版本保存的常亮开关不再影响自动阅读。
+      await _window.keepAwake(_awakeOwner, true);
     } on Object catch (error, appStack) {
       AppErrors.report(error, appStack, operation: '启动自动阅读失败');
       if (ref.mounted && version == _version) {
@@ -194,7 +237,10 @@ class AutomaticReadingNotifier extends Notifier<AutomaticReadingState> {
 
   Future<void> pause({bool save = true}) async {
     if (!ref.mounted) return;
-    if (!state.running && !state.preparing) { await _stopping; return; }
+    if (!state.running && !state.preparing) {
+      await _stopping;
+      return;
+    }
     ++_version;
     final version = _version;
     state = const AutomaticReadingState();
@@ -207,14 +253,20 @@ class AutomaticReadingNotifier extends Notifier<AutomaticReadingState> {
       }
       if (ref.mounted && version == _version) state = AutomaticReadingState();
     }();
-    try { await task; } finally { if (identical(task, _stopping)) _stopping = null; }
+    try {
+      await task;
+    } finally {
+      if (identical(task, _stopping)) _stopping = null;
+    }
   }
 
   void updateSettings(ReadingSettings settings) {
     if (!state.running) return;
-    _backend?.speed(settings.pageTurnEffect == PageTurnEffect.scroll
-        ? settings.autoScrollSpeed : settings.autoScanSeconds.toDouble());
-    unawaited(_window.keepAwake(_awakeOwner, settings.autoKeepAwake));
+    _backend?.speed(
+      settings.pageTurnEffect == PageTurnEffect.scroll
+          ? settings.autoScrollSpeed
+          : settings.autoScanSeconds.toDouble(),
+    );
   }
 
   void finish(String notice) {
@@ -224,15 +276,20 @@ class AutomaticReadingNotifier extends Notifier<AutomaticReadingState> {
   }
 }
 
-final automaticReadingProvider = NotifierProvider.family<AutomaticReadingNotifier,
-  AutomaticReadingState, String>(AutomaticReadingNotifier.new, isAutoDispose: true);
+final automaticReadingProvider =
+    NotifierProvider.family<
+      AutomaticReadingNotifier,
+      AutomaticReadingState,
+      String
+    >(AutomaticReadingNotifier.new, isAutoDispose: true);
 
 /// 长帧和等待期间丢掉待走距离，恢复后不会追赶后台经过的时间。
 class FrameScrollDistance {
   Duration? _last;
   void reset([Duration? now]) => _last = now;
   double next(Duration now, double speed, {bool waiting = false}) {
-    final previous = _last; _last = now;
+    final previous = _last;
+    _last = now;
     if (previous == null || waiting) return 0;
     final micros = (now - previous).inMicroseconds;
     return micros <= 0 || micros > 100000 ? 0 : speed * micros / 1000000;

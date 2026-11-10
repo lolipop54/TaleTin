@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
@@ -10,14 +11,34 @@ import 'package:flutter_svg/flutter_svg.dart';
 import '../../../../domain/models/book_document.dart';
 import '../../../../core/diagnostics/app_errors.dart';
 import 'page_canvas.dart';
+import '../../../../engine/layout/math_typesetting.dart';
 import 'book_paper.dart';
 import 'turn_trace.dart';
+import 'book_box_paint.dart';
+import 'book_colors.dart';
+import 'background_image_color.dart';
+import 'book_svg_picture.dart';
 
-/// 一页内容的绘制材料。只解码正文图片，不对整页抓图。
+/// 一页内容的绘制材料。准备正文及书内背景图片，不对整页抓图。
 /// 调用方须等 load 完成再展示，并在替换或丢弃过期结果时 dispose。
 class PreparedPage {
-  PreparedPage._(this.page, this._images, {ui.Image? background})
-    : backgroundImage = background ?? page.theme.texture?.image.clone();
+  PreparedPage._(
+    this.page,
+    this._images, {
+    ui.Image? background,
+    Color? backdrop,
+  }) : backgroundImage = background ?? page.theme.texture?.image.clone(),
+       backdrop =
+           backdrop ??
+           adaptSurface(
+             page.cssBackground?.background ?? page.theme.background,
+             page.theme.background,
+           );
+  final Color backdrop;
+
+  /// 预备和正式绘制使用同一底色，否则有书内根背景时会生成两份文字缓存。
+  void prepareText() =>
+      page.prepareText(backdrop: page.cssBackground == null ? null : backdrop);
 
   // 页图、邻页缓存各自持有图片句柄，切换背景释放设置层引用时不影响在途绘制。
   final ui.Image? backgroundImage;
@@ -43,24 +64,36 @@ class PreparedPage {
       });
 
   /// 动画交给静态页时共享已解码图片，各自持有可独立释放的引用。
-  PreparedPage clone() => PreparedPage._(page, {
-    for (final entry in _images.entries) entry.key: entry.value?.clone(),
-  }, background: backgroundImage?.clone());
+  PreparedPage clone() => PreparedPage._(
+    page,
+    {for (final entry in _images.entries) entry.key: entry.value?.clone()},
+    background: backgroundImage?.clone(),
+    backdrop: backdrop,
+  );
 
   /// 复用图片像素，重新绑定本次翻页的外观；不能把预取时的信息行一起冻住。
-  PreparedPage cloneFor(PageCanvas appearance) => PreparedPage._(appearance, {
-    for (final entry in _images.entries) entry.key: entry.value?.clone(),
-  });
+  PreparedPage cloneFor(PageCanvas appearance) => PreparedPage._(
+    appearance,
+    {for (final entry in _images.entries) entry.key: entry.value?.clone()},
+    backdrop: appearance.cssBackground?.backgroundImage == null
+        ? null
+        : backdrop,
+  );
 
   /// 纯文字页同步就绪，翻页时不插入一帧加载画面。
   static PreparedPage? textOnly(PageCanvas page) =>
-      page.layout
-              .page(page.pageIndex)
-              ?.fragments
-              .any(
-                (f) => f.imageSize != null && f.block.resourcePath != null,
-              ) ==
-          true
+      page.backgroundPaths.isNotEmpty ||
+          page.layout
+                  .page(page.pageIndex)
+                  ?.fragments
+                  .any(
+                    (f) =>
+                        (f.imageSize != null && f.block.resourcePath != null) ||
+                        f.block
+                            .inlineImagesInLines(f.lineFrom, f.lineTo)
+                            .isNotEmpty,
+                  ) ==
+              true
       ? null
       : PreparedPage._(page, {});
 
@@ -70,12 +103,31 @@ class PreparedPage {
   ) async {
     final background = page.theme.texture?.image.clone();
     final paths = <String>{
-      for (final fragment in page.layout.page(page.pageIndex)?.fragments ?? [])
+      ...page.backgroundPaths,
+      for (final fragment
+          in page.layout.page(page.pageIndex)?.fragments ?? []) ...{
         if (fragment.block.kind == BlockKind.image &&
             fragment.block.resourcePath != null &&
             fragment.imageSize != null)
           fragment.block.resourcePath!,
+        for (final image in fragment.block.inlineImagesInLines(
+          fragment.lineFrom,
+          fragment.lineTo,
+        ))
+          image.resourcePath,
+      },
     };
+    final formulaSizes = <String, Size>{};
+    for (final fragment
+        in page.layout.page(page.pageIndex)?.fragments ?? const []) {
+      for (final visual in fragment.positionedInlineImages) {
+        if (visual.image.formula == null) continue;
+        final previous = formulaSizes[visual.image.resourcePath];
+        if (previous == null || previous.width < visual.rect.width) {
+          formulaSizes[visual.image.resourcePath] = visual.rect.size;
+        }
+      }
+    }
     // 只记录页坐标、资源个数和耗时，不输出正文或图片路径。
     final label =
         'simplified images chapter=${page.layout.chapterId} '
@@ -91,6 +143,13 @@ class PreparedPage {
               () => _loadPageImage(
                 File(page.resolveResource(path)),
                 configuration,
+                formulaColor: path.startsWith(MathTypesetting.resourcePrefix)
+                    ? page.theme.primary
+                    : null,
+                targetSize: formulaSizes[path],
+                backgroundSize: page.backgroundPaths.contains(path)
+                    ? page.layout.contentSize
+                    : null,
               ),
             ),
           ),
@@ -100,6 +159,10 @@ class PreparedPage {
         page,
         Map.fromIterables(paths, images),
         background: background,
+        backdrop: await _backgroundColor(
+          page,
+          Map.fromIterables(paths, images),
+        ),
       );
     } catch (_) {
       background?.dispose();
@@ -107,27 +170,74 @@ class PreparedPage {
     }
   }
 
+  /// 少量缩图采样只在准备阶段做，背景很深时页眉页脚与正文不能仍用纸面黑字。
+  static Future<Color> _backgroundColor(
+    PageCanvas page,
+    Map<String, ImageInfo?> images,
+  ) async {
+    final box = page.cssBackground;
+    final fallback = box?.background ?? page.theme.background;
+    final image = images[box?.backgroundImage?.path]?.image;
+    if (image == null) return adaptSurface(fallback, page.theme.background);
+    return averageBackgroundColor(page.layout.contentSize, (canvas) {
+      final rect = Offset.zero & page.layout.contentSize;
+      canvas.drawRect(rect, Paint()..color = page.theme.background);
+      paintBookBoxRect(
+        canvas,
+        rect,
+        box!,
+        page.theme,
+        images: (path) => images[path],
+      );
+    });
+  }
+
   /// SVG 也先生成固定图像，避免扫描中出现占位后补图。
   static Future<ImageInfo?> _loadPageImage(
     File file,
-    ImageConfiguration configuration,
-  ) async {
+    ImageConfiguration configuration, {
+    Color? formulaColor,
+    Size? targetSize,
+    Size? backgroundSize,
+  }) async {
     if (!file.path.toLowerCase().endsWith('.svg')) {
       return _loadImage(FileImage(file), configuration);
     }
     try {
-      final picture = await vg.loadPicture(SvgFileLoader(file), null);
+      final picture = await loadBookSvg(
+        file,
+        theme: formulaColor == null
+            ? null
+            : SvgTheme(currentColor: formulaColor),
+      );
       final ratio = configuration.devicePixelRatio ?? 1;
+      final factor = backgroundSize == null
+          ? 1.0
+          : math.min(
+              4096 /
+                  (math.max(picture.size.width, picture.size.height) * ratio),
+              math.max(
+                backgroundSize.width / picture.size.width,
+                backgroundSize.height / picture.size.height,
+              ),
+            );
+      final size = backgroundSize == null
+          ? targetSize ?? picture.size
+          : picture.size * factor;
       final recorder = ui.PictureRecorder();
-      (Canvas(recorder)..scale(ratio)).drawPicture(picture.picture);
+      (Canvas(recorder)..scale(
+            ratio * size.width / picture.size.width,
+            ratio * size.height / picture.size.height,
+          ))
+          .drawPicture(picture.picture);
       final scaled = recorder.endRecording();
       try {
         return ImageInfo(
           image: scaled.toImageSync(
-            (picture.size.width * ratio).ceil(),
-            (picture.size.height * ratio).ceil(),
+            (size.width * ratio).ceil(),
+            (size.height * ratio).ceil(),
           ),
-          scale: ratio,
+          scale: backgroundSize == null ? ratio : ratio * factor,
         );
       } finally {
         scaled.dispose();
@@ -206,7 +316,35 @@ class PreparedPage {
         backgroundImage: background,
       );
     }
-    page.information?.paint(canvas, size, paintMenu: false);
+    if (page.cssBackground case final box?) {
+      paintBookBoxRect(
+        canvas,
+        Offset.zero & size,
+        box,
+        page.theme,
+        images: (path) => _images[path],
+      );
+      if (page.information?.bookEdges == true &&
+          page.information?.spreadSide == null) {
+        BookPaperPainter(
+          backdrop,
+          decorationOnly: true,
+          preserveBackground: true,
+        ).paint(canvas, size);
+      }
+    }
+    final information = page.cssBackground == null
+        ? page.information
+        : page.information?.withColor(
+            adaptInk(
+              page.theme.secondary,
+              backdrop,
+              backdrop.computeLuminance() < .4
+                  ? const Color(0xffeeeeee)
+                  : page.theme.secondary,
+            ),
+          );
+    information?.paint(canvas, size, paintMenu: false);
     canvas.translate(
       (size.width - content.width) / 2,
       (size.height -
@@ -215,7 +353,11 @@ class PreparedPage {
               (page.information?.bottom ?? 0)) /
           2,
     );
-    page.paintText(canvas);
+    page.paintText(
+      canvas,
+      images: (path) => _images[path],
+      backdrop: page.cssBackground == null ? null : backdrop,
+    );
     for (final fragment in page.layout.page(page.pageIndex)?.fragments ?? []) {
       final imageSize = fragment.imageSize;
       final path = fragment.block.resourcePath;
@@ -225,53 +367,78 @@ class PreparedPage {
           path == null) {
         continue;
       }
-      final rect =
-          Offset(
-            fragment.block.tableId == null ? 0 : fragment.block.inset,
-            fragment.y,
-          ) &
-          imageSize;
-      final image = _images[path];
-      if (image != null) {
-        paintImage(
-          canvas: canvas,
-          rect: rect,
-          image: image.image,
-          fit: BoxFit.fill,
-          filterQuality: FilterQuality.medium,
-        );
-      } else {
-        // 与静态页一样，失败时保留原图尺寸和替代文字，不改变后续正文位置。
-        canvas.drawRect(
-          rect,
-          Paint()..color = page.theme.secondary.withValues(alpha: 0.08),
-        );
-        final alt = fragment.block.alt;
-        final label = TextPainter(
-          text: TextSpan(
-            text: alt?.isNotEmpty == true ? alt : '图片无法显示',
-            style: TextStyle(
-              fontSize: 12,
-              color: page.theme.secondary,
-              fontFamily: page.information?.fontFamily,
-            ),
-          ),
-          textAlign: TextAlign.center,
-          textDirection: TextDirection.ltr,
-          textScaler: page.layout.options.textScaler,
-        )..layout(maxWidth: rect.width);
-        canvas.save();
-        canvas.clipRect(rect);
-        label.paint(
-          canvas,
-          rect.center - Offset(label.width / 2, label.height / 2),
-        );
-        canvas.restore();
-        label.dispose();
+      final block = fragment.block;
+      final rect = fragment.imageRectIn(page.layout.contentSize.width)!;
+      _paintPageImage(canvas, rect, path, block.alt);
+    }
+    // 行内图片：位置来自测量结果（行号、行内横坐标、行内纵坐标），
+    // 文字层已经按分段画好，这里只补图片。
+    for (final fragment in page.layout.page(page.pageIndex)?.fragments ?? []) {
+      if (fragment.frameOnly) continue;
+      final block = fragment.block;
+      final images = block
+          .inlineImagesInLines(fragment.lineFrom, fragment.lineTo)
+          .toList();
+      if (images.isEmpty) continue;
+      final maxWidth = block.layoutWidth ?? page.layout.contentSize.width;
+      var top = fragment.y + block.textTopOf(fragment.lineFrom);
+      var lineIndex = fragment.lineFrom;
+      for (final image in images) {
+        while (lineIndex < image.line) {
+          top += block.lines[lineIndex].height;
+          lineIndex++;
+        }
+        final left =
+            block.inset +
+            block.horizontalOffset(image.line, maxWidth) +
+            image.left;
+        final rect = Offset(left, top + image.top) & image.size;
+        _paintPageImage(canvas, rect, image.resourcePath, image.alt);
       }
     }
     canvas.restore();
     page.information?.searchMenu?.paint(canvas, size);
+  }
+
+  /// 画一张正文图片；解码失败时保留原尺寸，并用替代文字占位。
+  void _paintPageImage(Canvas canvas, Rect rect, String path, String? alt) {
+    final image = _images[path];
+    if (image != null) {
+      paintImage(
+        canvas: canvas,
+        rect: rect,
+        image: image.image,
+        fit: BoxFit.fill,
+        filterQuality: FilterQuality.medium,
+      );
+      return;
+    }
+    // 与静态页一样，失败时保留原图尺寸和替代文字，不改变后续正文位置。
+    canvas.drawRect(
+      rect,
+      Paint()..color = page.theme.secondary.withValues(alpha: 0.08),
+    );
+    final label = TextPainter(
+      text: TextSpan(
+        text: alt?.isNotEmpty == true ? alt : '图片无法显示',
+        style: TextStyle(
+          fontSize: 12,
+          color: page.theme.secondary,
+          fontFamily: page.information?.fontFamily,
+        ),
+      ),
+      textAlign: TextAlign.center,
+      textDirection: TextDirection.ltr,
+      textScaler: page.layout.options.textScaler,
+    )..layout(maxWidth: rect.width);
+    canvas.save();
+    canvas.clipRect(rect);
+    label.paint(
+      canvas,
+      rect.center - Offset(label.width / 2, label.height / 2),
+    );
+    canvas.restore();
+    label.dispose();
   }
 
   void dispose() {

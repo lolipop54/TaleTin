@@ -12,6 +12,7 @@ import 'reader_compact_option.dart';
 import 'reader_option_autosave.dart';
 import 'reader_option_route.dart';
 import 'reader_turn_choices.dart';
+import '../../settings/widgets/reading_controls_options.dart';
 
 Future<void> showReaderLayoutOption(
   BuildContext context,
@@ -27,7 +28,11 @@ Future<void> showReaderLayoutOption(
     );
     if (!context.mounted) return;
     // 卡片图片解码完成后才换层，不在新面板打开后逐张补图。
-    if (turn) await ReaderTurnChoices.prepare(context);
+    if (turn) {
+      await ReaderTurnChoices.prepare(context);
+    } else {
+      await container.read(readingControlsReadyProvider.future);
+    }
     if (!context.mounted) return;
     await showReaderOption<void>(
       context,
@@ -69,6 +74,7 @@ class _LayoutOptionState extends ConsumerState<ReaderLayoutOption> {
   Future<bool>? _pending;
 
   Future<bool> _save() async {
+    if (!widget.turn) return await _pending ?? true;
     if (ref
             .read(readerSettingsProvider(widget.bookId))
             .value
@@ -77,7 +83,6 @@ class _LayoutOptionState extends ConsumerState<ReaderLayoutOption> {
         true) {
       return true;
     }
-    if (!widget.turn) return await _pending ?? true;
     setState(() => _saving = true);
     try {
       final vm = ref.read(readerSettingsProvider(widget.bookId).notifier);
@@ -101,7 +106,7 @@ class _LayoutOptionState extends ConsumerState<ReaderLayoutOption> {
   Widget build(BuildContext context) => ReaderOptionAutosave(
     save: _save,
     child: ReaderCompactOption(
-      title: widget.turn ? '翻页方式' : '其他设置',
+      title: widget.turn ? '翻页方式' : '更多设置',
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
         child: widget.turn
@@ -143,7 +148,7 @@ class _LayoutOptionState extends ConsumerState<ReaderLayoutOption> {
       bool value,
       ValueChanged<bool> set,
     ) => Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
+      padding: EdgeInsets.zero,
       child: _toggle(label, key, value, (next) {
         set(next);
         _pending = vm.pendingWrites.then((_) => true);
@@ -175,6 +180,7 @@ class _LayoutOptionState extends ConsumerState<ReaderLayoutOption> {
               saved.landscapeSpread,
               vm.setLandscapeSpread,
             ),
+          const ReadingControlsOptions(includeKeepAwake: false),
         ],
       ),
     );
@@ -185,22 +191,25 @@ class _LayoutOptionState extends ConsumerState<ReaderLayoutOption> {
     String key,
     bool value,
     ValueChanged<bool> onChange,
-  ) => Row(
-    children: [
-      Expanded(
-        child: Text(
-          label,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: GtText.body(context.gtColors.textPrimary)
-              .copyWith(fontSize: 14),
+  ) => ConstrainedBox(
+    constraints: const BoxConstraints(minHeight: 48),
+    child: Row(
+      children: [
+        Expanded(
+          child: Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: GtText.body(context.gtColors.textPrimary)
+                .copyWith(fontSize: 14),
+          ),
         ),
-      ),
-      GtSwitch(
-        key: Key(key),
-        value: value,
-        onChanged: _saving ? null : onChange,
-      ),
-    ],
+        GtSwitch(
+          key: Key(key),
+          value: value,
+          onChanged: _saving ? null : onChange,
+        ),
+      ],
+    ),
   );
 }

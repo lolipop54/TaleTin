@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'package:taletin/ui/core/widgets/gt_switch.dart';
 import 'package:flutter/material.dart';
@@ -18,6 +20,9 @@ import '../widgets/font_choices.dart';
 import '../view_models/global_reading_settings.dart';
 import '../widgets/settings_page.dart';
 import '../widgets/settings_row.dart';
+import '../../reader/widgets/listening_option_header.dart';
+import '../../reader/widgets/reader_sheet.dart';
+import '../../reader/widgets/reader_option_autosave.dart';
 
 // 两个文字按钮相邻，文字间距为左右内边距之和；调小此值即可进一步收紧。
 const _headerActionHorizontalPadding = 6.0;
@@ -47,7 +52,13 @@ String globalFontChoice(ReadingSettings settings) =>
 
 /// 进入前已经加载字体文件和名称；纵向列表随名称长度增高，不截断预览。
 class GlobalFontView extends ConsumerStatefulWidget {
-  const GlobalFontView({super.key});
+  const GlobalFontView({
+    super.key,
+    this.readerBookId,
+    this.supportsOriginalFont = true,
+  });
+  final String? readerBookId;
+  final bool supportsOriginalFont;
 
   @override
   ConsumerState<GlobalFontView> createState() => _GlobalFontViewState();
@@ -57,26 +68,54 @@ class _GlobalFontViewState extends ConsumerState<GlobalFontView> {
   bool _editing = false;
   bool _busy = false;
   List<String>? _previewOrder;
+  Completer<void>? _pendingWork;
+
+  // 收起字体面板时等待当前保存，避免用户刚点完字体又点收起时丢掉操作。
+  void _setBusy(bool busy) {
+    if (busy && !_busy) _pendingWork = Completer<void>();
+    if (!busy) {
+      _pendingWork?.complete();
+      _pendingWork = null;
+    }
+    setState(() => _busy = busy);
+  }
 
   @override
   Widget build(BuildContext context) {
+    // 阅读器字体子面板持续持有设置资源，导入子路由覆盖期间也不释放。
+    if (widget.readerBookId != null) {
+      ref.watch(readerSettingsProvider(widget.readerBookId!));
+    }
     final settings = ref.watch(globalSettingsProvider).requireValue.typography;
     final fonts = ref.watch(fontFamilyNamesProvider).requireValue;
     final choices = readingFontChoices(
       settings,
       fonts,
+      supportsOriginalFont: widget.supportsOriginalFont,
       order: _previewOrder ?? ref.watch(fontOrderProvider).value ?? const [],
     );
     final ids = choices.keys.toList();
-    return PopScope(
+    final page = PopScope(
       canPop: !_editing && !_busy,
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop && _editing) setState(() => _editing = false);
       },
       child: SettingsChoices<String>(
-        title: '字体',
+        title: widget.readerBookId == null ? '字体' : '字体样式',
+        backgroundColor: widget.readerBookId == null
+            ? null
+            : ReaderSheet.backgroundOf(context),
+        appBarBuilder: widget.readerBookId == null
+            ? null
+            : (actions) => ListeningOptionHeader(
+                title: const FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text('字体样式'),
+                ),
+                actions: actions,
+              ),
         enabled: !_busy,
-        onSavingChanged: (value) => setState(() => _busy = value),
+        onSavingChanged: _setBusy,
         onReorder: (oldIndex, newIndex) => _reorder(ids, oldIndex, newIndex),
         actions: [
           GtButton(
@@ -180,27 +219,52 @@ class _GlobalFontViewState extends ConsumerState<GlobalFontView> {
                 ],
               )
             : null,
-        selected: (ref) => globalFontChoice(
+        selected: (ref) => selectedFontChoice(
           ref.watch(globalSettingsProvider).requireValue.typography,
+          supportsOriginalFont: widget.supportsOriginalFont,
         ),
         save: (ref, id) async {
           if (id != '__original') {
             await ref.read(selectedFontLoaderProvider)(id);
           }
+          if (widget.readerBookId != null) {
+            final applied = await ref
+                .read(readerSettingsProvider(widget.readerBookId!).notifier)
+                .confirmFontChoice(id);
+            if (!applied) throw StateError('字体未保存');
+            return;
+          }
           await ref
               .read(globalSettingsProvider.notifier)
               .change(
-                (current) => id == '__original'
-                    ? current.copyWith(useOriginalFont: true)
-                    : current.copyWith(fontFamily: id, useOriginalFont: false),
+                (current) => current.withFontChoice(
+                  id,
+                  current.layoutMode.forBuild(pdf: false),
+                ),
               );
         },
       ),
     );
+    if (widget.readerBookId == null) return page;
+    return ReaderOptionAutosave(
+      save: () async {
+        if (_busy) await _pendingWork?.future;
+        if (!mounted) return false;
+        if (_editing) {
+          setState(() => _editing = false);
+          return false;
+        }
+        await ref
+            .read(readerSettingsProvider(widget.readerBookId!).notifier)
+            .pendingWrites;
+        return true;
+      },
+      child: page,
+    );
   }
 
   Future<void> _delete(String id) async {
-    setState(() => _busy = true);
+    _setBusy(true);
     try {
       // 先准备回退字体并保存选择，再删文件；不改字号、字重或原书字体开关。
       await ref.read(selectedFontLoaderProvider)('sans-serif');
@@ -216,13 +280,12 @@ class _GlobalFontViewState extends ConsumerState<GlobalFontView> {
       ref.invalidate(fontFamilyNamesProvider);
       ref.invalidate(fontOrderProvider);
       ref.invalidate(currentTypographyFontsProvider);
-      ref.invalidate(readerSettingsProvider);
       // FutureProvider刷新保留旧名单，准备完成后整页才显示新结果。
       await ref.read(fontFamilyNamesProvider.future);
     } catch (error, stack) {
       AppErrors.report(error, stack, operation: '删除字体失败，请重试', notify: mounted);
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) _setBusy(false);
     }
   }
 
@@ -238,10 +301,8 @@ class _GlobalFontViewState extends ConsumerState<GlobalFontView> {
     if (oldIndex == newIndex) return;
     final next = [...ids]..removeAt(oldIndex);
     next.insert(newIndex, ids[oldIndex]);
-    setState(() {
-      _previewOrder = next;
-      _busy = true;
-    });
+    _setBusy(true);
+    setState(() => _previewOrder = next);
     try {
       await ref.read(readingSettingsRepositoryProvider).saveFontOrder(next);
       if (!mounted) return;
@@ -251,10 +312,8 @@ class _GlobalFontViewState extends ConsumerState<GlobalFontView> {
       AppErrors.report(error, stack, operation: '字体顺序未保存，请重试', notify: mounted);
     } finally {
       if (mounted) {
-        setState(() {
-          _previewOrder = null;
-          _busy = false;
-        });
+        setState(() => _previewOrder = null);
+        _setBusy(false);
       }
     }
   }

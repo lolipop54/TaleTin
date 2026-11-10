@@ -56,12 +56,16 @@ class SearchReturnBar extends ConsumerWidget {
     required this.bookId,
     required this.theme,
     this.paintMenu = true,
-    this.edgeToEdge = false,
+    this.statusBar = true,
+    this.navigationBar = true,
   });
   final String bookId;
   final ReadingTheme theme;
   final bool paintMenu;
-  final bool edgeToEdge;
+
+  /// 两个系统栏开关分别决定左右那一边要不要避让；都隐藏时铺满整张纸面。
+  final bool statusBar;
+  final bool navigationBar;
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final menu = ref.watch(searchMenuAppearanceProvider(bookId));
@@ -77,49 +81,54 @@ class SearchReturnBar extends ConsumerWidget {
     ];
     final pdf = ref.watch(pdfModeProvider(bookId));
     final view = ref.watch(pdfViewportProvider(bookId));
-    return ListenableBuilder(listenable: view, builder: (_, child) =>
-      pdf && view.menuVisible ? const SizedBox.shrink() : child!,
+    return ListenableBuilder(
+      listenable: view,
+      builder: (_, child) =>
+          pdf && view.menuVisible ? const SizedBox.shrink() : child!,
       child: SafeArea(
-      left: !edgeToEdge,
-      right: !edgeToEdge,
-      maintainBottomViewPadding: true,
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final rect = menu.bounds(constraints.biggest);
-          return Stack(
-            children: [
-              if (paintMenu)
-                Positioned.fill(
-                  child: IgnorePointer(
-                    child: CustomPaint(painter: SearchMenuPainter(menu)),
+        left: statusBar,
+        right: navigationBar,
+        maintainBottomViewPadding: true,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final rect = menu.bounds(constraints.biggest);
+            return Stack(
+              children: [
+                if (paintMenu)
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: CustomPaint(painter: SearchMenuPainter(menu)),
+                    ),
                   ),
-                ),
-              for (final i in menu.buttons)
-                Positioned.fromRect(
-                  rect: menu.button(i).shift(rect.topLeft),
-                  child: Tooltip(
-                    message: menu.label(i),
-                    child: Semantics(
-                      label: menu.label(i),
-                      button: true,
-                      enabled: menu.enabled(i),
-                      child: Material(
-                        color: Colors.transparent,
-                        child: GtButton.raw(
-                          key: ValueKey('search-navigation-$i'),
-                          borderRadius: BorderRadius.circular(GtRadius.control),
-                          onPressed: menu.enabled(i) ? actions[i] : null,
-                          child: const SizedBox.expand(),
+                for (final i in menu.buttons)
+                  Positioned.fromRect(
+                    rect: menu.button(i).shift(rect.topLeft),
+                    child: Tooltip(
+                      message: menu.label(i),
+                      child: Semantics(
+                        label: menu.label(i),
+                        button: true,
+                        enabled: menu.enabled(i),
+                        child: Material(
+                          color: Colors.transparent,
+                          child: GtButton.raw(
+                            key: ValueKey('search-navigation-$i'),
+                            borderRadius: BorderRadius.circular(
+                              GtRadius.control,
+                            ),
+                            onPressed: menu.enabled(i) ? actions[i] : null,
+                            child: const SizedBox.expand(),
+                          ),
                         ),
                       ),
                     ),
                   ),
-                ),
-            ],
-          );
-        },
+              ],
+            );
+          },
+        ),
       ),
-    ));
+    );
   }
 }
 
@@ -134,20 +143,44 @@ class SearchMenuPainter extends CustomPainter {
 
 /// 进度条与目录跳转复用同一外观；控制面板中的按钮不使用书页底部定位。
 class ProgressReturnButton extends StatelessWidget {
-  const ProgressReturnButton({super.key, required this.colors, required this.busy, required this.onPressed});
+  const ProgressReturnButton({
+    super.key,
+    required this.colors,
+    required this.busy,
+    required this.onPressed,
+  });
   final GtColors colors;
   final bool busy;
   final VoidCallback onPressed;
   @override
   Widget build(BuildContext context) {
-    final menu = SearchMenuAppearance(colors, previous: false, next: false, busy: busy, returnProgress: true);
-    return Semantics(label: '返回原进度', button: true, enabled: !busy,
-      child: SizedBox(width: 142, height: 48, child: CustomPaint(
-        painter: _ProgressButtonPainter(menu),
-        child: GtButton.raw(onPressed: busy ? null : onPressed,
-          borderRadius: BorderRadius.circular(22), child: const SizedBox.expand()))));
+    final menu = SearchMenuAppearance(
+      colors,
+      previous: false,
+      next: false,
+      busy: busy,
+      returnProgress: true,
+    );
+    return Semantics(
+      label: '返回原进度',
+      button: true,
+      enabled: !busy,
+      child: SizedBox(
+        width: 142,
+        height: 48,
+        child: CustomPaint(
+          painter: _ProgressButtonPainter(menu),
+          child: GtButton.raw(
+            onPressed: busy ? null : onPressed,
+            borderRadius: BorderRadius.circular(22),
+            child: const SizedBox.expand(),
+          ),
+        ),
+      ),
+    );
   }
 }
+
 class _ProgressButtonPainter extends CustomPainter {
   const _ProgressButtonPainter(this.menu);
   final SearchMenuAppearance menu;
@@ -158,6 +191,7 @@ class _ProgressButtonPainter extends CustomPainter {
     menu.paint(canvas, size);
     canvas.restore();
   }
+
   @override
   bool shouldRepaint(_ProgressButtonPainter old) => old.menu != menu;
 }

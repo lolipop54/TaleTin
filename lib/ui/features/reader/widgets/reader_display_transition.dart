@@ -33,9 +33,16 @@ class ReaderDisplayTransition extends StatefulWidget {
     }
   }
 
-  static Future<void> finishJump(GlobalKey key) async {
+  static Future<void> finishJump(
+    GlobalKey key, {
+    bool immediate = false,
+  }) async {
     final state = key.currentState;
-    if (state is _ReaderDisplayTransitionState) await state._finished?.future;
+    if (state is _ReaderDisplayTransitionState) {
+      // 进度跳转仍走真实绘制确认，确认后直接交接，不等遮盖淡出。
+      if (immediate && state._finished != null) state._smooth = false;
+      await state._finished?.future;
+    }
   }
 
   const ReaderDisplayTransition({

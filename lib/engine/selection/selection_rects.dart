@@ -12,7 +12,6 @@
 library;
 
 import 'dart:math' as math;
-import 'package:flutter/painting.dart' show TextPainter, TextPosition, TextSelection;
 
 import 'dart:ui' show Offset, Rect;
 
@@ -20,6 +19,7 @@ import '../../domain/models/book_document.dart';
 import '../../domain/models/locator.dart';
 import '../layout/chapter_layout.dart';
 import '../layout/measured_block.dart';
+import '../layout/line_text_geometry.dart';
 import '../normalization/locator_mapper.dart';
 import '../normalization/sentence_splitter.dart';
 import 'selection_range.dart';
@@ -66,41 +66,34 @@ List<Rect> selectionRectsForPage({
     final selectFrom = blockIndex > startKey.blockIndex
         ? -1
         : (blockIndex < startKey.blockIndex
-            ? blockLength + 1
-            : startKey.offset + block.displayPrefixLength);
+              ? blockLength + 1
+              : startKey.offset + block.displayPrefixLength);
     final selectTo = blockIndex < endKey.blockIndex
         ? blockLength + 1
         : (blockIndex > endKey.blockIndex
-            ? -1
-            : endKey.offset + block.displayPrefixLength);
+              ? -1
+              : endKey.offset + block.displayPrefixLength);
     // 段前缩进（画出来的全角空格前缀）不算高亮：多段选取时后面每一段的首行
     // 也要从正文第一个字起画，否则看起来就是把段前空格也选上了（真机反馈）
     final blockFrom = math.max(selectFrom, block.displayPrefixLength);
 
-    var y = fragment.y;
+    var y = fragment.y + block.textTopOf(fragment.lineFrom);
     for (var i = fragment.lineFrom; i < fragment.lineTo; i++) {
       final line = block.lines[i];
       final a = math.max(line.start, blockFrom);
       final b = math.min(line.end, selectTo);
       if (b > a) {
-        // 高亮矩形按**真实字形位置**取：用与绘制同一个 TextPainter 问它这几个字
-        // 落在哪几段横坐标上。按「本行字符数等比换算」算出来的框在中文避头尾、
-        // 标点、两端对齐字距拉开时都会和文字对不齐（真机反馈过）。
-        final painter = _linePainter(layout, block, i);
-        final boxes = painter.getBoxesForSelection(
-          TextSelection(
-            baseOffset: a - line.start,
-            // 行尾连字符一起高亮，但不加入原文范围或笔记摘录。
-            extentOffset: b - line.start + (line.hyphenated && b == line.end ? 1 : 0),
-          ),
+        rects.addAll(
+          block
+              .rangeRectsInLine(
+                i,
+                a,
+                b,
+                scaler: layout.options.textScaler,
+                width: _widthOf(layout, block),
+              )
+              .map((r) => r.shift(Offset(0, y))),
         );
-        painter.dispose();
-        for (final box in boxes) {
-          final left = block.inset + box.left;
-          final width = box.right - box.left;
-          if (width <= 0) continue;
-          rects.add(Rect.fromLTWH(left, y, width, line.height));
-        }
       }
       y += line.height;
     }
@@ -116,7 +109,11 @@ Locator? locatorAtPointInPage({
   required int pageIndex,
   required Offset position,
 }) {
-  final hit = _hitTest(layout: layout, pageIndex: pageIndex, position: position);
+  final hit = _hitTest(
+    layout: layout,
+    pageIndex: pageIndex,
+    position: position,
+  );
   if (hit == null) return null;
   return _locatorOf(layout, hit.blockId, hit.offset);
 }
@@ -130,7 +127,11 @@ Locator? locatorAtPointInPage({
   required int pageIndex,
   required Offset position,
 }) {
-  final hit = _hitTest(layout: layout, pageIndex: pageIndex, position: position);
+  final hit = _hitTest(
+    layout: layout,
+    pageIndex: pageIndex,
+    position: position,
+  );
   if (hit == null) return null;
   final block = _contentBlockOf(layout, hit.blockId);
   if (block == null) {
@@ -187,18 +188,15 @@ int _prefixOf(ChapterLayout layout, String blockId) {
 /// 本页上这一块占了哪几行：返回（首行起点、末行终点）的显示偏移。
 ///
 /// 这一块不在本页时返回 null（调用方按整块处理）。
-(int, int)? _pageLinesOf(
-  ChapterLayout layout,
-  int pageIndex,
-  String blockId,
-) {
+(int, int)? _pageLinesOf(ChapterLayout layout, int pageIndex, String blockId) {
   final page = layout.page(pageIndex);
   if (page == null) return null;
   for (final fragment in page.fragments) {
     if (fragment.frameOnly) continue;
     final block = fragment.block;
     if (block.blockId != blockId || block.lines.isEmpty) continue;
-    final first = block.lines[fragment.lineFrom.clamp(0, block.lines.length - 1)];
+    final first =
+        block.lines[fragment.lineFrom.clamp(0, block.lines.length - 1)];
     final last =
         block.lines[(fragment.lineTo - 1).clamp(0, block.lines.length - 1)];
     return (first.start, last.end);
@@ -212,7 +210,11 @@ int _prefixOf(ChapterLayout layout, String blockId) {
   required int pageIndex,
   required Offset position,
 }) {
-  final hit = _hitTest(layout: layout, pageIndex: pageIndex, position: position);
+  final hit = _hitTest(
+    layout: layout,
+    pageIndex: pageIndex,
+    position: position,
+  );
   if (hit == null) return null;
   return (
     start: _locatorOf(layout, hit.blockId, hit.lineStart),
@@ -233,13 +235,16 @@ int _prefixOf(ChapterLayout layout, String blockId) {
     if (fragment.frameOnly) continue;
     final block = fragment.block;
     if (block.tableBounds != null &&
-        (position.dx < block.tableBounds!.left || position.dx > block.tableBounds!.right)) { continue; }
+        (position.dx < block.tableBounds!.left ||
+            position.dx > block.tableBounds!.right)) {
+      continue;
+    }
     if (block.lines.isEmpty) continue;
     if (position.dy < fragment.y ||
         position.dy > fragment.y + fragment.height) {
       continue;
     }
-    var y = fragment.y;
+    var y = fragment.y + block.textTopOf(fragment.lineFrom);
     for (var i = fragment.lineFrom; i < fragment.lineTo; i++) {
       final line = block.lines[i];
       if (position.dy <= y + line.height || i == fragment.lineTo - 1) {
@@ -251,6 +256,7 @@ int _prefixOf(ChapterLayout layout, String blockId) {
           block: block,
           lineIndex: i,
           dx: position.dx,
+          dy: position.dy - y,
         );
         final normalized = (display - prefix).clamp(0, maxOffset).toInt();
         return (
@@ -266,53 +272,21 @@ int _prefixOf(ChapterLayout layout, String blockId) {
   return null;
 }
 
-/// 与绘制完全同一套参数（字号、字距、缩放）的单行 painter。
-///
-/// 命中测试、高亮矩形、手柄定位都必须用它：只要有一处另取参数，
-/// 算出来的位置就和画出来的字对不上。
-TextPainter _linePainter(
-  ChapterLayout layout,
-  MeasuredBlock block,
-  int lineIndex,
-) {
-  final maxWidth = (block.layoutWidth ?? layout.options.contentWidthFor(block.kind));
-  final justify = block.tableId == null && switch (block.kind) {
-    BlockKind.paragraph || BlockKind.listItem || BlockKind.footnote => true,
-    _ => false,
-  };
-  return block.createSingleLinePainter(
-    lineIndex: lineIndex,
-    textScaler: layout.options.textScaler,
-    letterSpacing: block.justifySpacingFor(
-      lineIndex,
-      maxWidth: maxWidth,
-      enabled: justify,
-      textScaler: layout.options.textScaler,
-    ),
-  );
-}
+double _widthOf(ChapterLayout layout, MeasuredBlock block) =>
+    block.layoutWidth ?? layout.options.contentWidthFor(block.kind);
 
-/// 行内横坐标 → 显示文本偏移。
-///
-/// 用与绘制完全同一套参数（同一 [TextScaler]、同一字距）把这一行单独排出来，
-/// 再问它「这个 x 落在第几个字上」。两端对齐的行会按字距摊开，
-/// 这里跟着算同一份字距，否则点到行尾会差出好几个字。
 int _offsetInLine({
   required ChapterLayout layout,
   required MeasuredBlock block,
   required int lineIndex,
   required double dx,
-}) {
-  final line = block.lines[lineIndex];
-  if (line.end <= line.start) return line.start;
-  final painter = _linePainter(layout, block, lineIndex);
-  // 行是从块的左内边距开始画的（列表项有缩进），比较前先减掉
-  final position = painter.getPositionForOffset(
-    Offset(dx - block.inset, line.height / 2),
-  );
-  painter.dispose();
-  return (line.start + position.offset).clamp(line.start, line.end).toInt();
-}
+  double dy = 0,
+}) => block.offsetAtInLine(
+  lineIndex,
+  Offset(dx, dy),
+  scaler: layout.options.textScaler,
+  width: _widthOf(layout, block),
+);
 
 /// 版式里的块 ID → 原始正文块（摘录、句读切分要回到未加缩进的文本）
 ContentBlock? _contentBlockOf(ChapterLayout layout, String blockId) {
@@ -359,10 +333,12 @@ CaretGeometry? caretAtLocator({
     if (fragment.frameOnly) continue;
     final block = fragment.block;
     if (block.blockId != locator.blockId || block.lines.isEmpty) continue;
-    final display = (locator.utf16Offset + block.displayPrefixLength)
-        .clamp(0, block.text.length);
+    final display = (locator.utf16Offset + block.displayPrefixLength).clamp(
+      0,
+      block.text.length,
+    );
     final matches = <({int index, double top})>[];
-    var y = fragment.y;
+    var y = fragment.y + block.textTopOf(fragment.lineFrom);
     for (var i = fragment.lineFrom; i < fragment.lineTo; i++) {
       final line = block.lines[i];
       if (display >= line.start && display <= line.end) {
@@ -372,17 +348,18 @@ CaretGeometry? caretAtLocator({
     }
     if (matches.isEmpty) continue;
     final target = atEnd ? matches.first : matches.last;
-    final line = block.lines[target.index];
-    final painter = _linePainter(layout, block, target.index);
-    final caret = painter.getOffsetForCaret(
-      TextPosition(offset: display - line.start),
-      Rect.zero,
+    final rect = block.caretRectInLine(
+      target.index,
+      display,
+      atEnd,
+      scaler: layout.options.textScaler,
+      width: _widthOf(layout, block),
     );
-    painter.dispose();
+    if (rect == null) continue;
     return CaretGeometry(
-      left: block.inset + caret.dx,
-      top: target.top,
-      height: line.height,
+      left: rect.left,
+      top: target.top + rect.top,
+      height: rect.height,
     );
   }
   return null;
@@ -444,9 +421,7 @@ Locator? pageEdgeLocator({
   if (chapterOrder == null) return null;
   if (chapterOrder < startOrder || chapterOrder > endOrder) return null;
 
-  final chapterBegin = layout.pages.isEmpty
-      ? null
-      : layout.beginLocatorOf(layout.pages.first);
+  final chapterBegin = layout.pages.isEmpty ? null : layout.startLocator;
   final chapterEnd = layout.pages.isEmpty
       ? null
       : layout.endLocatorOf(layout.pages.last);
@@ -477,16 +452,17 @@ bool _isBefore(
       return (blockIndex: i, offset: locator.utf16Offset);
     }
   }
+  if (layout.precedesWindow(locator)) return (blockIndex: -1, offset: 0);
   return null;
 }
 
 Locator _locatorOf(ChapterLayout layout, String blockId, int offset) => Locator(
-      bookId: layout.bookId,
-      contentVersion: layout.contentVersion,
-      chapterId: layout.chapterId,
-      blockId: blockId,
-      utf16Offset: offset,
-    );
+  bookId: layout.bookId,
+  contentVersion: layout.contentVersion,
+  chapterId: layout.chapterId,
+  blockId: blockId,
+  utf16Offset: offset,
+);
 
 /// 一段文本范围的首页与末页（用于判断选区跨了几页）
 ({int first, int last})? pagesOfRange({

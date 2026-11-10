@@ -1,8 +1,8 @@
 // Copyright (c) 2026 GT Reader contributors. MIT license, see LICENSE.
 // TOC queries need a few positions, not the entire DOM/source-piece graph in
 // Dart. Offsets mirror DomTextMapBuilder's per-run whitespace/trim rules.
-use serde_json::{Value, json};
 use crate::dom::{Dom, attr, tag};
+use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 
 fn units(text: &str) -> usize {
@@ -27,13 +27,18 @@ pub fn positions(dom: &Dom, raw_blocks: &[Value], raw_maps: &[Value], wanted: &[
     let mut total = 0;
     for block in raw_blocks {
         let text = block_text(block);
-        blocks.insert(block["id"].as_str().unwrap(), (total, text.clone()));
-        total += units(&text) + 1;
+        // Match ContentBlock.textLength for inline images and kept break spaces.
+        let weight = block["w"]
+            .as_u64()
+            .map_or_else(|| units(&text) + 1, |weight| weight as usize);
+        blocks.insert(block["id"].as_str().unwrap(), (total, text));
+        total += weight;
     }
     let mut segments = HashMap::<usize, (String, usize)>::new();
     for map in raw_maps {
         let block = map[0].as_str().unwrap();
         let pieces = map[1].as_array().unwrap();
+        let keep_trailing_runs = map[2].as_array();
         let mut from = 0;
         let mut block_start = 0;
         let mut joined = String::new();
@@ -59,8 +64,16 @@ pub fn positions(dom: &Dom, raw_blocks: &[Value], raw_maps: &[Value], wanted: &[
                 run_units += length;
                 run.push_str(&text);
             }
-            let leading = units(&run) - units(run.trim_start_matches(trim_space));
-            let text = run.trim_matches(trim_space);
+            let trimmed_start = run.trim_start_matches(trim_space);
+            let leading = units(&run) - units(trimmed_start);
+            // The source map keeps the space for a <br> at a style boundary.
+            let keeps_break =
+                keep_trailing_runs.is_some_and(|indices| indices.contains(&pieces[from][2]));
+            let text = if keeps_break {
+                trimmed_start
+            } else {
+                trimmed_start.trim_end_matches(trim_space)
+            };
             let limit = leading + units(text);
             for (node, start, length) in spans {
                 let a = start.max(leading);

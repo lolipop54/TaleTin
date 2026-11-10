@@ -35,7 +35,7 @@ Future<(String, int, String?)?> _sourceIndex(String path) => Isolate.run(() {
 String _stamp(FileStat stat) =>
     '${stat.size}:${stat.modified.microsecondsSinceEpoch}:${stat.changed.microsecondsSinceEpoch}';
 
-/// 书架和开书共用核验结果。轮询只查属性，属性或来源索引变了才后台算摘要。
+/// 书架刷新和开书共用核验结果，属性或来源索引变了才后台算摘要。
 class BookSourceIntegrity {
   BookSourceIntegrity(this.libraryRoot);
   final String? libraryRoot;
@@ -92,62 +92,43 @@ class BookSourceIntegrity {
             'manifest.json',
           );
     // 新索引发布或源文件变化后不合并到旧一轮核验，避免旧结果撤销刚完成的更新。
-    final stamp = source == null ? '' : _stamp(await File(source).stat());
-    final indexStamp = manifest == null
-        ? ''
-        : _stamp(await File(manifest).stat());
+    final stat = source == null ? null : await File(source).stat();
+    final manifestStat = manifest == null ? null : await File(manifest).stat();
+    final stamp = stat == null ? '' : _stamp(stat);
+    final indexStamp = manifestStat == null ? '' : _stamp(manifestStat);
     final key = '${book.id}:${book.status.code}:$stamp:$indexStamp';
-    return book.copyWith(
-      status: await _pending.putIfAbsent(
-        key,
-        () => _check(book).then((checked) => checked.status).whenComplete(() {
-          _pending.remove(key);
-        }),
-      ),
+    final status = await _pending.putIfAbsent(
+      key,
+      () => _check(book, source, stat, manifest, manifestStat)
+          .then((checked) => checked.status)
+          .whenComplete(() {
+            _pending.remove(key);
+          }),
     );
+    return status == book.status ? book : book.copyWith(status: status);
   }
 
-  Future<Book> _check(Book book) async {
-    if (book.status == BookStatus.removed) return book;
+  Future<Book> _check(
+    Book book,
+    String? path,
+    FileStat? stat,
+    String? manifestPath,
+    FileStat? manifestStat,
+  ) async {
     final root = libraryRoot;
-    // 无外部路径、无真实来源索引的旧书仍由旧 JSON 读取流程判断正文状态。
-    if (book.localSourcePath == null &&
-        (root == null ||
-            !File(
-              p.join(
-                root,
-                book.id,
-                'content',
-                '${book.contentVersion}',
-                'manifest.json',
-              ),
-            ).existsSync())) {
-      return book;
-    }
-    final path =
-        book.localSourcePath ??
-        (root == null
-            ? null
-            : bookSourcePath(p.join(root, book.id), book.format.code));
-    if (path == null) return book;
+    if (path == null || stat == null) return book;
     final source = File(path);
-    final stat = await source.stat();
+    // 合并请求的身份已经由这次属性快照确定，下面复用同一份资料，
+    // 不为每本书再发一遍源文件和manifest属性请求。算摘要后仍重新核对。
     if (stat.type != FileSystemEntityType.file) {
       return book.copyWith(status: BookStatus.contentMissing);
     }
     if (book.status == BookStatus.preparing) return book;
     // 没有来源索引的旧正文仍沿用缺失检测，不凭文件时间猜正文是否变化。
-    if (root == null) return book;
-    final manifest = File(
-      p.join(
-        root,
-        book.id,
-        'content',
-        '${book.contentVersion}',
-        'manifest.json',
-      ),
-    );
-    final manifestStat = await manifest.stat();
+    if (root == null || manifestPath == null || manifestStat == null) {
+      return book;
+    }
+    final manifest = File(manifestPath);
     if (manifestStat.type != FileSystemEntityType.file) return book;
     final manifestStamp = _stamp(manifestStat);
     var saved = _indexes[manifest.path];

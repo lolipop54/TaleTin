@@ -70,49 +70,42 @@ extension _OriginalNeighborSlots on _OriginalReaderAreaState {
     }
     final current = widget.session.chapterIndex, navigation = _navigation;
     final key = (host, current, navigation);
-    return _neighborBoundaryFlights.putIfAbsent(
-      key,
-      () => () async {
-        try {
-          await host.preparation;
-          if (ReaderDeliveryExperiments.originalNavigation &&
-              (!mounted ||
-                  navigation != _navigation ||
-                  current != widget.session.chapterIndex ||
-                  _hosts[chapter] != host)) {
-            return false;
-          }
-          await host.goToFraction(chapter < current ? 1 : 0);
-          await host.presented();
-          final slot = _slotMounted(chapter);
-          if (!mounted ||
-              navigation != _navigation ||
-              current != widget.session.chapterIndex ||
-              _hosts[chapter] != host ||
-              slot == null) {
-            return false;
-          }
-          _updateState(() {
-            slot.ready = true;
-            slot.settledFraction = chapter < current ? 1 : 0;
-          });
-          final waiting = _pageReady.remove(chapter);
-          if (waiting != null && !waiting.isCompleted) waiting.complete(true);
-          return true;
-        } on Object catch (error) {
-          if (mounted && navigation == _navigation && _hosts[chapter] == host) {
-            final waiting = _pageReady.remove(chapter);
-            if (waiting != null && !waiting.isCompleted) {
-              waiting.complete(false);
-            }
-          }
-          traceTurn(
-            'neighbor boundary failed chapter=$chapter type=${error.runtimeType}',
-          );
+    return _neighborReadiness.prepareBoundary(key, () async {
+      try {
+        await host.preparation;
+        if (ReaderDeliveryExperiments.originalNavigation &&
+            (!mounted ||
+                navigation != _navigation ||
+                current != widget.session.chapterIndex ||
+                _hosts[chapter] != host)) {
           return false;
         }
-      }().whenComplete(() => _neighborBoundaryFlights.remove(key)),
-    );
+        await host.goToFraction(chapter < current ? 1 : 0);
+        await host.presented();
+        final slot = _slotMounted(chapter);
+        if (!mounted ||
+            navigation != _navigation ||
+            current != widget.session.chapterIndex ||
+            _hosts[chapter] != host ||
+            slot == null) {
+          return false;
+        }
+        _updateState(() {
+          slot.ready = true;
+          slot.settledFraction = chapter < current ? 1 : 0;
+        });
+        _neighborReadiness.complete(chapter, true);
+        return true;
+      } on Object catch (error) {
+        if (mounted && navigation == _navigation && _hosts[chapter] == host) {
+          _neighborReadiness.complete(chapter, false);
+        }
+        traceTurn(
+          'neighbor boundary failed chapter=$chapter type=${error.runtimeType}',
+        );
+        return false;
+      }
+    });
   }
 
   void _resumeBackground() {
@@ -149,14 +142,16 @@ extension _OriginalNeighborSlots on _OriginalReaderAreaState {
     final current = widget.session.chapterIndex;
     final previous = _prev.ordinal;
     final next = _next.ordinal;
-    _hosts.removeWhere(
-      (ordinal, _) =>
+    _hosts.removeWhere((ordinal, _) {
+      final removed =
           ordinal != current &&
           ordinal != previous &&
           ordinal != next &&
           (!ReaderDeliveryExperiments.originalNavigation ||
-              ordinal != _parallelTarget?.chapter),
-    );
+              ordinal != _parallelTarget?.chapter);
+      if (removed) _neighborReadiness.complete(ordinal, false);
+      return removed;
+    });
   }
 
   /// 换章交接：新章如果就是预载好的相邻章，交接要「就地」或滑入，

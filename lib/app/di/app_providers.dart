@@ -42,6 +42,7 @@ import '../../data/repositories/drift_reading_position_repository.dart';
 import '../../data/repositories/drift_reading_settings_repository.dart';
 import '../../data/repositories/file_chapter_content_repository.dart';
 import '../../data/services/epub_source_repository.dart';
+import '../../data/services/publication_font_loader.dart';
 import '../../data/services/file_import_storage.dart';
 import '../../data/services/tts/listening_audio_handler.dart';
 import '../../domain/models/book.dart';
@@ -214,6 +215,7 @@ final libraryRootPathProvider = Provider<String>(
 final readerEngineProvider = Provider<ReaderEngine>((ref) {
   final engine = FlutterReaderEngine(
     checkpoints: ref.watch(layoutCheckpointStoreProvider),
+    prepareFonts: ref.watch(publicationFontLoaderProvider).prepare,
   );
   ref.onDispose(engine.invalidateLayout);
   return engine;
@@ -231,13 +233,28 @@ final cacheRootPathProvider = Provider<String>(
   (ref) => throw StateError('cacheRootPathProvider 必须在 ProviderScope 中注入'),
 );
 
-/// 原书排版模式的内容服务（读 source.epub，见 docs/原书排版模式实现计划.md）。
+/// 原书排版模式的内容服务（读 source.epub，见 docs/原书排版260929-261016/原书排版模式实现计划.md）。
 final epubSourceRepositoryProvider = Provider<EpubSourceRepository>(
   (ref) => EpubSourceRepository(
     libraryRoot: ref.watch(libraryRootPathProvider),
     cacheRoot: ref.watch(cacheRootPathProvider),
   ),
 );
+
+final publicationFontLoaderProvider = Provider<PublicationFontLoader>((ref) {
+  final books = ref.watch(bookRepositoryProvider);
+  return PublicationFontLoader((bookId) async {
+    final sources = ref.read(epubSourceRepositoryProvider);
+    final book = await books.findById(bookId);
+    if (book == null || !book.format.usesOriginalWebView) return null;
+    return sources.open(
+      bookId: bookId,
+      contentVersion: book.contentVersion,
+      chapters: await books.chaptersOf(bookId),
+      fontsOnly: true,
+    );
+  });
+});
 
 /// 章节正文与资源读取（正文文件的事实来源，见实现计划 4.5 节）。
 final chapterContentRepositoryProvider = Provider<ChapterContentRepository>((

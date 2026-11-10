@@ -12,8 +12,7 @@ String selectedFontChoice(
   bool supportsOriginalFont = true,
 }) =>
     supportsOriginalFont &&
-        settings.layoutMode.isOriginal &&
-        settings.useOriginalFont
+        settings.usesBookFont(settings.layoutMode.forBuild(pdf: false))
     ? '__original'
     // 旧版打开字体面板时可能已保存当前系统字体的具体编号。
     : settings.fontFamily == null ||
@@ -30,8 +29,7 @@ Map<String, String> readingFontChoices(
   List<String> order = const [],
 }) {
   final defaults = <String, String>{
-    if (supportsOriginalFont && settings.layoutMode.isOriginal)
-      '__original': '原书字体',
+    if (supportsOriginalFont) '__original': '原书字体',
     'sans-serif': '系统字体',
     // 内置字体紧跟系统字体，顺序取自内置目录，不受设备返回名单顺序影响。
     for (final id in PresetFonts.families.keys)

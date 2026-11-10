@@ -87,8 +87,12 @@ class SettingsChoices<T> extends ConsumerStatefulWidget {
     this.enabled = true,
     this.onSavingChanged,
     this.onReorder,
+    this.appBarBuilder,
+    this.backgroundColor,
   });
   final String title;
+  final PreferredSizeWidget Function(List<Widget>? actions)? appBarBuilder;
+  final Color? backgroundColor;
   final Widget? leading;
   final List<Widget>? actions;
   final Widget? Function(T, bool)? optionTrailing;
@@ -155,7 +159,10 @@ class _SettingsChoicesState<T> extends ConsumerState<SettingsChoices<T>> {
     }
 
     return Scaffold(
-      appBar: GtAppBar(title: Text(widget.title), actions: widget.actions),
+      backgroundColor: widget.backgroundColor,
+      appBar:
+          widget.appBarBuilder?.call(widget.actions) ??
+          GtAppBar(title: Text(widget.title), actions: widget.actions),
       body: SafeArea(
         child: widget.onReorder != null
             ? ReorderableListView.builder(

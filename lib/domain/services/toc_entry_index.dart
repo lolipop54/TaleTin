@@ -74,6 +74,7 @@ int tocEntryIndexAt(
   required double position,
   String? chapterId,
   int? remembered,
+  bool allowAnchorTolerance = true,
 }) {
   var hit = -1;
   var firstInChapter = -1;
@@ -85,10 +86,16 @@ int tocEntryIndexAt(
     final gap = i > 0 && entries[i - 1].chapterId == entry.chapterId
         ? entry.progress - entries[i - 1].progress
         : 0.0;
-    final epsilon = chapterId == null
+    final epsilon = chapterId == null || !allowAnchorTolerance
         ? 0.0
         : (gap / 2).clamp(0.0, kTocProgressEpsilon);
     if (entry.progress <= position + epsilon) hit = i;
+  }
+  if (firstInChapter < 0 && chapterId != null) {
+    // 目录可能没有单列内部续段；取当前位置之前的真实条目，不能退回首项。
+    for (var i = 0; i < entries.length; i++) {
+      if (entries[i].progress <= position) hit = i;
+    }
   }
   if (hit < 0) hit = firstInChapter < 0 ? 0 : firstInChapter;
   if (remembered != null &&

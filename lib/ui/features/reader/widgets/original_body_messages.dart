@@ -35,6 +35,16 @@ extension _OriginalBodyMessages on _OriginalBodyState {
     }
     if (!mounted || matches.isEmpty) return null;
     final frame = matches.first;
+    if (const {
+      'ready',
+      'paginated',
+      'indexReady',
+      'preparing',
+      'loadError',
+      'error',
+    }.contains(event['type'])) {
+      frame.host.preparationStage = event['type'] as String;
+    }
     if (bookmarkTraceEnabled &&
         const {
           'bookmarkTrace',

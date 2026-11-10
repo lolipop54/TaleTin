@@ -24,6 +24,7 @@ mixin _ReaderDisplayPosition
   Future<void> switchReadingDisplay(ReadingLayoutMode mode, bool scrolling) async {
     final session = state.value;
     if (session == null) return;
+    mode = mode.forBuild(pdf: session.book.format == BookFormat.pdf);
     if (!session.book.format.supportsOriginalLayout) mode = ReadingLayoutMode.simplified;
     final desired = (mode, scrolling);
     if ((_displayDesired ?? (_mode, session.scrolling)) == desired) return;

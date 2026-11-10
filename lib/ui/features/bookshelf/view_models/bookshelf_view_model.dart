@@ -4,7 +4,7 @@ import '../../../../domain/services/shelf_books.dart';
 
 import '../../../../domain/models/book.dart';
 import '../../../../domain/models/shelf_sort.dart';
-import 'shelf_sort_controller.dart';
+import 'shelf_preferences_controller.dart';
 export '../../../../domain/models/shelf_sort.dart';
 
 /// 书架视图状态：筛选、搜索、排序、视图模式与多选。
@@ -17,6 +17,7 @@ class BookshelfState {
     this.groupId,
     this.sort = ShelfSort.title,
     this.savingSort = false,
+    this.savingLayout = false,
     this.query = '',
     this.gridView = true,
     this.selectedIds = const <String>{},
@@ -27,6 +28,9 @@ class BookshelfState {
   final String? groupId;
   final ShelfSort sort;
   final bool savingSort;
+
+  /// 布局设置正在写库，菜单里的布局选项暂时不可点。
+  final bool savingLayout;
   final String query;
   final bool gridView;
 
@@ -42,6 +46,7 @@ class BookshelfState {
     bool clearGroup = false,
     ShelfSort? sort,
     bool? savingSort,
+    bool? savingLayout,
     String? query,
     bool? gridView,
     Set<String>? selectedIds,
@@ -52,6 +57,7 @@ class BookshelfState {
       groupId: clearGroup ? null : groupId ?? this.groupId,
       sort: sort ?? this.sort,
       savingSort: savingSort ?? this.savingSort,
+      savingLayout: savingLayout ?? this.savingLayout,
       query: query ?? this.query,
       gridView: gridView ?? this.gridView,
       selectedIds: selectedIds ?? this.selectedIds,
@@ -80,11 +86,21 @@ class BookshelfState {
 class BookshelfViewModel extends Notifier<BookshelfState> {
   @override
   BookshelfState build() {
-    ref.listen(shelfSortProvider, (_, next) {
-      if (next.hasValue) state = state.copyWith(sort: next.requireValue);
+    ref.listen(shelfPreferencesProvider, (_, next) {
+      // 偏好读出来或保存成功后，界面才跟着改排序／布局。
+      if (next.hasValue) {
+        state = state.copyWith(
+          sort: next.requireValue.sort,
+          gridView: next.requireValue.gridView,
+        );
+      }
     });
+    // 已提前读好时直接用保存值；还没读好则先按默认值建状态，
+    // 书架页会停留在加载态，直到偏好准备好再显示。
+    final saved = ref.read(shelfPreferencesProvider).value;
     return BookshelfState(
-      sort: ref.read(shelfSortProvider).value ?? ShelfSort.title,
+      sort: saved?.sort ?? ShelfSort.title,
+      gridView: saved?.gridView ?? true,
     );
   }
 
@@ -98,7 +114,7 @@ class BookshelfViewModel extends Notifier<BookshelfState> {
     if (state.savingSort) return;
     state = state.copyWith(savingSort: true);
     try {
-      await ref.read(shelfSortProvider.notifier).save(sort);
+      await ref.read(shelfPreferencesProvider.notifier).saveSort(sort);
     } finally {
       if (ref.mounted) state = state.copyWith(savingSort: false);
     }
@@ -116,7 +132,19 @@ class BookshelfViewModel extends Notifier<BookshelfState> {
 
   void setQuery(String query) => state = state.copyWith(query: query);
 
-  void toggleViewMode() => state = state.copyWith(gridView: !state.gridView);
+  /// 切换网格／列表布局。
+  ///
+  /// 先把布局写进 preferences，成功后才发布；杀进程重进应用时
+  /// 仍是用户最后选的布局。写库失败会抛出，由菜单提示并保持原布局。
+  Future<void> setGridView(bool gridView) async {
+    if (state.savingLayout || state.gridView == gridView) return;
+    state = state.copyWith(savingLayout: true);
+    try {
+      await ref.read(shelfPreferencesProvider.notifier).saveGridView(gridView);
+    } finally {
+      if (ref.mounted) state = state.copyWith(savingLayout: false);
+    }
+  }
 
   /// 长按书籍：进入多选模式并选中这一本。
   void beginSelection(String bookId) {

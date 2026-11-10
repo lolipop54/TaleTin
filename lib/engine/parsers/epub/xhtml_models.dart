@@ -27,12 +27,20 @@ class XhtmlBlocks {
     this.tables = const [],
     this.statisticsLength,
     this.statisticsSingleImage,
+    this.stylesJson,
+    this.displaySourceJson,
   });
 
   final List<ContentBlock> blocks;
   final List<ContentTable> tables;
   final int? statisticsLength;
   final String? statisticsSingleImage;
+
+  /// Rust 转换时算出的章内样式表（批次 C）；统计与旧路径可能为空。
+  final Map<String, Object?>? stylesJson;
+
+  /// S1 显示来源索引：元素父子、顺序、块范围和表格引用；旧路径为空。
+  final Map<String, Object?>? displaySourceJson;
   int get textLength =>
       statisticsLength ?? blocks.fold(0, (sum, b) => sum + b.textLength);
   String? get singleImagePath => statisticsLength != null

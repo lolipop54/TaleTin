@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
@@ -37,11 +38,52 @@ class _PresetPainter extends CustomPainter {
   final String title, author, fontFamily;
   static const ink = Color(0xff332c24);
   static const paper = Color(0xfff3e6c7);
+  static final _pictures =
+      <(BookCoverPreset, String, String, String, ui.Image), ui.Picture>{};
+  static bool _listening = false;
+
+  static void _clearPictures() {
+    for (final picture in _pictures.values) {
+      picture.dispose();
+    }
+    _pictures.clear();
+  }
 
   @override
   void paint(Canvas canvas, Size size) {
+    final image = BookCoverResources.images[preset];
+    // 未准备好的背景不能进入缓存，避免之后一直复用缺图的封面。
+    if (image == null) {
+      canvas.save();
+      canvas.scale(size.width / 284, size.height / 400);
+      _paintCover(canvas);
+      canvas.restore();
+      return;
+    }
+    if (!_listening) {
+      _listening = true;
+      PaintingBinding.instance.systemFonts.addListener(_clearPictures);
+    }
+    final key = (preset, title, author, fontFamily, image);
+    var picture = _pictures.remove(key);
+    if (picture == null) {
+      // 在原有284×400画布记录原始矢量绘制命令，复用时仍按实际尺寸绘制。
+      // 不缩小封面图片，也不在每次滑回该书时重新测量、缩字号。
+      final recorder = ui.PictureRecorder();
+      _paintCover(Canvas(recorder));
+      picture = recorder.endRecording();
+      if (_pictures.length >= 128) {
+        _pictures.remove(_pictures.keys.first)!.dispose();
+      }
+    }
+    _pictures[key] = picture;
     canvas.save();
     canvas.scale(size.width / 284, size.height / 400);
+    canvas.drawPicture(picture);
+    canvas.restore();
+  }
+
+  void _paintCover(Canvas canvas) {
     final dark =
         preset == BookCoverPreset.stars || preset == BookCoverPreset.cloth;
     final text = dark ? paper : ink;
@@ -77,7 +119,6 @@ class _PresetPainter extends CustomPainter {
         12,
       );
     }
-    canvas.restore();
   }
 
   /// 参考传统蓝布线装书：左侧双白线，右侧通长旧纸题签。

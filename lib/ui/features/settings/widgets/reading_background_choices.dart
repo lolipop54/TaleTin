@@ -15,7 +15,7 @@ import '../../../core/widgets/gt_icon.dart';
 import '../../reader/view_models/reader_settings_view_model.dart';
 import '../view_models/reading_backgrounds.dart';
 
-/// 两处入口共用背景名单和操作，书内只隐藏导入按钮，不隐藏已导入的图片。
+/// 阅读背景统一使用全局选择，阅读面板保留紧凑卡片并提供同样的相册导入。
 class ReadingBackgroundChoices extends ConsumerStatefulWidget {
   const ReadingBackgroundChoices({super.key, this.bookId});
   final String? bookId;
@@ -204,27 +204,24 @@ class _ReadingBackgroundChoicesState
                       ? () => _delete(item)
                       : null,
                 ),
-              if (bookId == null)
-                card(
-                  key: const Key('reading-background-add'),
-                  label: '',
-                  preview: Icon(
-                    Icons.add,
-                    color: full || _busy
-                        ? colors.textMuted
-                        : colors.textPrimary,
-                    size: 24,
-                  ),
-                  onTap: _busy
-                      ? null
-                      : () {
-                          if (full) {
-                            SystemToast.show('已达到导入上限，长按删除其一后可继续添加');
-                          } else {
-                            _import();
-                          }
-                        },
+              card(
+                key: const Key('reading-background-add'),
+                label: '',
+                preview: Icon(
+                  Icons.add,
+                  color: full || _busy ? colors.textMuted : colors.textPrimary,
+                  size: 24,
                 ),
+                onTap: _busy
+                    ? null
+                    : () {
+                        if (full) {
+                          SystemToast.show('已达到导入上限，长按删除其一后可继续添加');
+                        } else {
+                          _import();
+                        }
+                      },
+              ),
             ],
           ),
         );

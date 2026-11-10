@@ -10,6 +10,8 @@ import '../../../core/widgets/gt_icon.dart';
 import '../view_models/reader_view_model.dart';
 import '../view_models/reader_session_view_model.dart';
 import 'reader_panel_motion.dart';
+import '../../../../app/di/reading_controls_providers.dart';
+import '../../settings/view_models/reading_backgrounds.dart';
 
 /// 一级与二级面板共用工具栏；二级面板禁用所属的一级入口。
 class ReaderToolbar extends StatelessWidget {
@@ -102,6 +104,10 @@ Future<void> prepareReaderPanel(
   } else if (panel == ReaderPanel.tts) {
     await container.read(listeningServiceProvider).prepareVoices();
   } else if (panel == ReaderPanel.brightness) {
-    await container.read(systemBrightnessProvider.future);
+    await Future.wait([
+      container.read(systemBrightnessProvider.future),
+      container.read(readingControlsProvider.future),
+      container.read(readingBackgroundsProvider.future),
+    ]);
   }
 }

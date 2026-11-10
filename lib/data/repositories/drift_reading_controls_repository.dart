@@ -19,6 +19,7 @@ class DriftReadingControlsRepository implements ReadingControlsRepository {
     return ReadingControls(
       keepAwake: value['keepAwake'] == true,
       volumeKeys: value['volumeKeys'] == true,
+      swipeUpToExit: value['swipeUpToExit'] == true,
       statusBar: value['statusBar'] != false,
       navigationBar: value['navigationBar'] != false,
     );
@@ -33,6 +34,7 @@ class DriftReadingControlsRepository implements ReadingControlsRepository {
       jsonEncode({
         'keepAwake': value.keepAwake,
         'volumeKeys': value.volumeKeys,
+        'swipeUpToExit': value.swipeUpToExit,
         'statusBar': value.statusBar,
         'navigationBar': value.navigationBar,
       }),

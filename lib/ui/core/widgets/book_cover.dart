@@ -9,6 +9,7 @@ import 'preset_book_cover.dart';
 import '../theme/gt_tokens.dart';
 import 'cover_art.dart';
 import 'cover_art_spec.dart';
+import 'cover_label_metrics.dart';
 import 'decorations.dart';
 
 /// 书籍封面。
@@ -122,7 +123,8 @@ class BookCover extends StatelessWidget {
                   Positioned(
                     right: 0,
                     bottom: 0,
-                    width: _formatLabelWidth(labelStyle) + labelPadding * 2,
+                    width:
+                        CoverLabelMetrics.width(labelStyle) + labelPadding * 2,
                     // 紧贴右下角，只给对角两端圆角；标签不接收点击或长按。
                     child: IgnorePointer(
                       child: DecoratedBox(
@@ -189,23 +191,6 @@ class BookCover extends StatelessWidget {
         ],
       ),
     );
-  }
-
-  /// 按当前字体实测四种格式，以最宽者统一标签宽度，避免短格式标签变窄。
-  double _formatLabelWidth(TextStyle style) {
-    final painter = TextPainter(
-      textDirection: TextDirection.ltr,
-      textScaler: TextScaler.noScaling,
-      maxLines: 1,
-    );
-    var width = 0.0;
-    for (final format in BookFormat.values) {
-      painter.text = TextSpan(text: format.label, style: style);
-      painter.layout();
-      if (painter.width > width) width = painter.width;
-    }
-    painter.dispose();
-    return width.ceilToDouble();
   }
 
   /// 书名占位封面：图案 + 文字，跟随封面宽度等比缩放。

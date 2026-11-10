@@ -46,6 +46,26 @@ class PageInformation {
   final bool spread;
   final Color? paper;
   final ui.Image? backgroundImage;
+  PageInformation withColor(Color foreground) => PageInformation(
+    chapter: chapter,
+    book: book,
+    progress: progress,
+    clock: clock,
+    battery: battery,
+    inset: inset,
+    bottomInset: bottomInset,
+    color: foreground,
+    scaler: scaler,
+    visible: visible,
+    searchMenu: searchMenu,
+    fontFamily: fontFamily,
+    bookmarked: bookmarked,
+    bookEdges: bookEdges,
+    spreadSide: spreadSide,
+    spread: spread,
+    paper: paper,
+    backgroundImage: backgroundImage,
+  );
 
   /// 翻动页图包含的信息行；分钟、电量、书签或字号变化不能复用旧图。
   Object get paintingKey => (

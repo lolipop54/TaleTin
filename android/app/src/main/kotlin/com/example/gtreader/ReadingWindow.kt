@@ -22,6 +22,19 @@ object ReadingWindow {
     /** 无系统栏的设备没有可等待的可见状态；临时隐藏的栏仍有非零最大占位。 */
     private fun systemBarReady(insets: WindowInsetsCompat, type: Int): Boolean =
         insets.isVisible(type) || insets.getInsetsIgnoringVisibility(type) == Insets.NONE
+    /**
+     * 分类占位的四边（物理像素，Flutter 再换算成 dp）。
+     * 系统栏用「忽略可见性」的尺寸：控制层按设置决定要不要留白，
+     * 不跟随系统栏临时滑出／滑入而跳动。挖孔不属于系统栏，取当前值。
+     */
+    private fun insetsRect(insets: WindowInsetsCompat?, type: Int, ignoringVisibility: Boolean): Map<String, Int> {
+        val value = when {
+            insets == null -> Insets.NONE
+            ignoringVisibility -> insets.getInsetsIgnoringVisibility(type)
+            else -> insets.getInsets(type)
+        }
+        return mapOf("left" to value.left, "top" to value.top, "right" to value.right, "bottom" to value.bottom)
+    }
     fun onKey(event: KeyEvent): Boolean {
         if (!volumeKeys || (event.keyCode != KeyEvent.KEYCODE_VOLUME_DOWN &&
             event.keyCode != KeyEvent.KEYCODE_VOLUME_UP)) return false
@@ -54,7 +67,7 @@ object ReadingWindow {
                         val diagnosticId = "${System.currentTimeMillis()}-$request"
                         val waitingForInsets = call.argument<Boolean>("waitForInsets") == true
                         fun save(event: String, details: Map<String, Any?> = emptyMap()) {
-                            if (waitingForInsets) ReaderExitLog.append(activity, mapOf(
+                            if (waitingForInsets) NativeDiagnosticLog.readerExit.append(activity, mapOf(
                                 "kind" to "readerExitNative", "id" to diagnosticId,
                                 "event" to event, "timeMs" to System.currentTimeMillis(),
                                 "elapsedMs" to SystemClock.uptimeMillis() - started,
@@ -141,6 +154,16 @@ object ReadingWindow {
                         }
                     }
                     "hasVolumeKeys" -> result.success(volumeKeys)
+                    // 状态栏、导航栏、挖孔分开返回，Flutter 控制层才能只留出
+                    // 当前显示的系统栏那一侧（隐藏顶部状态栏时挖孔也不再留白）。
+                    "barInsets" -> {
+                        val insets = ViewCompat.getRootWindowInsets(activity.window.decorView)
+                        result.success(mapOf(
+                            "status" to insetsRect(insets, WindowInsetsCompat.Type.statusBars(), true),
+                            "navigation" to insetsRect(insets, WindowInsetsCompat.Type.navigationBars(), true),
+                            "cutout" to insetsRect(insets, WindowInsetsCompat.Type.displayCutout(), false),
+                        ))
+                    }
                     "keepAwake" -> {
                         if (call.arguments == true) activity.window.addFlags(flag)
                         else activity.window.clearFlags(flag)

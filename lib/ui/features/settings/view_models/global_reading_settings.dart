@@ -23,20 +23,23 @@ class GlobalSettingsNotifier extends AsyncNotifier<GlobalReadingPreferences> {
     );
   }
 
-  Future<void> change(ReadingSettings Function(ReadingSettings) update) =>
-      _enqueue(() async {
-        final repo = ref.read(readingSettingsRepositoryProvider);
-        final next = update(await repo.loadGlobal() ?? kBuiltinReadingSettings);
-        await repo.saveGlobal(next);
-        if (ref.mounted) {
-          state = AsyncData(
-            GlobalReadingPreferences(
-              typography: next,
-              themeId: await repo.loadThemeId(),
-            ),
-          );
-        }
-      });
+  Future<void> change(
+    ReadingSettings Function(ReadingSettings) update, {
+    Future<void> Function(ReadingSettings)? prepare,
+  }) => _enqueue(() async {
+    final repo = ref.read(readingSettingsRepositoryProvider);
+    final next = update(await repo.loadGlobal() ?? kBuiltinReadingSettings);
+    await prepare?.call(next);
+    await repo.saveGlobal(next);
+    if (ref.mounted) {
+      state = AsyncData(
+        GlobalReadingPreferences(
+          typography: next,
+          themeId: await repo.loadThemeId(),
+        ),
+      );
+    }
+  });
 
   Future<void> theme(String themeId) => _enqueue(() async {
     final repo = ref.read(readingSettingsRepositoryProvider);
@@ -71,5 +74,38 @@ class GlobalSettingsNotifier extends AsyncNotifier<GlobalReadingPreferences> {
     // 单次失败交给界面提示，之后的修改仍然能够重试。
     _writing = operation.catchError((Object _) {});
     return operation;
+  }
+}
+
+/// 阅读窗口亮度独立于排版保存；所有打开的阅读器订阅同一份值。
+typedef ReadingBrightness = ({double? value, double? custom});
+final globalBrightnessProvider =
+    AsyncNotifierProvider<GlobalBrightnessNotifier, ReadingBrightness>(
+      GlobalBrightnessNotifier.new,
+    );
+
+class GlobalBrightnessNotifier extends AsyncNotifier<ReadingBrightness> {
+  Future<void> _writing = Future.value();
+  @override
+  Future<ReadingBrightness> build() async {
+    final repo = ref.watch(readingSettingsRepositoryProvider);
+    return (
+      value: await repo.loadBrightness(null),
+      custom: await repo.loadCustomBrightness(null),
+    );
+  }
+
+  Future<void> set(double? value) {
+    final action = _writing.then((_) async {
+      final repo = ref.read(readingSettingsRepositoryProvider);
+      await repo.saveBrightness(null, value);
+      final next = (
+        value: await repo.loadBrightness(null),
+        custom: await repo.loadCustomBrightness(null),
+      );
+      if (ref.mounted) state = AsyncData(next);
+    });
+    _writing = action.catchError((Object _) {});
+    return action;
   }
 }

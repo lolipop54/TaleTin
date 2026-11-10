@@ -57,6 +57,7 @@ import '../view_models/reader_highlights.dart';
 import '../view_models/reader_view_model.dart';
 import 'original_body.dart';
 import 'original_preload_gate.dart';
+import 'original_neighbor_readiness.dart';
 import 'reader_display_transition.dart';
 import 'page_information.dart';
 import 'original_curl_area.dart';
@@ -67,6 +68,7 @@ import 'turn_trace.dart';
 import 'page_canvas.dart' show kSelectionHighlight;
 import 'selection_actions.dart';
 import 'thought_popover.dart';
+import 'footnote_popover.dart';
 import 'selection_handles.dart'
     show
         fingerPushedOut,
@@ -280,9 +282,7 @@ class _OriginalReaderAreaState extends ConsumerState<OriginalReaderArea>
   /// 每个槽（按章序号）各自的命令入口。
   /// 三章共用一个 WebView；命令按章节加载编号进入对应 iframe。
   final _hosts = <int, OriginalHostController>{};
-  final _pageReady = <int, Completer<bool>>{};
-  final _neighborBoundaryFlights =
-      <(OriginalHostController, int, int), Future<bool>>{};
+  final _neighborReadiness = OriginalNeighborReadiness();
 
   /// 当前页的命令入口；还没就绪时为 null（命令会被忽略）
   OriginalHostController? get _host => _hosts[widget.session.chapterIndex];
@@ -781,6 +781,10 @@ class _OriginalReaderAreaState extends ConsumerState<OriginalReaderArea>
     if (!mounted || host != _host) return true;
     if (await _openHighlightAt(point, hit: hit)) return true;
     if (await _openImage(point, hit: hit)) return true;
+    if (hit.footnote != null && hit.footnote!.isNotEmpty) {
+      await _openFootnote(hit.footnote!, localPoint: point);
+      return true;
+    }
     return hit.link != null && hit.link!.isNotEmpty
         ? host.activateLink(_toViewport(point), knownLink: hit.link)
         : false;

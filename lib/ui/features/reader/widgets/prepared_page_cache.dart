@@ -18,6 +18,7 @@ class PreparedPageCache {
     page.layout.contentVersion,
     page.layout.page(page.pageIndex),
     configuration,
+    page.formulaColor,
   );
 
   int get bytes => _pages.values.fold(0, (sum, page) => sum + page.imageBytes);

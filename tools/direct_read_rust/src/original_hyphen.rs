@@ -1,6 +1,6 @@
 // Copyright (c) 2026 GT Reader contributors. MIT license, see LICENSE.
-use std::collections::HashMap;
 use std::borrow::Cow;
+use std::collections::HashMap;
 
 #[derive(Default)]
 struct Pattern {
@@ -105,8 +105,12 @@ impl English {
                 split.extend(self.breaks(&text[start..at]).iter().map(|i| start + i));
             }
         }
-        if self.cache.len() > 1024 { self.cache.clear(); }
-        if split.is_empty() { return (Cow::Borrowed(text), Vec::new()); }
+        if self.cache.len() > 1024 {
+            self.cache.clear();
+        }
+        if split.is_empty() {
+            return (Cow::Borrowed(text), Vec::new());
+        }
         let mut result = String::with_capacity(text.len() + split.len() * 2);
         let mut positions = Vec::new();
         let mut units = 0;

@@ -24,13 +24,10 @@ class StatusInfoVisibleNotifier extends AsyncNotifier<bool> {
 
 final statusInfoVisibleProvider =
     AsyncNotifierProvider<StatusInfoVisibleNotifier, bool>(
-  StatusInfoVisibleNotifier.new,
-);
+      StatusInfoVisibleNotifier.new,
+    );
 
-/// 排版模式的**全局默认值**（设计文档 2.3：单书覆盖 > 全局默认 > 内置默认）。
-///
-/// 阅读页面板里改的是「本书覆盖」；这里改的是全局默认值，之后新打开的书
-/// 都从它起步。没设置过时按内置默认（简化排版）。
+/// 阅读器和设置页共用全局排版模式，未设置时使用内置简化模式。
 class GlobalLayoutModeNotifier extends AsyncNotifier<ReadingLayoutMode> {
   @override
   Future<ReadingLayoutMode> build() async {
@@ -43,25 +40,33 @@ class GlobalLayoutModeNotifier extends AsyncNotifier<ReadingLayoutMode> {
     final next = (state.value ?? ReadingLayoutMode.simplified).isOriginal
         ? ReadingLayoutMode.simplified
         : ReadingLayoutMode.original;
-    await ref.read(globalSettingsProvider.notifier).change((s) => s.copyWith(layoutMode: next));
+    await ref
+        .read(globalSettingsProvider.notifier)
+        .change((s) => s.copyWith(layoutMode: next));
   }
 }
 
 final globalLayoutModeProvider =
     AsyncNotifierProvider<GlobalLayoutModeNotifier, ReadingLayoutMode>(
-  GlobalLayoutModeNotifier.new,
-);
+      GlobalLayoutModeNotifier.new,
+    );
 
-/// 五种翻页方式共用同一个保存字段，本书有覆盖时仍优先使用本书设置。
+/// 五种翻页方式共用全局保存字段。
 class GlobalPageTurnNotifier extends AsyncNotifier<PageTurnEffect> {
   @override
   Future<PageTurnEffect> build() async =>
-      (await ref.watch(globalSettingsProvider.future)).typography.pageTurnEffect;
+      (await ref.watch(globalSettingsProvider.future))
+          .typography
+          .pageTurnEffect;
 
   Future<void> select(PageTurnEffect effect) async {
-    await ref.read(globalSettingsProvider.notifier).change((s) => s.copyWith(pageTurnEffect: effect));
+    await ref
+        .read(globalSettingsProvider.notifier)
+        .change((s) => s.copyWith(pageTurnEffect: effect));
   }
 }
 
-final globalPageTurnProvider = AsyncNotifierProvider<GlobalPageTurnNotifier,
-    PageTurnEffect>(GlobalPageTurnNotifier.new);
+final globalPageTurnProvider =
+    AsyncNotifierProvider<GlobalPageTurnNotifier, PageTurnEffect>(
+      GlobalPageTurnNotifier.new,
+    );
