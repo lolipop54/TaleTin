@@ -10,6 +10,7 @@ import '../models/book.dart';
 import '../models/book_document.dart';
 import '../models/import_job.dart';
 import '../models/locator.dart';
+import '../models/source_position_preparation.dart';
 
 /// 格式探测输入：文件头若干字节 + 大小 + 名称。
 ///
@@ -64,6 +65,7 @@ class ParseRequest {
     this.txt,
     this.indexedContent = false,
     this.locationAnchors = const [],
+    this.txtPositionHints,
   });
 
   /// 已探测出的真实格式
@@ -86,6 +88,7 @@ class ParseRequest {
   /// 正式导入只保存来源索引；旧文件比对和兼容测试仍可生成章节文件。
   final bool indexedContent;
   final List<Locator> locationAnchors;
+  final TxtSourcePositionHints? txtPositionHints;
 }
 
 /// 解析进度回调：0–1；null 表示无法估算，界面显示不定进度。

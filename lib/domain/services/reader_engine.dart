@@ -12,6 +12,7 @@ import '../../engine/layout/layout_options.dart';
 import '../../engine/selection/selection_rects.dart';
 import '../models/book_document.dart';
 import '../models/locator.dart';
+import 'txt_chapter_sections.dart';
 
 /// 一次排版请求的全部输入。
 ///
@@ -22,16 +23,32 @@ class LayoutRequest {
     required this.bookId,
     required this.contentVersion,
     required this.chapter,
-    required this.content,
+    required this._content,
     required this.options,
     this.targetFirst = false,
     this.allowPageRestart = false,
-  });
+  }) : txtSections = null,
+       chapterOffset = null;
+
+  const LayoutRequest.txtSections({
+    required this.bookId,
+    required this.contentVersion,
+    required this.chapter,
+    required TxtChapterSource source,
+    required this.options,
+    this.targetFirst = false,
+    this.chapterOffset,
+  }) : txtSections = source,
+       _content = null,
+       allowPageRestart = false;
 
   final String bookId;
   final int contentVersion;
   final Chapter chapter;
-  final ChapterContent content;
+  final ChapterContent? _content;
+  ChapterContent get content => _content!;
+  final TxtChapterSource? txtSections;
+  final int? chapterOffset;
 
   /// 排版参数（设置 + 内容区尺寸 + TextScaler）
   final LayoutOptions options;
@@ -98,10 +115,8 @@ abstract class ReaderEngine {
   /// 一页的首/末文本位置（拖出手柄到页沿时先把选区铺到这一页）。
   Locator? pageEdge(ChapterLayout layout, int pageIndex, {required bool atEnd});
 
-  /// 内容盒里的一点 → 它所在的整句（长按起选用）。
-  ///
-  /// 按句起选比按行起选更接近用户想选的东西；之后靠手柄逐字调整。
-  ({Locator start, Locator end})? sentenceRangeAtPoint(
+  /// 内容盒里的一点 → 命中的字或词（长按起选用）。
+  Future<({Locator start, Locator end})?> initialSelectionAtPoint(
     ChapterLayout layout,
     int pageIndex,
     Offset position,

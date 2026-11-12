@@ -85,26 +85,38 @@ mixin _ReaderSpeechFollow
     var content = session.content;
     if (layout == null || layout.chapterId != locator.chapterId) {
       log('contentBegin', {'targetChapter': index});
-      content = await ref
-          .read(chapterContentRepositoryProvider)
-          .chapter(bookId, session.chapters[index]);
-      if (request != _speechRequest || !ref.mounted) {
-        log('sessionDiscard', {'stage': 'content'});
-        return;
+      final indexed = await _layoutIndexedTxt(
+        session,
+        index,
+        options,
+        target: locator,
+      );
+      if (request != _speechRequest || !ref.mounted) return;
+      if (indexed != null) {
+        layout = indexed;
+        content = null;
+      } else {
+        content = await ref
+            .read(chapterContentRepositoryProvider)
+            .chapter(bookId, session.chapters[index]);
+        if (request != _speechRequest || !ref.mounted) {
+          log('sessionDiscard', {'stage': 'content'});
+          return;
+        }
+        log('layoutBegin');
+        layout = await ref
+            .read(readerEngineProvider)
+            .layoutWindow(
+              LayoutRequest(
+                bookId: bookId,
+                contentVersion: session.book.contentVersion,
+                chapter: session.chapters[index],
+                content: content,
+                options: options,
+              ),
+              target: locator,
+            );
       }
-      log('layoutBegin');
-      layout = await ref
-          .read(readerEngineProvider)
-          .layoutWindow(
-            LayoutRequest(
-              bookId: bookId,
-              contentVersion: session.book.contentVersion,
-              chapter: session.chapters[index],
-              content: content,
-              options: options,
-            ),
-            target: locator,
-          );
     }
     if (!ref.mounted ||
         request != _speechRequest ||
@@ -141,7 +153,7 @@ mixin _ReaderSpeechFollow
         book: session.book,
         chapters: session.chapters,
         chapterIndex: index,
-        content: content,
+        content: layout.readsTxtBySection ? null : content,
         layout: layout,
         pageIndex: page,
         viewportSignature: options.layoutSignature,

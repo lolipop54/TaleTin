@@ -45,6 +45,7 @@ class _StorageState extends ConsumerState<StorageView> {
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(storageUsageProvider), data = state.value;
+    final installed = data?.installed;
     // 重试时 Riverpod 会保留上一次异常，但新的统计已经在进行，显示计算占位。
     final failed = state.hasError && !state.isLoading;
     return Scaffold(
@@ -72,11 +73,32 @@ class _StorageState extends ConsumerState<StorageView> {
                     padding: const EdgeInsets.all(20),
                     children: [
                       Text(
-                        '阅读数据 ${storageSize(data.totalBytes)}',
+                        '已统计占用 ${storageSize(data.totalBytes)}',
                         style: Theme.of(context).textTheme.titleLarge,
                       ),
-                      const Text('按应用私有目录内实际文件大小统计。'),
+                      const Text('按安装包和应用管理的文件大小统计。'),
                       const SizedBox(height: 16),
+                      if (installed != null) ...[
+                        ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('应用安装包'),
+                          subtitle: installed.bundledDictionaryBytes == 0
+                              ? null
+                              : Text(
+                                  '含随包词库 ${storageSize(installed.bundledDictionaryBytes)}',
+                                ),
+                          trailing: Text(storageSize(installed.packageBytes)),
+                        ),
+                        if (installed.bundledDictionaryBytes > 0 ||
+                            installed.extractedDictionaryBytes > 0)
+                          ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            title: const Text('已解压词库'),
+                            trailing: Text(
+                              storageSize(installed.extractedDictionaryBytes),
+                            ),
+                          ),
+                      ],
                       for (final entry in data.categories.entries)
                         ListTile(
                           contentPadding: EdgeInsets.zero,

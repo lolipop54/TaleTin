@@ -36,11 +36,26 @@ val keystoreProperties = Properties().apply {
 // 默认仍按 key.properties 走正式签名；调试签名包与正式签名包签名不一致，
 // 既不能覆盖安装正式包，正式包也不能覆盖它，升级前要先卸载。
 val debugSigningRequested = providers.gradleProperty("gtDebugSigning").orNull.toBoolean()
+val originalLayoutIncluded = rootProject.extra["gtIncludeOriginalLayout"] as Boolean
+val dartDefines = providers.gradleProperty("dart-defines").map { encoded ->
+    encoded.split(',').map { String(Base64.getDecoder().decode(it), Charsets.UTF_8) }
+}.orElse(emptyList())
+fun enabledByDefault(name: String) = dartDefines.map { defines ->
+    val value = defines.lastOrNull { it.startsWith("$name=") }?.substringAfter('=') ?: "true"
+    require(value == "true" || value == "false") { "$name 只能填写 true 或 false" }
+    value == "true"
+}
+val includeReadingFonts = enabledByDefault("GT_INCLUDE_PRESET_FONTS")
+val offlineDictionaryIncluded = enabledByDefault("GT_INCLUDE_OFFLINE_DICTIONARY").get()
 
 android {
     namespace = "com.example.gtreader"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
+    sourceSets.named("main") {
+        java.srcDir(if (originalLayoutIncluded) "src/originalLayout/kotlin" else "src/simplifiedLayout/kotlin")
+        java.srcDir(if (offlineDictionaryIncluded) "src/offlineDictionary/kotlin" else "src/noOfflineDictionary/kotlin")
+    }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -109,7 +124,7 @@ kotlin {
 
 dependencies {
     // 后台执行 WebView 启动中允许离开界面线程的部分，不创建空白页面预热。
-    implementation("androidx.webkit:webkit:1.16.0")
+    if (originalLayoutIncluded) implementation("androidx.webkit:webkit:1.16.0")
     // pigeon 生成的 Kotlin 代码用 suspend 函数回调 Dart（见 TtsApi.g.kt），
     // 需要协程运行时。这是编译期硬依赖，不是可选项：不加这一行
     // com.example.gtreader.tts.TtsApi.g.kt 根本编译不过。
@@ -121,11 +136,19 @@ flutter {
 }
 
 // 固定当前引擎的单类补丁；只有原书滚动会显式开启新的绘制调度。
-apply(from = "../texture_draw_patch/patch.gradle")
+if (originalLayoutIncluded) apply(from = "../texture_draw_patch/patch.gradle")
 
 // 在 Android 合并资产后生成独立副本，不修改 pubspec 或 Flutter 的共享产物。
-// 使用同一个 dart-define 控制界面与 APK；切回默认构建时字体自动恢复打包。
-abstract class FilterReadingFontAssets : DefaultTask() {
+// 开关是任务输入，连续构建不同配置时会重新生成对应资源。
+abstract class FilterReaderAssets : DefaultTask() {
+    companion object {
+        const val dictionaryDirectory = "flutter_assets/assets/dictionary/"
+        val dictionaryLicenses = listOf(
+            "flutter_assets/assets/licenses/Offline-dictionary-sources.txt",
+            "flutter_assets/assets/licenses/Wiktionary-CC-BY-SA-4.0.txt",
+        )
+    }
+
     @get:InputDirectory
     @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val mergedAssets: DirectoryProperty
@@ -133,6 +156,10 @@ abstract class FilterReadingFontAssets : DefaultTask() {
     abstract val filteredAssets: DirectoryProperty
     @get:Input
     abstract val includePresetFonts: Property<Boolean>
+    @get:Input
+    abstract val includeOriginalLayout: Property<Boolean>
+    @get:Input
+    abstract val includeOfflineDictionary: Property<Boolean>
     @get:Inject
     abstract val fileOperations: FileSystemOperations
 
@@ -142,6 +169,11 @@ abstract class FilterReadingFontAssets : DefaultTask() {
         fileOperations.sync {
             from(mergedAssets)
             into(filteredAssets)
+            if (!includeOriginalLayout.get()) exclude("flutter_assets/assets/webview/**")
+            if (!includeOfflineDictionary.get()) {
+                exclude("$dictionaryDirectory**")
+                exclude(dictionaryLicenses)
+            }
             if (!include) {
                 exclude("flutter_assets/assets/fonts/preset/**")
                 exclude("flutter_assets/assets/fonts/preview/**")
@@ -159,32 +191,23 @@ abstract class FilterReadingFontAssets : DefaultTask() {
     }
 }
 
-val includeReadingFonts = providers.gradleProperty("dart-defines").map { encoded ->
-    val value = encoded.split(',').map {
-        String(Base64.getDecoder().decode(it), Charsets.UTF_8)
-    }.lastOrNull { it.startsWith("GT_INCLUDE_PRESET_FONTS=") }
-        ?.substringAfter('=') ?: "true"
-    require(value == "true" || value == "false") {
-        "GT_INCLUDE_PRESET_FONTS 只能填写 true 或 false"
-    }
-    value == "true"
-}.orElse(true)
-
 androidComponents.onVariants { variant ->
     // APK 增量更新会留下被移除模型的空槽，ZIP 清单虽然干净，包体仍然偏大。
     // 禁用这一最终任务的增量输入，重新生成紧凑 APK；前面的编译与资产处理仍复用缓存。
     tasks.matching { it.name == "package${variant.name.replaceFirstChar { it.uppercase() }}" }
         .configureEach { outputs.upToDateWhen { false } }
-    val filterTask = tasks.register<FilterReadingFontAssets>(
-        "filter${variant.name.replaceFirstChar { it.uppercase() }}ReadingFontAssets"
+    val filterTask = tasks.register<FilterReaderAssets>(
+        "filter${variant.name.replaceFirstChar { it.uppercase() }}ReaderAssets"
     ) {
         // Flutter 额外向合并资产目录写入文件；必须等它复制完成再过滤。
         dependsOn("copyFlutterAssets${variant.name.replaceFirstChar { it.uppercase() }}")
         includePresetFonts.set(includeReadingFonts)
-        filteredAssets.set(layout.buildDirectory.dir("filtered_font_assets/${variant.name}"))
+        includeOriginalLayout.set(originalLayoutIncluded)
+        includeOfflineDictionary.set(offlineDictionaryIncluded)
+        filteredAssets.set(layout.buildDirectory.dir("filtered_reader_assets/${variant.name}"))
     }
     variant.artifacts.use(filterTask)
-        .wiredWithDirectories(FilterReadingFontAssets::mergedAssets, FilterReadingFontAssets::filteredAssets)
+        .wiredWithDirectories(FilterReaderAssets::mergedAssets, FilterReaderAssets::filteredAssets)
         .toTransform(SingleArtifact.ASSETS)
 }
 
@@ -232,6 +255,47 @@ val verifyReleaseApk = tasks.register("verifyReleaseApk") {
                         it.name.endsWith("/libsherpa-onnx-jni.so")
                 }.map { it.name }.toList()
                 check(retiredTts.isEmpty()) { "${apk.name} 仍包含已移除的内置 TTS 资源：${retiredTts.joinToString()}" }
+                val originalAssets = zip.entries().asSequence().any {
+                    !it.isDirectory && it.name.startsWith("assets/flutter_assets/assets/webview/")
+                }
+                val originalShell = zip.getEntry("assets/flutter_assets/assets/webview/paged_host.html")
+                check(if (originalLayoutIncluded) (originalShell?.size ?: 0L) > 0L else !originalAssets) {
+                    "${apk.name} 的原书排版资源与 GT_INCLUDE_ORIGINAL_LAYOUT 参数不一致"
+                }
+                val dictionaryFiles = zip.entries().asSequence().filter {
+                    !it.isDirectory && it.name.startsWith("assets/${FilterReaderAssets.dictionaryDirectory}")
+                }.toList()
+                val dictionaryLicenses = FilterReaderAssets.dictionaryLicenses.map { zip.getEntry("assets/$it") }
+                check(if (offlineDictionaryIncluded) {
+                    dictionaryFiles.size == 2 && listOf("chinese-offline-", "english-offline-").all { prefix ->
+                        dictionaryFiles.any {
+                            it.name.substringAfterLast('/').startsWith(prefix) &&
+                                it.name.endsWith(".sqlite.gz") && it.size > 0L
+                        }
+                    } && dictionaryLicenses.all { (it?.size ?: 0L) > 0L }
+                } else dictionaryFiles.isEmpty() && dictionaryLicenses.all { it == null }) {
+                    "${apk.name} 的离线词库或许可与 GT_INCLUDE_OFFLINE_DICTIONARY 参数不一致"
+                }
+                // 检查实际编入 DEX 的类，而不是 Flutter 自动注册用的空入口。
+                val originalClasses = setOf(
+                    "Lcom/example/gtreader/OriginalWebViewStartup;",
+                    "Lcom/pichillilorenzo/flutter_inappwebview_android/webview/in_app_webview/InAppWebView;",
+                )
+                val dictionaryClass = "Lcom/example/gtreader/OfflineDictionary;"
+                val optionalClasses = originalClasses + dictionaryClass
+                val expectedClasses = buildSet {
+                    if (originalLayoutIncluded) addAll(originalClasses)
+                    if (offlineDictionaryIncluded) add(dictionaryClass)
+                }
+                val found = mutableSetOf<String>()
+                zip.entries().asSequence().filter { it.name.matches(Regex("classes[0-9]*\\.dex")) }
+                    .forEach { entry ->
+                        val dex = zip.getInputStream(entry).use { String(it.readBytes(), Charsets.ISO_8859_1) }
+                        found += optionalClasses.filter { it in dex }
+                    }
+                check(found == expectedClasses) {
+                    "${apk.name} 的原书排版或离线查词 Android 代码与打包参数不一致"
+                }
                 // 检查真正装进包的文件，避免开关仅隐藏字体列表却没减少包体。
                 val presetFiles = zip.entries().asSequence().filter {
                     it.name.startsWith("assets/flutter_assets/assets/fonts/preset/") ||

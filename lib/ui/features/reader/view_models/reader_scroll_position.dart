@@ -48,13 +48,32 @@ mixin _ReaderScrollPosition on AsyncNotifier<ReaderSession> {
     final session = state.value;
     if (session == null) return;
     final chapter = session.chapters[index];
-    final content = await ref
-        .read(chapterContentRepositoryProvider)
-        .chapter(
-          bookId,
-          chapter,
-          textOnly: session.book.format == BookFormat.pdf && _mode.isOriginal,
-        );
+    final contents = ref.read(chapterContentRepositoryProvider);
+    final source = session.book.format == BookFormat.txt
+        ? await contents.txtChapterSource(bookId, chapter)
+        : null;
+    if (!ref.mounted || request != _chapterRequest) return;
+    final offset = (chapter.textLength * fraction.clamp(0.0, 1.0)).round();
+    if (source != null && offset == 0) {
+      requestScrollPosition(
+        Locator(
+          bookId: bookId,
+          contentVersion: session.book.contentVersion,
+          chapterId: chapter.id,
+          blockId: 'b1',
+          utf16Offset: 0,
+        ),
+      );
+      return;
+    }
+    final section = source?.forOffset(offset);
+    final content = await (section != null
+        ? source!.readSection(section)
+        : contents.chapter(
+            bookId,
+            chapter,
+            textOnly: session.book.format == BookFormat.pdf && _mode.isOriginal,
+          ));
     if (!ref.mounted || request != _chapterRequest) return;
     // 扫描页只有图片，没有可表示页尾的文字偏移；原页滚动直接保留纵向比例。
     final locator = session.book.format == BookFormat.pdf && _mode.isOriginal
@@ -70,7 +89,10 @@ mixin _ReaderScrollPosition on AsyncNotifier<ReaderSession> {
             bookId: bookId,
             contentVersion: session.book.contentVersion,
             chapterId: chapter.id,
-            fraction: fraction,
+            fraction: section == null
+                ? fraction
+                : (offset - source!.starts[section].textOffset) /
+                      content.textLength,
           );
     if (locator != null) requestScrollPosition(locator);
   }
@@ -135,6 +157,7 @@ mixin _ReaderScrollPosition on AsyncNotifier<ReaderSession> {
     ChapterContent content,
     Locator anchor, {
     int? jumpToken,
+    int? sectionOffset,
     bool atEnd = false,
   }) {
     final session = state.value;
@@ -147,6 +170,7 @@ mixin _ReaderScrollPosition on AsyncNotifier<ReaderSession> {
         chapterIndex: index,
         pdfAtEnd: session.book.format == BookFormat.pdf && atEnd,
         content: content,
+        scrollSectionOffset: sectionOffset,
         scrollAnchor: anchor,
         clearOriginalPosition: true,
       ),

@@ -167,7 +167,7 @@
     insets: function() { return 48 + (data ? data.top + data.bottom : 0); },
     move: function(state, dx, animate, duration) {
       render(state);
-      track.style.transition = animate ? 'transform ' + (duration || 200) + 'ms cubic-bezier(0.215, 0.61, 0.355, 1)' : 'none';
+      track.style.transition = animate ? 'transform ' + duration + 'ms cubic-bezier(0.215, 0.61, 0.355, 1)' : 'none';
       track.style.transform = 'translateX(' + (-state.page * state.width + dx) + 'px)';
     }
   };

@@ -7,7 +7,7 @@ import 'locator.dart';
 const sourcePositionRulesRevision = 1;
 
 /// 记录自动章题检查是否已完成，和书的实际切章规则分别保存。
-const txtHeadingRulesRevision = 2;
+const txtHeadingRulesRevision = 4;
 const txtSectionFallbackWarning = '未识别到章节标题，已按固定长度分成小节';
 
 String sourcePositionRules(
@@ -17,6 +17,7 @@ String sourcePositionRules(
   bool forceSections = false,
   bool usesIndentedTxtHeadings = false,
   bool usesCombinedTxtHeadings = false,
+  int txtRevision = txtHeadingRulesRevision,
 }) => jsonEncode([
   sourcePositionRulesRevision,
   kContentVersion,
@@ -24,6 +25,11 @@ String sourcePositionRules(
   if (format == 'mobi' || format == 'azw3') 'libmobi90627420-publication1',
   if (format == 'pdf') 'pdf-text-and-page-map1',
   if (format == 'txt') ...[charset, chapterPattern, forceSections],
+  if (format == 'txt' &&
+      chapterPattern == null &&
+      !forceSections &&
+      txtRevision >= 3)
+    'auto-txt-headings$txtRevision',
   if (usesIndentedTxtHeadings) 'indented-txt-headings1',
   if (usesCombinedTxtHeadings) 'combined-txt-headings1',
 ]);
@@ -48,9 +54,21 @@ class SourcePositionProof {
 }
 
 class SourcePositionPreparation {
-  const SourcePositionPreparation({this.proof, this.anchors = const []});
+  const SourcePositionPreparation({
+    this.proof,
+    this.anchors = const [],
+    this.txtHints,
+  });
   final SourcePositionProof? proof;
   final List<Locator> anchors;
+  final TxtSourcePositionHints? txtHints;
+}
+
+/// 旧 TXT 索引里的原字节范围，只用于原文件和编码都未变化的重排。
+class TxtSourcePositionHints {
+  const TxtSourcePositionHints(this.digest, this.charset, this.positions);
+  final String digest, charset;
+  final List<({Locator anchor, int start, int end})> positions;
 }
 
 typedef LoadSourcePositions = Future<SourcePositionPreparation> Function(

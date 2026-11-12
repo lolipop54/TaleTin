@@ -18,9 +18,9 @@ enum ReadingLayoutMode {
 
   const ReadingLayoutMode(this.code);
 
+  // Android 打包也只在显式传 true 时加入原书排版专用内容。
   static const originalIncluded = bool.fromEnvironment(
     'GT_INCLUDE_ORIGINAL_LAYOUT',
-    defaultValue: true,
   );
 
   final String code;

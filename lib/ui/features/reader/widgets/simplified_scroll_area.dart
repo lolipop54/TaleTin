@@ -129,16 +129,24 @@ class SimplifiedScrollAreaState extends ConsumerState<SimplifiedScrollArea>
       load: (chapter) => ref
           .read(chapterContentRepositoryProvider)
           .chapter(widget.bookId, chapter),
+      loadTxtSections: widget.session.book.format == BookFormat.txt
+          ? (chapter) => ref
+                .read(chapterContentRepositoryProvider)
+                .txtChapterSource(widget.bookId, chapter)
+          : null,
       prepareFonts: ref.read(publicationFontLoaderProvider).prepare,
       onPosition: (content, anchor, token) {
         if (mounted) {
+          final entry = _window.visible()?.entry;
           if (_session.reportScrollPosition(
             content,
             anchor,
             jumpToken: token,
+            sectionOffset: entry != null && entry.sectioned
+                ? entry.textOffset
+                : null,
             atEnd:
-                _window.entries.last.index ==
-                    widget.session.chapters.length - 1 &&
+                _window.reachesBookEnd &&
                 _window.controller.offset >=
                     _window.controller.position.maxScrollExtent - .5,
           )) {
@@ -345,8 +353,7 @@ class SimplifiedScrollAreaState extends ConsumerState<SimplifiedScrollArea>
                 }
                 if (event is ScrollEndNotification && !_autoTicker.isActive) {
                   if (_completionDrag &&
-                      _window.entries.last.index ==
-                          widget.session.chapters.length - 1 &&
+                      _window.reachesBookEnd &&
                       event.metrics.extentAfter < 1) {
                     ref.read(readerProvider.notifier).showNotice('已到全书末尾');
                   }
@@ -360,6 +367,7 @@ class SimplifiedScrollAreaState extends ConsumerState<SimplifiedScrollArea>
                 bookId: widget.bookId,
                 backend: _selectionBackend,
                 theme: widget.settings.theme,
+                enableDictionary: true,
                 child: ListView.custom(
                   key: const ValueKey('continuous-text'),
                   controller: _window.controller,

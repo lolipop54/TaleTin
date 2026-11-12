@@ -9,14 +9,18 @@ class _LazyMeasuredBlocks implements MeasuredBlockSource {
     required this.cacheEnabled,
     required DisplayTree displayTree,
     this.rowBase = 0,
+    int startBlock = 0,
+    int? endBlock,
+    this.includeChapterTitle = true,
   }) : measurementCache = cache,
+       _cursor = startBlock,
+       _endBlock = endBlock ?? content.blocks.length,
        measurer = BlockMeasurer(
          options,
          styleTable: ChapterStyler.layoutTableOf(content),
          displayTree: displayTree,
          cache: cache,
        ) {
-    _byId = {for (final b in content.blocks) b.id: b};
     _tables = {for (final t in content.tables) t.blockIds.first: t};
     _tableIds = content.tables.expand((t) => t.blockIds).toSet();
     _parallel = ParallelFlowLayout(
@@ -26,6 +30,7 @@ class _LazyMeasuredBlocks implements MeasuredBlockSource {
       options,
     );
     _contentTitle =
+        includeChapterTitle &&
         options.insertChapterTitle &&
         ChapterLayout.firstBlockIsChapterTitle(content, chapter.title);
   }
@@ -35,6 +40,7 @@ class _LazyMeasuredBlocks implements MeasuredBlockSource {
   final BlockMeasurer measurer;
   final BlockMeasurementCache? measurementCache;
   final bool cacheEnabled;
+  final bool includeChapterTitle;
   final int rowBase;
   final values = <MeasuredBlock>[];
   final consumedBefore = <int>[0];
@@ -45,12 +51,13 @@ class _LazyMeasuredBlocks implements MeasuredBlockSource {
   int encodedThrough = 0;
   bool deferCheckpointEncoding = false;
   int measureUs = 0, encodeUs = 0;
-  late final Map<String, ContentBlock> _byId;
+  late final _byId = {for (final b in content.blocks) b.id: b};
   late final Map<String, ContentTable> _tables;
   late final Set<String> _tableIds;
   late final ParallelFlowLayout _parallel;
   late final bool _contentTitle;
-  var _cursor = 0;
+  int _cursor;
+  final int _endBlock;
   bool _started = false;
   bool _exhausted = false;
   int _requested = -1;
@@ -147,7 +154,7 @@ class _LazyMeasuredBlocks implements MeasuredBlockSource {
   }
 
   bool _measureNextBlock() {
-    if (_cursor >= content.blocks.length) {
+    if (_cursor >= _endBlock) {
       if (!_exhausted) {
         for (final empty in measurer.measureBefore(content.blocks.length)) {
           _queue(empty, sourceCursor: _cursor);
@@ -197,8 +204,8 @@ class _LazyMeasuredBlocks implements MeasuredBlockSource {
         sourceCursor: _cursor,
       );
     }
-    if (_cursor >= content.blocks.length) {
-      for (final empty in measurer.measureBefore(content.blocks.length)) {
+    if (_cursor >= _endBlock) {
+      for (final empty in measurer.measureBefore(_endBlock)) {
         _queue(empty, sourceCursor: _cursor);
       }
       _exhausted = true;
@@ -258,7 +265,9 @@ class _LazyMeasuredBlocks implements MeasuredBlockSource {
       _started = true;
       // PDF的章节只是用于定位的物理页，不把“第N页”插入电子书正文。
       // 章题和短横线只给 TXT 补；其他格式尊重原书，不插入任何标题。
-      if (options.insertChapterTitle &&
+      if (_cursor == 0 &&
+          includeChapterTitle &&
+          options.insertChapterTitle &&
           content.pdfPage == null &&
           !_contentTitle &&
           chapter.title.trim().isNotEmpty) {

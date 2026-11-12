@@ -4,6 +4,7 @@ import 'package:taletin/ui/core/widgets/gt_dialog_action.dart';
 
 import 'dart:async';
 
+import '../../../../core/diagnostics/reader_turn_state_diagnostics.dart';
 import '../../../../core/diagnostics/reader_work_trace.dart';
 
 import '../widgets/completion_prompt.dart';

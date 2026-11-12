@@ -9,6 +9,7 @@ library;
 import '../models/book_document.dart';
 import '../models/locator.dart';
 import '../services/toc_entry_index.dart';
+import '../services/txt_chapter_sections.dart';
 
 typedef TocLocations = ({
   Map<String, Map<String, double?>> anchors,
@@ -59,6 +60,12 @@ abstract class ChapterContentRepository {
     Chapter chapter,
   ) => this.chapter(bookId, chapter);
 
+  /// 有可靠的小节字节位置时，简化分页可以按节读取。旧格式仍按章读取。
+  Future<TxtChapterSource?> txtChapterSource(
+    String bookId,
+    Chapter chapter,
+  ) async => null;
+
   /// 阅读窗口持有的章节不参与图片回收；空列表释放该窗口的保护。
   /// 文件仓库只登记已有/即将生成的资料，不在这里渲染邻页。
   Future<void> retainReadingChapters(
@@ -80,6 +87,17 @@ abstract class ChapterContentRepository {
 
   /// 读取嵌套目录（`manifest.json`）；没有目录时返回空列表，界面降级为平铺。
   Future<List<TocNode>> toc(String bookId, int contentVersion);
+
+  /// 目录的可展开小节。调用方只传入需要分节的 TXT 章节。
+  Future<Map<String, List<TxtTocSection>>> txtTocSections(
+    String bookId,
+    List<Chapter> chapters,
+  ) async => {
+    for (final entry in chapters)
+      entry.id: TxtChapterSections.tocOf(
+        await chapter(bookId, entry, textOnly: true),
+      ),
+  };
 
   /// Small locations from the same manifest as the TOC. The reading session has
   /// already verified its current source before preparing progress titles.

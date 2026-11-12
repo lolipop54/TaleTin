@@ -11,11 +11,13 @@
 /// 落在图片或空白上时一律返回 null，由调用方按「没有选中」处理。
 library;
 
+import 'package:characters/characters.dart';
+
 import '../../domain/models/book_document.dart';
 import '../../domain/models/locator.dart';
 import '../normalization/locator_mapper.dart';
-import '../normalization/sentence_splitter.dart';
 import '../parsers/epub/locator_dom_point.dart';
+import 'initial_text_range.dart';
 
 /// 原书页面上的一点在 DOM 里的位置：`{path, offset}`
 typedef DomPoint = Map<String, Object?>;
@@ -52,32 +54,36 @@ class OriginalSelectionMap {
     }
   }
 
-  /// 长按起选：这一点所在的**整句**（块内切句，不跨块、不跨段）。
-  ///
-  /// 按句起选比按行起选更接近用户想选的东西；之后靠手柄逐字调整。
-  /// 切不出句子（纯空白块、只有标点的块）时退回这一点的单字范围。
-  ({Locator start, Locator end})? sentenceAt(DomPoint point) {
+  /// 用实际命中的 DOM 字符在原文里找起选范围。
+  Future<({Locator start, Locator end})?> initialRangeAt(DomPoint point) async {
     final locator = locatorAt(point);
     if (locator == null) return null;
     final block = _blockOf(locator.blockId);
     if (block == null) return null;
-    final spans = splitSentences(blockTextOf(block));
-    if (spans.isEmpty) {
-      final end = (locator.utf16Offset + 1).clamp(0, blockTextOf(block).length);
-      return (
-        start: mapper.at(block, locator.utf16Offset),
-        end: mapper.at(block, end),
-      );
+    final text = blockTextOf(block);
+    final hit = locator.utf16Offset;
+    // 内联标签边缘的空格有时只留在原书网页里。把它们当作词边界，
+    // 避免将网页上隔开的文字拼成一个词。
+    var lower = 0, upper = text.length;
+    void splitAt(int offset) {
+      if (offset > lower && offset <= hit) lower = offset;
+      if (offset > hit && offset < upper) upper = offset;
     }
-    // 偏移落在块末（等于整块长度）时 sentenceIndexAt 会返回句子数，取最后一句
-    final index = sentenceIndexAt(
-      spans,
-      locator.utf16Offset,
-    ).clamp(0, spans.length - 1);
-    final span = spans[index];
+
+    for (final run in map.textRuns(block.id)) {
+      if (run.end < lower || run.start > upper) continue;
+      if (run.text.trimLeft().length < run.text.length) splitAt(run.start);
+      if (run.text.trimRight().length < run.text.length) splitAt(run.end);
+    }
+    final range = await initialTextRange(
+      text,
+      hit,
+      within: (start: lower, end: upper),
+    );
+    if (range == null) return null;
     return (
-      start: mapper.at(block, span.start),
-      end: mapper.at(block, span.end),
+      start: mapper.at(block, range.start),
+      end: mapper.at(block, range.end),
     );
   }
 
@@ -100,12 +106,17 @@ class OriginalSelectionMap {
   Locator? nextChar(Locator locator) {
     final block = _blockOf(locator.blockId);
     if (block == null) return null;
-    final length = blockTextOf(block).length;
-    if (locator.utf16Offset >= length) return locator;
-    return mapper.at(block, locator.utf16Offset + 1);
+    final text = blockTextOf(block);
+    final offset = locator.utf16Offset;
+    if (offset >= text.length) return locator;
+    final character = CharacterRange.at(text, offset, offset + 1);
+    return mapper.at(
+      block,
+      character.stringBeforeLength + character.current.length,
+    );
   }
 
-  /// 把一点延伸到正文位置：拖动选区时按落点所在的字符（不是整句）定位。
+  /// 拖动端点用 DOM 插入点定位。
   Locator? pointLocatorAt(DomPoint point) => locatorAt(point);
 
   /// 块表查询：[content] 的块跟原书文字一一对应（建表时已核对）

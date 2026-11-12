@@ -1,0 +1,15 @@
+中文维基词典（Chinese Wiktionary），由维基词典贡献者编写。
+词条中的“维基词典 · 来源”链接按原词头指向对应原页面，页面历史记录列出贡献者。
+
+原始快照：2026-11-01 中文维基词典，经 Wiktextract 提取。
+https://zh.wiktionary.org/
+https://kaikki.org/zhwiktionary/rawdata.html
+https://github.com/tatuylonen/wiktextract
+
+TaleTin 从快照中提取中文和英文词条的词头、读音、中文义项、词性和词形关系，
+用 OpenCC 将中文词头及中英文词条的中文释义转为简体，保留原词头用于来源链接。
+去除重复项，增加简繁、大小写和词形查找索引，并整理成压缩 SQLite 文件。
+词库按 Creative Commons 署名—相同方式共享 4.0 国际许可分发。
+https://creativecommons.org/licenses/by-sa/4.0/deed.zh-hans
+https://creativecommons.org/licenses/by-sa/4.0/legalcode.en
+https://foundation.wikimedia.org/wiki/Policy:Terms_of_Use#7._Licensing_of_Content

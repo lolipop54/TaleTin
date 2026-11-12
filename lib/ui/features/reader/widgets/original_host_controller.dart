@@ -18,6 +18,7 @@ import '../../../../core/diagnostics/reader_turn_diagnostics.dart';
 import '../../../../core/diagnostics/reader_recovery_diagnostics.dart';
 import 'turn_trace.dart';
 import 'original_tap_target.dart';
+import 'reader_turn_timing.dart';
 export 'original_tap_target.dart';
 
 part 'original_host_startup.dart';
@@ -674,7 +675,7 @@ class OriginalHostController {
     double x,
     double y,
     String zone, {
-    int animationDurationMs = 200,
+    int animationDurationMs = readerTurnDurationMs,
   }) => _call(
     '__gt.tap(${x.round()}, ${y.round()}, "$zone", $animationDurationMs)',
   );

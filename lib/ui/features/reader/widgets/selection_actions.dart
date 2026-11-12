@@ -1,20 +1,23 @@
 /// 选中文字后的操作菜单（实现计划 S3）。
 ///
 /// 贴着选文摆：优先放在选区下方，下方空间不够就放到上方。
-/// 这段选文还没有标注时是「高亮 / 写想法」；已经有标注时是「颜色 / 编辑想法 / 删除」。
+/// 「复制」始终在第一项；含离线词库的构建在简化排版中接着显示「查词」。
 /// 点「颜色」就地展开色板（黄 / 蓝 / 绿 / 无底色），选一下直接改那条标注，
 /// 不重新弹一层菜单。
 ///
 /// 保存成功才收起选区；点正文空白处或按返回键都会先收起选区（设计文档 4.1）。
 library;
+
 import 'package:taletin/ui/core/widgets/gt_button.dart';
 
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../app/di/app_providers.dart';
+import '../../../../data/services/offline_dictionary.dart';
 import '../../../../domain/models/annotation.dart';
 import '../../../../domain/models/book_document.dart';
 import '../../../../domain/models/locator.dart';
@@ -22,16 +25,14 @@ import '../../../../engine/selection/selection_range.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/gt_tokens.dart';
 import '../../../core/theme/reading_theme.dart';
-import '../../../core/widgets/gt_icon.dart';
 import '../view_models/reader_session_view_model.dart';
 import '../view_models/reader_view_model.dart';
+import 'dictionary_popover.dart';
+import 'selection_action_menu.dart';
 
 /// 菜单与选区之间的间距：要留得下手柄（竖线 + 圆点），
 /// 不然菜单会盖住页末那一行的手柄，手柄就点不到了
 const double kSelectionMenuGap = 40;
-
-/// 一行菜单的高度（用于判断摆上方还是下方）
-const double kSelectionMenuHeight = 44;
 
 /// 色板一行的高度
 const double kSelectionColorRowHeight = 44;
@@ -44,6 +45,7 @@ class SelectionActions extends ConsumerStatefulWidget {
     required this.rects,
     required this.origin,
     required this.pageSize,
+    this.dictionaryTheme,
   });
 
   final String bookId;
@@ -57,6 +59,7 @@ class SelectionActions extends ConsumerStatefulWidget {
 
   /// 页面区域尺寸（用来夹住菜单，别跑出屏幕）
   final Size pageSize;
+  final ReadingTheme? dictionaryTheme;
 
   @override
   ConsumerState<SelectionActions> createState() => _SelectionActionsState();
@@ -65,17 +68,20 @@ class SelectionActions extends ConsumerStatefulWidget {
 class _SelectionActionsState extends ConsumerState<SelectionActions> {
   /// 色板展开中
   bool _colorOpen = false;
+  bool _lookingUp = false;
+  bool _dictionaryVisible = false;
 
   @override
   Widget build(BuildContext context) {
     final selection = widget.state.selection;
-    if (selection == null || widget.rects.isEmpty) {
+    if (selection == null || widget.rects.isEmpty || _dictionaryVisible) {
       return const SizedBox.shrink();
     }
     // 与这段选文相交的已有标注（最近的在前）：菜单按最新那条显示，
     // 保存时把它们与当前选区合成一条（N5 的合并口径）
     final overlapping = _overlapping(ref);
     final existing = overlapping.isEmpty ? null : overlapping.first;
+    final dictionaryTheme = widget.dictionaryTheme;
 
     return CustomSingleChildLayout(
       delegate: _MenuLayout(
@@ -85,28 +91,99 @@ class _SelectionActionsState extends ConsumerState<SelectionActions> {
         pageSize: widget.pageSize,
         gap: kSelectionMenuGap,
       ),
-      child: ConstrainedBox(
-        constraints: BoxConstraints(
-          maxWidth: widget.pageSize.width - 2 * GtSpacing.s3,
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (_colorOpen)
-              _ColorRow(onPick: (color) => _applyColor(color, overlapping)),
-            _MenuBar(
-              existing: existing,
-              onHighlight: () =>
-                  _applyColor(AnnotationColor.yellow, overlapping),
-              onColors: () => setState(() => _colorOpen = !_colorOpen),
-              onWriteNote: () => _writeNote(context, overlapping),
-              onDelete: existing == null ? null : () => _delete(overlapping),
-            ),
-          ],
-        ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (_colorOpen)
+            _ColorRow(onPick: (color) => _applyColor(color, overlapping)),
+          SelectionActionMenu(
+            existing: existing,
+            onCopy: () => _copy(selection),
+            onLookup: !offlineDictionaryIncluded || dictionaryTheme == null
+                ? null
+                : () => _lookUp(selection, dictionaryTheme),
+            onHighlight: () => _applyColor(AnnotationColor.yellow, overlapping),
+            onColors: () => setState(() => _colorOpen = !_colorOpen),
+            onWriteNote: () => _writeNote(context, overlapping),
+            onDelete: existing == null ? null : () => _delete(overlapping),
+          ),
+        ],
       ),
     );
+  }
+
+  Future<void> _lookUp(SelectionRange selection, ReadingTheme theme) async {
+    if (_lookingUp) return;
+    final vm = ref.read(readerProvider.notifier);
+    if (!selection.isSingleChapter) {
+      vm.showNotice('请选择单个字、词语或短语');
+      return;
+    }
+    _lookingUp = true;
+    final stopwatch = traceDictionaryLookup ? (Stopwatch()..start()) : null;
+    bool current() =>
+        mounted && ref.read(readerProvider).selection == selection;
+    try {
+      final lookup = ref.read(offlineDictionaryProvider);
+      final target = await _resolveRange(ref, selection);
+      if (!current() || target == null) return;
+      final term = target.quote.trim();
+      if (term.isEmpty) return;
+      if (term.runes.length > 96) {
+        vm.showNotice('请选择单个字、词语或短语');
+        return;
+      }
+      final entries = await lookup(term);
+      if (!mounted) return;
+      if (ref.read(readerProvider).selection != selection ||
+          ModalRoute.of(context)?.isCurrent == false) {
+        return;
+      }
+      final box = context.findRenderObject()! as RenderBox;
+      final viewport = Offset.zero & widget.pageSize;
+      // 滚动和双页选区可能有多个矩形，气泡指向仍在视口内的第一段。
+      final rects = widget.rects.map((rect) => rect.shift(widget.origin));
+      final anchor = rects.where((rect) => rect.overlaps(viewport)).firstOrNull;
+      if (anchor == null) return;
+      final globalAnchor = anchor
+          .intersect(viewport)
+          .shift(box.localToGlobal(Offset.zero));
+      // 数据和位置都就绪后再收起菜单，保留正文的高亮和手柄。
+      setState(() => _dictionaryVisible = true);
+      await showDictionaryPopover(
+        context,
+        anchor: globalAnchor,
+        theme: theme,
+        term: term,
+        entries: entries,
+        lookup: lookup,
+        onPresented: stopwatch == null
+            ? null
+            : () {
+                debugPrint(
+                  'GT_DICTIONARY_UI tap_to_frame_ms=${stopwatch.elapsedMilliseconds}',
+                );
+              },
+      );
+    } on Exception {
+      if (current()) vm.showNotice('暂时无法查词，请重试');
+    } finally {
+      _lookingUp = false;
+      if (mounted && _dictionaryVisible) {
+        setState(() => _dictionaryVisible = false);
+      }
+    }
+  }
+
+  Future<void> _copy(SelectionRange selection) async {
+    // 复制只读取当前选区，沿用跨页、跨章摘录的取文规则。
+    final target = await _resolveRange(ref, selection);
+    if (target == null || target.quote.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: target.quote));
+    if (mounted && ref.read(readerProvider).selection == selection) {
+      ref.read(readerProvider.notifier).clearSelection();
+    }
   }
 
   /// 与当前选文**相交**的已有标注，最近的在前。
@@ -284,12 +361,26 @@ class _SelectionActionsState extends ConsumerState<SelectionActions> {
     final to = startOrder <= endOrder ? endOrder : startOrder;
 
     final contents = <String, ChapterContent>{};
-    final current = session.content;
+    final current = session.scrollSectionOffset == null
+        ? session.content
+        : null;
+    final visible = session.scrollSectionOffset != null
+        ? session.content
+        : session.layout?.readsTxtBySection == true
+        ? session.layout!.content
+        : null;
+    final visibleBlocks = visible?.blocks;
     final repository = ref.read(chapterContentRepositoryProvider);
     for (final chapter in session.chapters) {
       if (chapter.ordinal < from || chapter.ordinal > to) continue;
       if (current != null && current.chapterId == chapter.id) {
         contents[chapter.id] = current;
+      } else if (visibleBlocks != null &&
+          selection.start.chapterId == chapter.id &&
+          selection.end.chapterId == chapter.id &&
+          visibleBlocks.any((block) => block.id == selection.start.blockId) &&
+          visibleBlocks.any((block) => block.id == selection.end.blockId)) {
+        contents[chapter.id] = visible!;
       } else {
         contents[chapter.id] = await repository.chapter(widget.bookId, chapter);
       }
@@ -303,66 +394,6 @@ class _SelectionActionsState extends ConsumerState<SelectionActions> {
       range: resolved.range,
       quote: resolved.quote,
       chapterTitle: session.chapters[session.chapterIndex].title,
-    );
-  }
-}
-
-/// 一行操作按钮
-class _MenuBar extends StatelessWidget {
-  const _MenuBar({
-    required this.existing,
-    required this.onHighlight,
-    required this.onColors,
-    required this.onWriteNote,
-    this.onDelete,
-  });
-
-  final Annotation? existing;
-  final VoidCallback onHighlight;
-  final VoidCallback onColors;
-  final VoidCallback onWriteNote;
-  final VoidCallback? onDelete;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = context.gtColors;
-    return Material(
-      color: colors.surface,
-      elevation: 4,
-      borderRadius: BorderRadius.circular(GtRadius.control),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: existing == null
-            ? [
-                _Action(
-                  icon: GtIcons.highlight,
-                  label: '高亮',
-                  onTap: onHighlight,
-                ),
-                _Divider(color: colors.borderSubtle),
-                _Action(
-                  icon: GtIcons.notePlus,
-                  label: '写想法',
-                  onTap: onWriteNote,
-                ),
-              ]
-            : [
-                _Action(icon: GtIcons.palette, label: '颜色', onTap: onColors),
-                _Divider(color: colors.borderSubtle),
-                _Action(
-                  icon: GtIcons.note,
-                  label: existing!.isNote ? '编辑想法' : '写想法',
-                  onTap: onWriteNote,
-                ),
-                _Divider(color: colors.borderSubtle),
-                _Action(
-                  icon: GtIcons.trash,
-                  label: '删除',
-                  color: colors.danger,
-                  onTap: onDelete ?? () {},
-                ),
-              ],
-      ),
     );
   }
 }
@@ -389,8 +420,7 @@ class _ColorRow extends StatelessWidget {
         color: colors.surface,
         elevation: 4,
         borderRadius: BorderRadius.circular(GtRadius.control),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
+        child: Wrap(
           children: [
             for (final color in _choices)
               GtButton.raw(
@@ -413,58 +443,6 @@ class _ColorRow extends StatelessWidget {
                   ),
                 ),
               ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _Divider extends StatelessWidget {
-  const _Divider({required this.color});
-
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) =>
-      Container(width: 1, height: 22, color: color);
-}
-
-class _Action extends StatelessWidget {
-  const _Action({
-    required this.icon,
-    required this.label,
-    required this.onTap,
-    this.color,
-  });
-
-  final String icon;
-  final String label;
-  final VoidCallback onTap;
-  final Color? color;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = context.gtColors;
-    final tint = color ?? colors.actionPrimary;
-    return GtButton.raw(
-      onPressed: onTap,
-      borderRadius: BorderRadius.circular(GtRadius.control),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(
-          horizontal: GtSpacing.s4,
-          vertical: GtSpacing.s2,
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            GtIcon(icon, size: 20, color: tint),
-            const SizedBox(width: GtSpacing.s2),
-            Text(
-              label,
-              style: GtText.body(color ?? colors.textPrimary)
-                  .copyWith(fontSize: 14),
-            ),
           ],
         ),
       ),
@@ -495,7 +473,13 @@ class _MenuLayout extends SingleChildLayoutDelegate {
 
   @override
   BoxConstraints getConstraintsForChild(BoxConstraints constraints) =>
-      constraints.loosen();
+      BoxConstraints(
+        maxWidth: math.max(
+          0.0,
+          math.min(constraints.maxWidth, pageSize.width) - 2 * GtSpacing.s3,
+        ),
+        maxHeight: constraints.maxHeight,
+      );
 
   @override
   Offset getPositionForChild(Size size, Size childSize) {
@@ -503,10 +487,9 @@ class _MenuLayout extends SingleChildLayoutDelegate {
     final double top = below
         ? anchorBottom + gap
         : anchorTop - gap - childSize.height;
-    final left = anchorLeft.clamp(
-      0.0,
-      math.max(0.0, size.width - childSize.width),
-    );
+    final horizontalSpace = math.max(0.0, size.width - childSize.width);
+    final inset = math.min(GtSpacing.s3, horizontalSpace / 2);
+    final left = anchorLeft.clamp(inset, horizontalSpace - inset);
     final double maxTop = math.max(0.0, size.height - childSize.height);
     final double clampedTop = top.clamp(0.0, maxTop).toDouble();
     return Offset(left.toDouble(), clampedTop);

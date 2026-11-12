@@ -50,12 +50,29 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
     );
     return _neighborPreparations.putIfAbsent(key, () async {
       try {
-        final chapter = session.chapters[index];
-        final content = await ref
-            .read(chapterContentRepositoryProvider)
-            .chapter(bookId, chapter);
+        final bySection = await _layoutIndexedTxt(
+          session,
+          index,
+          options,
+          atEnd: atEnd,
+          token: _token,
+        );
         if (!ref.mounted || _tokenVersion != version) {
-          throw const LayoutCancelled();
+          throw const LayoutCancelled(
+            LayoutCancellationReason.requestSuperseded,
+          );
+        }
+        if (bySection != null) return bySection;
+        final chapter = session.chapters[index];
+        final contents = ref.read(chapterContentRepositoryProvider);
+        final txt = session.book.format == BookFormat.txt;
+        final content = await (txt
+            ? contents.chapterForProgressLayout(bookId, chapter)
+            : contents.chapter(bookId, chapter));
+        if (!ref.mounted || _tokenVersion != version) {
+          throw const LayoutCancelled(
+            LayoutCancellationReason.requestSuperseded,
+          );
         }
         final request = LayoutRequest(
           bookId: bookId,
@@ -65,17 +82,61 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
           options: options,
         );
         final engine = ref.read(readerEngineProvider);
-        final layout = await (full
-            ? engine.layoutChapter(request)
-            : engine.layoutWindow(request, atEnd: atEnd));
+        final layout =
+            await (full && !(txt && chapter.textLength >= kLongTxtChapterLength)
+                ? engine.layoutChapter(request)
+                : engine.layoutWindow(request, atEnd: atEnd));
         if (!ref.mounted || _tokenVersion != version) {
-          throw const LayoutCancelled();
+          throw const LayoutCancelled(
+            LayoutCancellationReason.requestSuperseded,
+          );
         }
         return layout;
       } finally {
         _neighborPreparations.remove(key);
       }
     });
+  }
+
+  Future<ChapterLayout?> _layoutIndexedTxt(
+    ReaderSession session,
+    int index,
+    LayoutOptions options, {
+    Locator? target,
+    int? chapterOffset,
+    bool atEnd = false,
+    bool targetFirst = false,
+    LayoutToken? token,
+  }) async {
+    final chapter = session.chapters[index];
+    if (session.book.format != BookFormat.txt ||
+        session.scrolling ||
+        chapter.textLength < kLongTxtChapterLength) {
+      return null;
+    }
+    final source = await ref
+        .read(chapterContentRepositoryProvider)
+        .txtChapterSource(bookId, chapter);
+    if (!ref.mounted || token?.isCancelled == true) {
+      throw const LayoutCancelled();
+    }
+    if (source == null) return null;
+    return ref
+        .read(readerEngineProvider)
+        .layoutWindow(
+          LayoutRequest.txtSections(
+            bookId: bookId,
+            contentVersion: session.book.contentVersion,
+            chapter: chapter,
+            source: source,
+            options: options,
+            targetFirst: targetFirst,
+            chapterOffset: target == null ? chapterOffset : null,
+          ),
+          target: target,
+          atEnd: atEnd,
+          token: token,
+        );
   }
 
   void _watchLayout(ChapterLayout layout) {
@@ -93,25 +154,6 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
       // 后文只能补索引；不选择目标、不回报落点、不保存当前位置。
       state = AsyncData(latest.copyWith(layout: updated));
     });
-  }
-
-  Future<void> _ensureForwardPage() async {
-    final before = state.value;
-    final layout = before?.layout;
-    if (before == null ||
-        layout == null ||
-        layout.isComplete ||
-        before.pageIndex + 1 < layout.pageCount) {
-      return;
-    }
-    final prepared = await layout.ensurePage(before.pageIndex + 1);
-    final latest = state.value;
-    if (!ref.mounted ||
-        latest?.layout?.identity != layout.identity ||
-        latest?.pageIndex != before.pageIndex) {
-      return;
-    }
-    state = AsyncData(latest!.copyWith(layout: prepared));
   }
 
   String get bookId;
@@ -205,7 +247,9 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
     if (session.pageIndex + 1 < session.pageCount) {
       return (layout: session.layout!, pageIndex: session.pageIndex + 1);
     }
-    if (!session.layout!.isComplete) return null;
+    if (!session.layout!.isComplete || session.layout!.hasLaterTxtWindow) {
+      return null;
+    }
     final index = session.chapterIndex + 1;
     final next = index >= session.chapters.length
         ? null
@@ -274,20 +318,13 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
       }
       return current() ? cached : null;
     }
-    if (forward && !session.layout!.isComplete) {
-      final layout = await session.layout!.ensurePage(session.pageIndex + 1);
-      if (!current()) return null;
-      if (session.pageIndex + 1 < layout.pageCount) {
-        return (layout: layout, pageIndex: session.pageIndex + 1);
-      }
-    }
-    if (!forward && session.pageIndex > 0) {
-      final pageIndex = session.pageIndex - 1;
-      final layout = await session.layout!.ensurePage(pageIndex);
-      return current() && layout.page(pageIndex) != null
-          ? (layout: layout, pageIndex: pageIndex)
-          : null;
-    }
+    final adjacent = await session.layout!.adjacentPage(
+      session.pageIndex,
+      forward: forward,
+    );
+    if (!current()) return null;
+    if (adjacent != null) return adjacent;
+    if (!forward && session.pageIndex > 0) return null;
     final index = session.chapterIndex + (forward ? 1 : -1);
     if (index < 0 || index >= session.chapters.length) return null;
     final ChapterLayout layout;
@@ -340,77 +377,98 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
     final chapter = session.chapters[chapterIndex];
     final contents = ref.read(chapterContentRepositoryProvider);
     final engine = ref.read(readerEngineProvider);
+    final txt = session.book.format == BookFormat.txt;
+    final deliverTargetFirst =
+        targetFirst || (txt && chapter.textLength >= kLongTxtChapterLength);
 
     final token = _invalidateLayoutRequests();
 
-    final ChapterContent content;
-    try {
-      // PDF原页只需定位数据；电子书排版前仍须经过仓库准备真实图片。
-      content =
-          session.book.format != BookFormat.pdf &&
-              chapterIndex == session.chapterIndex &&
-              session.content != null
-          ? session.content!
-          : await (targetFirst && session.book.format.usesOriginalWebView
-                ? contents.chapterForProgressLayout(bookId, chapter)
-                : contents.chapter(bookId, chapter));
-    } on Object catch (error, stack) {
-      if (!token.isCancelled) {
-        state = AsyncError(error, stack);
-      }
-      return false;
-    }
-    if (token.isCancelled) return false;
-
     final ChapterLayout layout;
-    final target =
-        anchor ??
-        (chapterOffset == null || !ReaderDeliveryExperiments.contentTarget
-            ? null
-            : locatorForFraction(
-                content: content,
-                bookId: bookId,
-                contentVersion: session.book.contentVersion,
-                chapterId: chapter.id,
-                fraction: content.textLength == 0
-                    ? 0
-                    : chapterOffset / content.textLength,
-              ));
+    ChapterContent? content;
+    Locator? target = anchor;
+    final matching = _matchingChapterLayout(
+      preparedLayout,
+      session,
+      chapterIndex,
+      options,
+    );
     try {
-      final request = LayoutRequest(
-        bookId: bookId,
-        contentVersion: session.book.contentVersion,
-        chapter: chapter,
-        content: content,
-        options: options,
-        targetFirst: targetFirst,
-        allowPageRestart:
+      final indexed = matching?.readsTxtBySection == true
+          ? matching
+          : await _layoutIndexedTxt(
+              session,
+              chapterIndex,
+              options,
+              target: anchor,
+              chapterOffset: chapterOffset,
+              atEnd: atChapterEnd,
+              targetFirst: deliverTargetFirst,
+              token: token,
+            );
+      if (indexed != null) {
+        layout = indexed;
+        if (target == null && chapterOffset != null) {
+          target = layout.txtLocatorAtOffset(chapterOffset);
+        }
+      } else {
+        // PDF原页只需定位数据；电子书排版前仍须经过仓库准备真实图片。
+        content =
+            session.book.format != BookFormat.pdf &&
+                chapterIndex == session.chapterIndex &&
+                session.content != null
+            ? session.content!
+            : await (txt ||
+                      (deliverTargetFirst &&
+                          session.book.format.usesOriginalWebView)
+                  ? contents.chapterForProgressLayout(bookId, chapter)
+                  : contents.chapter(bookId, chapter));
+        if (token.isCancelled) return false;
+        if (target == null &&
             chapterOffset != null &&
-            !_mode.isOriginal &&
-            !session.scrolling &&
-            session.book.format.usesOriginalWebView,
-      );
-      layout =
-          _matchingChapterLayout(
-            preparedLayout,
-            session,
-            chapterIndex,
-            options,
-          ) ??
-          await traceTurnStep(
-            'load simplified-layout',
-            () =>
-                chapterOffset != null &&
-                    !ReaderDeliveryExperiments.contentTarget
-                ? engine.layoutChapter(request, token: token)
-                : engine.layoutWindow(
-                    request,
-                    target: target,
-                    atEnd: atChapterEnd,
-                    token: token,
-                  ),
+            ReaderDeliveryExperiments.contentTarget) {
+          target = locatorForFraction(
+            content: content,
+            bookId: bookId,
+            contentVersion: session.book.contentVersion,
+            chapterId: chapter.id,
+            fraction: content.textLength == 0
+                ? 0
+                : chapterOffset / content.textLength,
           );
+        }
+        final request = LayoutRequest(
+          bookId: bookId,
+          contentVersion: session.book.contentVersion,
+          chapter: chapter,
+          content: content,
+          options: options,
+          targetFirst: deliverTargetFirst,
+          allowPageRestart:
+              chapterOffset != null &&
+              !_mode.isOriginal &&
+              !session.scrolling &&
+              session.book.format.usesOriginalWebView,
+        );
+        layout =
+            matching ??
+            await traceTurnStep(
+              'load simplified-layout',
+              () =>
+                  chapterOffset != null &&
+                      !ReaderDeliveryExperiments.contentTarget
+                  ? engine.layoutChapter(request, token: token)
+                  : engine.layoutWindow(
+                      request,
+                      target: target,
+                      atEnd: atChapterEnd,
+                      token: token,
+                    ),
+            );
+      }
     } on LayoutCancelled {
+      return false;
+    } on Object catch (error, stack) {
+      if (!token.isCancelled && ref.mounted) state = AsyncError(error, stack);
       return false;
     }
     if (token.isCancelled) return false;
@@ -428,7 +486,7 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
       // 后面的预取仍准备相邻页，用户立刻翻页时也沿用等待目标就绪的流程。
       if (ReaderDeliveryExperiments.incremental &&
           prefetch &&
-          !targetFirst &&
+          !deliverTargetFirst &&
           session.book.format != BookFormat.pdf) {
         Future<ChapterLayout> neighbor(int index, bool atEnd) async {
           final nextChapter = session.chapters[index];
@@ -447,14 +505,18 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
         }
 
         // 只把直接可翻到的跨章页列为首屏必需，普通中部目标不排无关前章。
-        if (pageIndex == 0 && chapterIndex > 0) {
+        if (pageIndex == 0 &&
+            chapterIndex > 0 &&
+            _canPrefetchChapter(session, chapterIndex - 1)) {
           final previous = await neighbor(chapterIndex - 1, true);
           if (token.isCancelled) return false;
           _previousChapterLayout = previous;
         }
         if (layout.isComplete &&
+            !layout.hasLaterTxtWindow &&
             pageIndex + 1 >= layout.pageCount &&
-            chapterIndex + 1 < session.chapters.length) {
+            chapterIndex + 1 < session.chapters.length &&
+            _canPrefetchChapter(session, chapterIndex + 1)) {
           final next = await neighbor(chapterIndex + 1, false);
           if (token.isCancelled) return false;
           _nextChapterLayout = next;
@@ -478,9 +540,13 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
         book: session.book,
         chapters: session.chapters,
         chapterIndex: chapterIndex,
-        content: content,
+        content: layout.readsTxtBySection
+            ? null
+            : txt
+            ? layout.content
+            : content,
         layout: layout,
-        pageIndex: pageIndex.clamp(0, layout.pageCount - 1),
+        pageIndex: pageIndex.clamp(layout.firstPage, layout.pageCount - 1),
         viewportSignature: options.layoutSignature,
         originalAnchor: keepOriginal ? session.originalAnchor : null,
         originalFraction: keepOriginal ? session.originalFraction : 0,
@@ -509,6 +575,12 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
     return index.clamp(0, layout.pageCount - 1);
   }
 
+  // 超长 TXT 的转换与用户跳转共用正文后台任务。留给真正的翻页或跳转请求，
+  // 防止刚到目标页就排队解码两侧长章，拖慢随后返回或再次跳转。
+  bool _canPrefetchChapter(ReaderSession session, int index) =>
+      session.book.format != BookFormat.txt ||
+      session.chapters[index].textLength < kLongTxtChapterLength;
+
   /// 预取下一章：让章末翻页不需要等待排版（界面上的「下一章首页」也用它）
   void _prefetchNext(int chapterIndex, LayoutOptions options) {
     final session = state.value;
@@ -519,6 +591,7 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
       _nextChapterLayout = null;
       return;
     }
+    if (!_canPrefetchChapter(session, nextIndex)) return;
     final signature = options.layoutSignature;
     final version = _tokenVersion;
     unawaited(() async {
@@ -568,6 +641,7 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
       _previousChapterLayout = null;
       return;
     }
+    if (!_canPrefetchChapter(session, previousIndex)) return;
     final chapter = session.chapters[previousIndex];
     if (_previousChapterLayout?.chapterId == chapter.id) return;
     final signature = options.layoutSignature;

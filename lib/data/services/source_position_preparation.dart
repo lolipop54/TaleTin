@@ -53,6 +53,7 @@ Future<SourcePositionProof?> readSourcePositionProof(
           charset: index['charset'] as String?,
           chapterPattern: options['chapterPattern'] as String?,
           forceSections: options['forceSectionFallback'] == true,
+          txtRevision: manifest['txtHeadingRevision'] as int? ?? 0,
         ),
     index['sourceStamp'] as String? ?? '',
   );
@@ -99,16 +100,53 @@ Future<SourcePositionPreparation> loadSourcePositionPreparation(
   final draft = draftRow == null
       ? null
       : NoteDraft.fromJson(jsonDecode(draftRow.valueJson));
+  final proof = await readSourcePositionProof(db, root, id);
+  final anchors = [
+    for (final note in notes) ...[note.start, if (note.end != null) note.end!],
+    for (final row in positions) Locator.fromJson(jsonDecode(row.locatorJson)),
+    if (draft != null) ...[draft.range.start, draft.range.end],
+  ];
   return SourcePositionPreparation(
-    proof: await readSourcePositionProof(db, root, id),
-    anchors: [
-      for (final note in notes) ...[
-        note.start,
-        if (note.end != null) note.end!,
-      ],
-      for (final row in positions)
-        Locator.fromJson(jsonDecode(row.locatorJson)),
-      if (draft != null) ...[draft.range.start, draft.range.end],
-    ],
+    proof: proof,
+    anchors: anchors,
+    txtHints: await _oldTxtHints(root, id, proof, anchors),
   );
+}
+
+Future<TxtSourcePositionHints?> _oldTxtHints(
+  String root,
+  String id,
+  SourcePositionProof? proof,
+  List<Locator> anchors,
+) async {
+  if (proof == null || !anchors.any((anchor) => !anchor.needsRelocation)) {
+    return null;
+  }
+  final manifest = File(
+    p.join(root, id, 'content', '$kContentVersion', 'manifest.json'),
+  );
+  if (!await manifest.exists()) return null;
+  final data = jsonDecode(await manifest.readAsString()) as Map;
+  final index = data['sourceIndex'] as Map?;
+  if (index == null ||
+      index['format'] != 'txt' ||
+      index['sourceDigest'] != proof.digest ||
+      index['charset'] is! String ||
+      index['chapters'] is! Map) {
+    return null;
+  }
+  final ranges = index['chapters'] as Map;
+  final positions = [
+    for (final anchor in anchors)
+      if (!anchor.needsRelocation && anchor.contentVersion == kContentVersion)
+        if (ranges[anchor.chapterId] case [final int start, final int end])
+          (anchor: anchor, start: start, end: end),
+  ];
+  return positions.isEmpty
+      ? null
+      : TxtSourcePositionHints(
+          proof.digest,
+          index['charset'] as String,
+          positions,
+        );
 }

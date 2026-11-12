@@ -26,6 +26,9 @@ const int kContentVersion = 2;
 /// 目录及 EPUB 显示资料的生成规则标记，仅用于跳过已完成的旧书修复。
 /// 它们不改变正文坐标，也不递增正文版本或应用版本。
 const int kTocRevision = 4;
+
+/// TXT 达到此长度时，分页只准备所需的一段，避免先测量整章。
+const int kLongTxtChapterLength = 256 * 1024;
 const int kEpubDetailsRevision = 2;
 
 /// 块类型。

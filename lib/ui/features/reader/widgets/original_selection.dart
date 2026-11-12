@@ -131,7 +131,7 @@ extension _OriginalSelection on _OriginalReaderAreaState {
     _selection.rects = const [];
   }
 
-  /// 长按起选：这一点所在的整句，取回矩形后画在正文上。
+  /// 长按起选：命中的字或词，取回矩形后画在正文上。
   ///
   /// 位置一律走「DOM 点 → 标准正文 Locator」这一条路：重复句、内联标签、
   /// 空白折叠都由对照表处理，不拿相同文字猜位置。任何一步拿不到就当作没选中，
@@ -148,30 +148,32 @@ extension _OriginalSelection on _OriginalReaderAreaState {
     // 截图预取会暂时切到邻页。先等原页恢复，并废弃旧页序缓存，才能命中正文。
     await _curlKey.currentState?.settleForSpeech();
     if (!_selectionCurrent(version, host)) return;
+    final page = _page;
+    bool current() => _page == page && _selectionCurrent(version, host);
     // 换章、翻页后在飞的换算不能落到新画面上：整段只在最后一起提交
     final chapter = session.chapterIndex;
     final point = await host.selectionPointAt(
       _toViewport(local),
       character: true,
     );
-    if (!_selectionCurrent(version, host) || point == null) return;
+    if (!current() || point == null) return;
     final map = await _selectionMapFor(chapter, href, content);
-    if (!_selectionCurrent(version, host) || map == null) return;
-    final sentence = map.sentenceAt(point);
-    if (sentence == null) return;
-    // 先量一次句子范围的矩形：跨页时按「本页那一段」的两端把范围夹回来，
+    if (!current() || map == null) return;
+    final initial = await map.initialRangeAt(point);
+    if (!current() || initial == null) return;
+    // 先量一次范围的矩形：词跨页时按本页的两端把范围夹回来，
     // 两端手柄才都落在本页、看得见也抓得到（与简化模式同一条规则）
     final first = await _selectionGeometry(
       map,
-      sentence.start,
-      sentence.end,
+      initial.start,
+      initial.end,
       paint: false,
     );
-    if (!_selectionCurrent(version, host) || first == null) return;
-    final range = _clampToPage(map, sentence, first);
+    if (!current() || first == null) return;
+    final range = _clampToPage(map, initial, first);
     // 范围确定后才画一次，避免重建把尚未发布的临时选区当成已取消。
     final geometry = await _selectionGeometry(map, range.start, range.end);
-    if (!_selectionCurrent(version, host) || geometry == null) return;
+    if (!current() || geometry == null) return;
     ref.read(readerProvider.notifier).startSelection(range.start, range.end);
     _updateState(() {
       _selection
@@ -183,7 +185,7 @@ extension _OriginalSelection on _OriginalReaderAreaState {
 
   /// 把长按选出的范围夹在本页内（与简化模式同一条规则）。
   ///
-  /// 句子跨到上一页/下一页时，起点取本页那一段的第一个字、终点取最后一个字之后：
+  /// 词跨到上一页/下一页时，起点取本页那一段的第一个字、终点取最后一个字之后：
   /// 两端手柄都落在本页、看得见也抓得到，不用先翻页才能调。
   ///
   /// 两端直接取**这次量出来的矩形**边缘上的字（`pageFrom` / `pageTo`）：

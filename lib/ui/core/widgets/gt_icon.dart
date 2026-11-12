@@ -46,6 +46,7 @@ abstract final class GtIcons {
   static const alertCircle = 'alert-circle';
   static const lock = 'lock';
   // 笔记与成就
+  static const copy = 'copy';
   static const note = 'note';
   static const notePlus = 'note-plus';
   static const highlight = 'highlight';

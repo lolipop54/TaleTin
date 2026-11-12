@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../core/diagnostics/reader_work_trace.dart';
 
 import '../../../../domain/models/annotation.dart';
+import '../../../../domain/models/book.dart';
 import '../../../../domain/models/locator.dart';
 import 'automatic_reading.dart';
 import 'book_search_navigation.dart';
@@ -13,11 +14,12 @@ import 'reader_view_model.dart';
 
 class ReaderProgressReturnState {
   const ReaderProgressReturnState({
-    this.origin,
+    this.saved,
     this.busy = false,
     this.fromSlider = false,
   });
-  final Locator? origin;
+  final ({Book book, Locator anchor})? saved;
+  Locator? get origin => saved?.anchor;
   final bool busy, fromSlider;
 }
 
@@ -35,14 +37,20 @@ class ReaderProgressReturn extends Notifier<ReaderProgressReturnState> {
   /// 阅读层先把完整旧页盖住；位置请求必须在遮盖真正上屏后再执行。
   Future<void> Function()? prepareJumpCover;
   Future<void> Function()? finishJumpCover;
-  Future<void> Function()? finishSeekCover;
+  Future<void> Function()? finishImmediateJumpCover;
+
+  ({Book book, Locator anchor})? _captureOrigin() {
+    final session = ref.read(readerSessionProvider(bookId)).value;
+    final anchor = session?.currentAnchor;
+    return anchor == null ? null : (book: session!.book, anchor: anchor);
+  }
 
   /// 上下章只改变位置，不创建“返回原进度”，但仍等待完整交接。
   Future<void> transition(Future<void> Function() action) async {
     if (state.busy) return;
     final previous = state;
     state = ReaderProgressReturnState(
-      origin: previous.origin,
+      saved: previous.saved,
       fromSlider: previous.fromSlider,
       busy: true,
     );
@@ -65,7 +73,7 @@ class ReaderProgressReturn extends Notifier<ReaderProgressReturnState> {
     if (state.fromSlider || state.busy) return;
     state = ReaderProgressReturnState(
       fromSlider: true,
-      origin: ref.read(readerSessionProvider(bookId)).value?.currentAnchor,
+      saved: _captureOrigin(),
     );
   }
 
@@ -81,7 +89,7 @@ class ReaderProgressReturn extends Notifier<ReaderProgressReturnState> {
     beginSlider();
     final previous = state;
     state = ReaderProgressReturnState(
-      origin: previous.origin,
+      saved: previous.saved,
       fromSlider: true,
       busy: true,
     );
@@ -96,12 +104,9 @@ class ReaderProgressReturn extends Notifier<ReaderProgressReturnState> {
     } finally {
       if (ref.mounted && version == _seekVersion) {
         state = ref.read(readerProvider).controlsVisible
-            ? ReaderProgressReturnState(
-                origin: previous.origin,
-                fromSlider: true,
-              )
+            ? ReaderProgressReturnState(saved: previous.saved, fromSlider: true)
             : const ReaderProgressReturnState();
-        await (finishSeekCover ?? finishJumpCover)?.call();
+        await (finishImmediateJumpCover ?? finishJumpCover)?.call();
       }
       trace?.mark('reveal_animation');
       trace?.finish(status: version == _seekVersion ? status : 'superseded');
@@ -122,19 +127,27 @@ class ReaderProgressReturn extends Notifier<ReaderProgressReturnState> {
   Future<void> jump(Future<void> Function() action) async {
     if (state.busy) return;
     final previous = state;
-    final origin = ref.read(readerSessionProvider(bookId)).value?.currentAnchor;
-    state = ReaderProgressReturnState(origin: previous.origin, busy: true);
+    final origin = _captureOrigin();
+    final trace = ReaderWorkTrace.start('reader.progress.jump');
+    var status = 'incomplete';
+    state = ReaderProgressReturnState(saved: previous.saved, busy: true);
     try {
       await prepareJumpCover?.call();
+      trace?.mark('old_page_cover');
       await action();
+      trace?.mark('target_position');
       if (!ref.mounted) return;
       // 普通跳转结束搜索预览，避免两种菜单和旧搜索高亮一起出现。
       ref.read(bookSearchNavigationProvider(bookId).notifier).dismiss();
-      state = ReaderProgressReturnState(origin: origin);
+      state = ReaderProgressReturnState(saved: origin);
       await finishJumpCover?.call();
+      trace?.mark('reveal');
+      status = 'ok';
     } catch (_) {
       if (ref.mounted) state = previous;
       rethrow;
+    } finally {
+      trace?.finish(status: status);
     }
   }
 
@@ -142,15 +155,28 @@ class ReaderProgressReturn extends Notifier<ReaderProgressReturnState> {
     final previous = state;
     final origin = previous.origin;
     if (origin == null || previous.busy) return;
+    final trace = ReaderWorkTrace.start('reader.progress.return');
+    var status = 'incomplete';
     state = ReaderProgressReturnState(
-      origin: origin,
+      saved: previous.saved,
       busy: true,
       fromSlider: previous.fromSlider,
     );
     try {
       await ref.read(automaticReadingProvider(bookId).notifier).discard();
+      trace?.mark('stop_automatic');
       await prepareJumpCover?.call();
+      trace?.mark('old_page_cover');
       final session = ref.read(readerSessionProvider(bookId).notifier);
+      final current = ref.read(readerSessionProvider(bookId)).value;
+      // 这个位置来自本次阅读，正文刷新会替换 Book 对象。仍在原正文的 TXT
+      // 可以使用现成锚点；跨章读取仍由正文仓库核验源文件。
+      final direct =
+          current != null &&
+          current.book.format == BookFormat.txt &&
+          (current.scrolling || current.layout != null) &&
+          !origin.needsRelocation &&
+          identical(current.book, previous.saved?.book);
       Future<void> jump() => session.goToAnnotation(
         Annotation(
           id: '__progress_return__',
@@ -167,20 +193,34 @@ class ReaderProgressReturn extends Notifier<ReaderProgressReturnState> {
       final hold = session.usesOriginalWebView
           ? ref.read(originalLayoutProvider(bookId)).value?.holdPageDuringJump
           : null;
-      if (hold == null) {
+      if (direct) {
+        final reader = ref.read(readerProvider.notifier);
+        reader.clearSelection();
+        await session.goToLocator(origin);
+        if (current.scrolling && ref.mounted) {
+          await session.waitForScrollPosition();
+          if (ref.mounted) await session.persist();
+        }
+        if (ref.mounted) reader.closePanel();
+      } else if (hold == null) {
         await jump();
       } else {
         await hold(jump);
       }
+      trace?.mark('restore_position');
       if (ref.mounted) {
         state = const ReaderProgressReturnState();
         await finishJumpCover?.call();
+        trace?.mark('reveal_animation');
+        status = 'ok';
       }
     } catch (appError, appStack) {
       AppErrors.report(appError, appStack, operation: '返回阅读位置失败');
       if (!ref.mounted) return;
       state = previous;
       ref.read(readerProvider.notifier).showNotice('无法返回原进度，请重试');
+    } finally {
+      trace?.finish(status: status);
     }
   }
 

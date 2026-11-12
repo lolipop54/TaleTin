@@ -100,13 +100,13 @@ Locator? locatorForFraction({
   final target = (fraction.clamp(0.0, 1.0) * total).round();
   var consumed = 0;
   for (final block in content.blocks) {
-    final text = blockTextOf(block);
     // 权重口径与 LocatorMapper.totalLength 一致（行内图片块带覆盖权重）
-    if (consumed + block.textLength > target) {
-      final offset = (target - consumed).clamp(0, text.length);
+    final length = block.textLength;
+    if (consumed + length > target) {
+      final offset = (target - consumed).clamp(0, blockTextOf(block).length);
       return mapper.at(block, offset);
     }
-    consumed += block.textLength;
+    consumed += length;
   }
   // 落在末尾之后：取最后一块的末尾
   final last = content.blocks.last;

@@ -1,33 +1,65 @@
 part of 'chapter_layout.dart';
 
+typedef _TxtPageWindowState = ({
+  _LazyMeasuredBlocks source,
+  Iterator<PageSlice?> steps,
+  List<PageSlice> pages,
+  bool complete,
+  ChapterLayout? snapshot,
+});
+
 /// 同参数只有一个迭代器。目标请求可取消，但不会销毁其他消费者需要的页面。
 class ChapterLayoutTask {
   ChapterLayoutTask({
     required this.bookId,
     required this.contentVersion,
     required this.chapter,
-    required ChapterContent content,
+    required ChapterContent? content,
     required this.options,
+    this._indexedTxt,
     this.measurementCache,
     this.onCheckpoint,
     this.readCheckpoint,
     this.readPageWindow,
-  }) : content = CssLayoutStyles.resolve(content, options) {
-    _displayTree = DisplayTree.build(this.content);
-    _source = _newSource();
-    _steps = _paginate(_source);
+  }) : _wholeContent = content == null
+           ? null
+           : CssLayoutStyles.resolve(content, options) {
+    final whole = _wholeContent;
+    _wholeDisplayTree = whole == null ? null : DisplayTree.build(whole);
+    _txtWindows = whole != null && usesTxtWindows(chapter, whole, options)
+        ? TxtChapterSections(whole.blocks.map((block) => block.textLength))
+        : null;
+    if (whole != null) {
+      _source = _newSource();
+      _steps = _paginate(_source);
+      _windowReady = true;
+    }
     _mapper = LocatorMapper(
       bookId: bookId,
       contentVersion: contentVersion,
       chapterId: chapter.id,
     );
-    _totalLength = _mapper.totalLength(this.content.blocks);
+    _totalLength = whole == null
+        ? chapter.textLength
+        : _txtWindows?.textLength ?? _mapper.totalLength(whole.blocks);
   }
+
+  static bool usesTxtWindows(
+    Chapter chapter,
+    ChapterContent content,
+    LayoutOptions options,
+  ) =>
+      options.insertChapterTitle &&
+      chapter.textLength >= kLongTxtChapterLength &&
+      content.blocks.length > 1 &&
+      content.displaySourceJson == null &&
+      content.tables.isEmpty;
 
   final String bookId;
   final int contentVersion;
   final Chapter chapter;
-  final ChapterContent content;
+  final ChapterContent? _wholeContent;
+  ChapterContent get content => _wholeContent ?? _source.content;
   final LayoutOptions options;
   final BlockMeasurementCache? measurementCache;
   final void Function(Map<String, Object?>)? onCheckpoint;
@@ -38,44 +70,86 @@ class ChapterLayoutTask {
   readCheckpoint;
   final Future<Map<String, dynamic>?> Function(PageCheckpointTarget, int?)?
   readPageWindow;
-  late final DisplayTree _displayTree;
+  late final DisplayTree? _wholeDisplayTree;
+  DisplayTree get _displayTree =>
+      _wholeDisplayTree ?? _source.measurer.displayTree!;
   late _LazyMeasuredBlocks _source;
   late Iterator<PageSlice?> _steps;
   late final LocatorMapper _mapper;
   late final int _totalLength;
-  final _pages = <PageSlice>[];
+  late final TxtChapterSections? _txtWindows;
+  final TxtChapterSource? _indexedTxt;
+  bool _windowReady = false;
+  int _txtWindow = 0;
+  int get _txtWindowCount =>
+      _indexedTxt?.starts.length ?? _txtWindows?.starts.length ?? 0;
+  int get _txtOffset =>
+      _indexedTxt?.starts[_txtWindow].textOffset ??
+      _txtWindows?.starts[_txtWindow].offset ??
+      0;
+  var _pages = <PageSlice>[];
+  final _recentTxtWindows = <int, _TxtPageWindowState>{};
   final _pageRestarts = <List<int>>[];
   List<int>? _restart;
-  int get _firstPage => _restart?[0] ?? 0;
+  // 长 TXT 的页序只在一个窗口内连续。窗口用起始文字位置区分，
+  // 跨窗口翻页由 adjacentPage 交接，进度始终按真实文字位置计算。
+  int get _firstPage => _restart?[0] ?? _txtOffset;
   int get _pageCount => _firstPage + _pages.length;
   final _events = StreamController<ChapterLayout>.broadcast(sync: true);
   Future<void> _flight = Future.value();
-  bool _complete = false,
-      _disposed = false,
-      _background = false,
-      _wantBackground = false;
+  bool _complete = false, _background = false, _wantBackground = false;
+  LayoutCancellationReason? _disposalReason;
+  bool get _disposed => _disposalReason != null;
   Object? _failure;
   int _foreground = 0;
+  int _visibleUsers = 0;
   int _savedPages = 0;
   int _checkpointLimit = 0;
   Timer? _timer;
   Completer<void>? _wake;
   ChapterLayout? _snapshot;
   Stream<ChapterLayout> get updates => _events.stream;
-  bool get isInUse => _foreground > 0 || _wantBackground;
+  bool get isInUse => _foreground > 0 || _wantBackground || _visibleUsers > 0;
+
+  /// 已交付的页面还需要用这份任务查找相邻页，即使此时没有后台补排。
+  VoidCallback retainForDisplay() {
+    _visibleUsers++;
+    return () => _visibleUsers--;
+  }
+
+  void _checkActive([LayoutToken? token]) {
+    if (_disposalReason case final reason?) throw LayoutCancelled(reason);
+    if (token?.isCancelled ?? false) throw const LayoutCancelled();
+  }
+
   int _maxStepUs = 0;
   int _stepUs = 0;
-  bool _cacheMore = true;
+  late bool _cacheMore = _txtWindowCount == 0;
 
-  _LazyMeasuredBlocks _newSource([int rowBase = 0]) => _LazyMeasuredBlocks(
-    chapter,
-    content,
-    options,
-    measurementCache,
-    cacheEnabled: onCheckpoint != null,
-    displayTree: _displayTree,
-    rowBase: rowBase,
-  );
+  _LazyMeasuredBlocks _newSource([int rowBase = 0, ChapterContent? section]) {
+    final body = section ?? _wholeContent!;
+    return _LazyMeasuredBlocks(
+      chapter,
+      body,
+      options,
+      measurementCache,
+      cacheEnabled: onCheckpoint != null,
+      displayTree: _wholeDisplayTree ?? DisplayTree.build(body),
+      rowBase: rowBase,
+      startBlock: _txtWindows?.starts[_txtWindow].paragraph ?? 0,
+      endBlock: _txtWindowEnd,
+      includeChapterTitle: _indexedTxt == null || _txtWindow == 0,
+    );
+  }
+
+  int? get _txtWindowEnd {
+    final windows = _txtWindows;
+    if (windows == null) return null;
+    final next = _txtWindow + 1;
+    return next < windows.starts.length
+        ? windows.starts[next].paragraph
+        : windows.paragraphCount;
+  }
 
   Iterator<PageSlice?> _paginate(
     _LazyMeasuredBlocks source, [
@@ -87,7 +161,7 @@ class ChapterLayoutTask {
           )
           .steps(
             source,
-            firstPage: restart?[0] ?? 0,
+            firstPage: _firstPage,
             firstBlock: restart == null ? 0 : 1,
             firstLine: restart?[2] ?? 0,
             onBoundary: onCheckpoint != null || readPageWindow != null
@@ -134,6 +208,40 @@ class ChapterLayoutTask {
     _savedPages = _checkpointLimit = 0;
   }
 
+  Future<void> _selectTxtWindow(int window, LayoutToken? token) async {
+    if (_windowReady && _txtWindow == window) return;
+    final cached = _recentTxtWindows[window];
+    final section = cached == null
+        ? await _indexedTxt?.readSection(window)
+        : null;
+    _checkActive(token);
+    if (_windowReady && _pages.isNotEmpty) {
+      _recentTxtWindows[_txtWindow] = (
+        source: _source,
+        steps: _steps,
+        pages: _pages,
+        complete: _complete,
+        snapshot: _snapshot,
+      );
+    }
+    _txtWindow = window;
+    _windowReady = true;
+    _recentTxtWindows.remove(window);
+    while (_recentTxtWindows.length > 2) {
+      _recentTxtWindows.remove(_recentTxtWindows.keys.first);
+    }
+    if (cached != null) {
+      _source = cached.source;
+      _steps = cached.steps;
+      _pages = cached.pages;
+      _complete = cached.complete;
+      _snapshot = cached.snapshot;
+    } else {
+      _pages = [];
+      _replaceWindow(_newSource(0, section), null, cacheMore: false);
+    }
+  }
+
   Future<bool> _tryPageRestart(
     PageCheckpointTarget target,
     int? through,
@@ -143,9 +251,7 @@ class ChapterLayoutTask {
     final read = readPageWindow;
     if (read == null) return false;
     final data = await read(target, through);
-    if (_disposed || (token?.isCancelled ?? false)) {
-      throw const LayoutCancelled();
-    }
+    _checkActive(token);
     if (data == null) return false;
     try {
       final point = (data['_pageRestart'] as List).cast<int>();
@@ -181,7 +287,7 @@ class ChapterLayoutTask {
       cursor,
       _source.rowBase + _source.values.length,
     );
-    if (_disposed) throw const LayoutCancelled();
+    _checkActive();
     final trace = ReaderWorkTrace.start('layout.checkpoint.restore', {
       'chapter': chapter.ordinal,
       'throughCursor': cursor,
@@ -254,7 +360,8 @@ class ChapterLayoutTask {
     task: this,
     isComplete: _complete,
     firstPage: _firstPage,
-    consumedBeforeWindow: _restart?[5] ?? 0,
+    consumedBeforeWindow: _restart?[5] ?? _txtOffset,
+    txtWindow: _txtWindowCount == 0 ? null : _txtWindow,
     // 只追加索引，不修改既有页或块顺序。旧快照未覆盖的目标仍返回 null。
     measuredById: _source.measuredById,
     blockOrders: _source.orders,
@@ -272,7 +379,7 @@ class ChapterLayoutTask {
   }
 
   bool _step() {
-    if (_disposed) throw const LayoutCancelled();
+    _checkActive();
     if (_failure != null) throw _failure!;
     if (_complete) return false;
     final watch = readerWorkTraceEnabled ? (Stopwatch()..start()) : null;
@@ -298,6 +405,7 @@ class ChapterLayoutTask {
   /// 请求目标页及指定数量的后页。前页已在确定的前缀里；章末须推进至 EOF。
   Future<ChapterLayout> ensure({
     Locator? target,
+    int? chapterOffset,
     int? page,
     bool atEnd = false,
     LayoutToken? token,
@@ -305,34 +413,58 @@ class ChapterLayoutTask {
     int foregroundBudgetUs = 2000,
     bool deferCheckpointEncoding = false,
     bool allowPageRestart = false,
+    int? txtWindow,
   }) async {
     _foreground++;
     try {
       return await _serial(() async {
+        _checkActive(token);
         await EnglishHyphenation.prepare();
-        await _source.measurer.prepareMath(content);
-        final targetBlock = target == null
+        if (_txtWindowCount > 0) {
+          final indexed = _indexedTxt;
+          final paragraph = target == null
+              ? 0
+              : (indexed == null
+                        ? _displayTree.blockIndexById[target.blockId]
+                        : TxtChapterSource.paragraphOf(target.blockId)) ??
+                    0;
+          final window =
+              txtWindow ??
+              (atEnd
+                  ? _txtWindowCount - 1
+                  : indexed == null
+                  ? _txtWindows!.containingParagraph(paragraph)
+                  : chapterOffset == null
+                  ? indexed.forParagraph(paragraph)
+                  : indexed.forOffset(chapterOffset));
+          await _selectTxtWindow(window, token);
+        }
+        final anchor = chapterOffset == null
+            ? target
+            : _view(copy: false).txtLocatorAtOffset(chapterOffset);
+        final targetBlock = anchor == null
             ? null
-            : _displayTree.blockIndexById[target.blockId];
+            : _displayTree.blockIndexById[anchor.blockId];
+        await _source.measurer.prepareMath(content);
         final restart = _restart;
         final earlier =
             restart != null &&
-            (target == null
+            (anchor == null
                 ? !atEnd && (page ?? 0) < _firstPage
                 : targetBlock == null ||
                       targetBlock < restart[3] ||
                       targetBlock == restart[3] &&
-                          target.utf16Offset <= restart[4]);
+                          anchor.utf16Offset <= restart[4]);
         var resumed = false;
         if (earlier ||
             (allowPageRestart &&
                 targetBlock != null &&
-                _view(copy: false)._pageIndexOf(target!) == null)) {
+                _view(copy: false)._pageIndexOf(anchor!) == null)) {
           resumed = await _tryPageRestart(
             (
               block: targetBlock,
-              offset: target?.utf16Offset ?? 0,
-              page: target == null ? page ?? 0 : null,
+              offset: anchor?.utf16Offset ?? 0,
+              page: anchor == null ? page ?? 0 : null,
             ),
             targetBlock == null ? null : targetBlock + 1,
             token,
@@ -352,6 +484,7 @@ class ChapterLayoutTask {
           'blocks': content.blocks.length,
           'atEnd': atEnd,
           'checkpointPage': resumed ? _firstPage : null,
+          if (_txtWindowCount > 0) 'txtWindow': _txtWindow,
           'preparedPages': _pages.length,
         });
         final batch = Stopwatch()..start();
@@ -363,17 +496,17 @@ class ChapterLayoutTask {
         var searchedPages = 0;
         try {
           while (true) {
-            if (token?.isCancelled ?? false) throw const LayoutCancelled();
-            if (target != null &&
+            _checkActive(token);
+            if (anchor != null &&
                 targetPage == null &&
                 (_pages.length > searchedPages || _complete)) {
               // 封口页不再变化，已经查过且没有目标的页无需反复扫描。
               // 不为每个测量步骤复制全部块/页；长章冷跳转保持线性推进。
               targetPage = _view(copy: false)
-                  ._pageIndexOf(target, fromPage: searchedPages);
+                  ._pageIndexOf(anchor, fromPage: searchedPages);
               searchedPages = _pages.length;
             }
-            final index = target == null ? page ?? 0 : targetPage;
+            final index = anchor == null ? page ?? _firstPage : targetPage;
             if (_complete ||
                 (!atEnd && index != null && _pageCount > index + lookAhead)) {
               break;
@@ -495,8 +628,11 @@ class ChapterLayoutTask {
     }
   }
 
-  void dispose() {
-    _disposed = true;
+  void dispose({
+    LayoutCancellationReason reason = LayoutCancellationReason.taskDisposed,
+  }) {
+    if (_disposed) return;
+    _disposalReason = reason;
     pauseBackground();
     unawaited(_events.close());
   }

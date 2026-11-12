@@ -20,6 +20,7 @@ memchr = "=2.8.3"
 cssparser = "=0.38.0"
 selectors = "=0.41.0"
 precomputed-hash = "=0.1.1"
+jieba-rs = "=0.11.0"
 
 [profile.release]
 opt-level = 3

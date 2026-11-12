@@ -208,7 +208,7 @@
     if (!track) return;
     var offset = (state.page || 0) * (state.width || 0);
     track.style.transition = animate
-      ? 'transform ' + (duration || 200) + 'ms cubic-bezier(0.215, 0.61, 0.355, 1)'
+      ? 'transform ' + duration + 'ms cubic-bezier(0.215, 0.61, 0.355, 1)'
       : 'none';
     track.style.transform = 'translateX(' + (-offset + dx) + 'px)';
   }

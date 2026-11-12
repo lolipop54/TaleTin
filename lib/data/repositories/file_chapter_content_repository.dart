@@ -33,6 +33,7 @@ import '../services/publication_cache.dart';
 import '../../engine/parsers/pdf/pdf_file.dart';
 import '../../engine/parsers/pdf/pdf_page_pictures.dart';
 import '../../domain/services/toc_entry_index.dart';
+import '../../domain/services/txt_chapter_sections.dart';
 
 part '../services/pdf_chapter_reading.dart';
 
@@ -180,6 +181,7 @@ class FileChapterContentRepository implements ChapterContentRepository {
   List<TocNode>? _toc;
   TocLocations? _tocLocations;
   final _pendingTocs = <String, Future<List<TocNode>>>{};
+  final _txtSections = <String, Future<Map<String, List<TxtTocSection>>>>{};
 
   @override
   Future<ChapterContent> chapter(
@@ -193,6 +195,37 @@ class FileChapterContentRepository implements ChapterContentRepository {
     String bookId,
     Chapter chapter,
   ) => _requestChapter(bookId, chapter, prepareLayoutDigest: true);
+
+  @override
+  Future<TxtChapterSource?> txtChapterSource(
+    String bookId,
+    Chapter chapter,
+  ) async {
+    if (chapter.textLength < kLongTxtChapterLength) return null;
+    return _read(bookId, () async {
+      final directory = p.dirname(chapterAbsolutePath(bookId, chapter));
+      final index = (await _manifest(directory))?.sourceIndex;
+      if (index?.format != 'txt') return null;
+      final worker = await _contentWorker();
+      final plan = await worker.txtChapterPlan(bookId, chapter);
+      if (plan == null) return null;
+      final (identity, starts) = plan;
+      return TxtChapterSource(
+        identity: identity,
+        starts: List.unmodifiable(starts),
+        readSection: (section) => _read(
+          bookId,
+          () async => (await _contentWorker()).txtSection(
+            bookId,
+            chapter,
+            identity,
+            starts,
+            section,
+          ),
+        ),
+      );
+    });
+  }
 
   Future<ChapterContent> _requestChapter(
     String bookId,
@@ -405,6 +438,54 @@ class FileChapterContentRepository implements ChapterContentRepository {
         );
       });
 
+  @override
+  Future<Map<String, List<TxtTocSection>>> txtTocSections(
+    String bookId,
+    List<Chapter> chapters,
+  ) => _read(bookId, () async {
+    if (chapters.isEmpty) return const {};
+    final directory = p.dirname(chapterAbsolutePath(bookId, chapters.first));
+    final key = '$bookId/$directory';
+    final cached = _txtSections.remove(key);
+    late final Future<Map<String, List<TxtTocSection>>> reading;
+    reading =
+        cached ??
+        _loadTxtTocSections(bookId, directory, chapters).catchError((
+          Object error,
+          StackTrace stack,
+        ) {
+          if (identical(_txtSections[key], reading)) _txtSections.remove(key);
+          Error.throwWithStackTrace(error, stack);
+        });
+    _txtSections[key] = reading;
+    while (_txtSections.length > 2) {
+      _txtSections.remove(_txtSections.keys.first);
+    }
+    return reading;
+  });
+
+  Future<Map<String, List<TxtTocSection>>> _loadTxtTocSections(
+    String bookId,
+    String directory,
+    List<Chapter> chapters,
+  ) async {
+    final index = (await _manifest(directory))?.sourceIndex;
+    if (index?.format == 'txt') {
+      return (await _contentWorker()).txtTocSections(
+        bookId,
+        directory,
+        index!,
+        chapters,
+      );
+    }
+    return {
+      for (final chapter in chapters)
+        chapter.id: TxtChapterSections.tocOf(
+          await _readChapterFile(bookId, chapter, textOnly: true),
+        ),
+    };
+  }
+
   Future<List<TocNode>> _readToc(String bookId, int contentVersion) async {
     final key = '$bookId/$contentVersion';
     if (_tocKey == key && _toc != null) return _toc!;
@@ -585,6 +666,9 @@ class FileChapterContentRepository implements ChapterContentRepository {
     _tocKey = null;
     _toc = null;
     _tocLocations = null;
+    _txtSections.removeWhere(
+      (key, _) => bookId == null || key.startsWith('$bookId/'),
+    );
   }
 
   /// 设置页复用既有「清理缓存」，正文任务排队执行，不与写入抢同一文件。

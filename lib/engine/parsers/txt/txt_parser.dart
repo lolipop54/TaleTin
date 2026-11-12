@@ -18,10 +18,13 @@ import '../../../domain/models/locator.dart';
 import '../../../domain/models/source_content_index.dart';
 import '../../../domain/models/source_position_preparation.dart';
 import '../../../domain/services/book_parser.dart';
+import '../../../domain/services/txt_chapter_sections.dart';
 import '../../normalization/source_position_matcher.dart';
 import '../../normalization/text_normalizer.dart';
 import '../../styles/chapter_styler.dart';
 import 'txt_chapter_rule.dart';
+import 'txt_heading_scan.dart';
+import 'txt_position_transfer.dart';
 import 'txt_source_lines.dart';
 
 class TxtParser {
@@ -56,17 +59,27 @@ class TxtParser {
     }
 
     final forceSections = request.txt?.forceSectionFallback ?? false;
+    final hints = request.txtPositionHints;
+    final transfer =
+        request.indexedContent &&
+            hints != null &&
+            hints.charset == (request.txt?.charset ?? 'UTF-8')
+        ? TxtPositionTransfer(hints)
+        : null;
 
     var builder = _ChapterBuilder(
       workDir: request.workDir,
       contentVersion: request.contentVersion,
       indexedContent: request.indexedContent,
       anchors: request.locationAnchors,
+      transfer: transfer,
     );
     var useHeadings = false;
     var usesIndentedTxtHeadings = false;
     var usesCombinedTxtHeadings = false;
     var headingCount = 0;
+    var waitingForSpecialBody = false;
+    (TxtSourceLine, TxtHeading)? pendingSpecial;
     var section = 1;
     var started = false;
     var pendingVolume = false;
@@ -85,9 +98,15 @@ class TxtParser {
       }
     }
 
-    void addHeadingLine(TxtSourceLine sourceLine, TxtHeading? heading) {
+    void applyHeadingLine(TxtSourceLine sourceLine, TxtHeading? heading) {
       final line = sourceLine.text;
-      if (heading != null) {
+      if (heading?.revisesTitle ?? false) {
+        builder.renameChapter(heading!.title);
+        builder.addParagraph(
+          sourceLine.normalizedText ?? normalizeParagraph(line),
+          sourceLine,
+        );
+      } else if (heading != null) {
         builder.closeChapter();
         if (heading.volumeTitle case final volume?) {
           usesCombinedTxtHeadings = true;
@@ -116,6 +135,18 @@ class TxtParser {
       }
     }
 
+    void addHeadingLine(TxtSourceLine sourceLine, TxtHeading? heading) {
+      if (pendingSpecial case (final line, final title)) {
+        pendingSpecial = null;
+        applyHeadingLine(line, heading == null ? title : null);
+      }
+      if (heading != null && heading.requiresBody) {
+        pendingSpecial = (sourceLine, heading);
+      } else {
+        applyHeadingLine(sourceLine, heading);
+      }
+    }
+
     // 原文件只顺序读取一次。未确定目录时先生成分节候选；第二个章题一到，
     // 只回放此前的短前段并切为按章生成。没有目录的书直接使用分节候选，
     // 不再重读整本。前段超过 64 Ki 字符后落临时文件，不把全书留在内存中。
@@ -125,7 +156,7 @@ class TxtParser {
     ).length();
     var readBytes = 0;
     var lineCount = 0;
-    var afterBlankLine = true;
+    final headingScan = TxtHeadingScan(rule);
     var locationMatches = <String, Locator?>{};
     final sourceLines = request.indexedContent
         ? sourceLinesFactory?.call(
@@ -147,23 +178,25 @@ class TxtParser {
       )) {
         for (final line in batch) {
           final blank = isBlankLine(line.text);
-          final heading = forceSections || blank
+          if (!blank) transfer?.observe(line);
+          final heading = forceSections
               ? null
-              : rule.matchLine(
-                  line.text,
-                  lineCount,
-                  afterBlankLine: afterBlankLine,
-                );
-          afterBlankLine = blank;
+              : headingScan.read(line.text, lineCount, blank: blank);
           if (forceSections) {
             if (!blank) addSectionLine(line);
           } else if (useHeadings) {
             if (!blank) addHeadingLine(line, heading);
           } else {
             prefix.add(line);
-            if (!blank) addSectionLine(line);
-            if (heading?.kind == TxtHeadingKind.chapter) {
-              headingCount++;
+            if (!blank) {
+              addSectionLine(line);
+              if (heading == null && waitingForSpecialBody) headingCount++;
+              waitingForSpecialBody = heading?.requiresBody ?? false;
+              if (heading?.kind == TxtHeadingKind.chapter &&
+                  !heading!.revisesTitle &&
+                  !waitingForSpecialBody) {
+                headingCount++;
+              }
             }
             if (headingCount == 2) {
               useHeadings = true;
@@ -173,22 +206,18 @@ class TxtParser {
                 contentVersion: request.contentVersion,
                 indexedContent: request.indexedContent,
                 anchors: request.locationAnchors,
+                transfer: transfer,
               );
               var replayed = 0;
-              var afterReplayBlank = true;
+              final replayScan = TxtHeadingScan(rule);
               await for (final previous in prefix.lines()) {
                 final blank = isBlankLine(previous.text);
-                if (!blank) {
-                  addHeadingLine(
-                    previous,
-                    rule.matchLine(
-                      previous.text,
-                      replayed,
-                      afterBlankLine: afterReplayBlank,
-                    ),
-                  );
-                }
-                afterReplayBlank = blank;
+                final heading = replayScan.read(
+                  previous.text,
+                  replayed,
+                  blank: blank,
+                );
+                if (!blank) addHeadingLine(previous, heading);
                 if (++replayed % 2048 == 0) _checkCancelled(isCancelled);
               }
               prefix.dispose();
@@ -201,8 +230,13 @@ class TxtParser {
         }
       }
       _checkCancelled(isCancelled);
+      if (pendingSpecial case (final line, _)) applyHeadingLine(line, null);
       builder.closeChapter();
       locationMatches = builder.matches.finish();
+      // 只有整份原文件摘要一致时，旧索引里的字节位置才可信。
+      if (transfer != null && hints!.digest == sourceLines.digest) {
+        locationMatches.addAll(builder.transferredPositions);
+      }
     } finally {
       prefix.dispose();
     }
@@ -243,6 +277,7 @@ class TxtParser {
               ),
               charset: request.txt?.charset ?? 'UTF-8',
               chapters: builder.ranges,
+              txtSectionStarts: builder.sectionStarts,
             ),
       warnings: useHeadings ? const [] : const [txtSectionFallbackWarning],
     );
@@ -290,18 +325,25 @@ class _ChapterBuilder {
     required this.contentVersion,
     required this.indexedContent,
     required List<Locator> anchors,
+    required this.transfer,
   }) : matches = SourcePositionMatcher(anchors);
 
   final String workDir;
   final int contentVersion;
   final bool indexedContent;
   final SourcePositionMatcher matches;
+  final TxtPositionTransfer? transfer;
+  final transferredPositions = <String, Locator>{};
   final ranges = <String, List<Object>>{};
+  final sectionStarts = <String, List<TxtSectionStart>>{};
+  final _sectionStarts = <TxtSectionStart>[];
+  int _nextSectionOffset = TxtChapterSections.targetLength;
   int _start = 0, _end = 0;
 
   final List<Chapter> chapters = [];
   final List<TocNode> toc = [];
-  String? _partTitle, _volumeTitle;
+  String? _partTitle;
+  (String?, String)? _volumeKey;
   List<TocNode>? _volumeChildren;
   final List<ContentBlock> _blocks = [];
   int _blockSeq = 0;
@@ -313,31 +355,59 @@ class _ChapterBuilder {
   int get currentTextLength => _currentTextLength;
 
   void startVolume(String title) {
+    final key = (_partTitle, TxtChapterRule.volumeIdentity(title));
+    if (key == _volumeKey) return;
     final children = <TocNode>[];
-    _volumeTitle = title;
+    _volumeKey = key;
     _volumeChildren = children;
-    toc.add(TocNode(title: title, children: children));
+    final part = _partTitle;
+    toc.add(
+      TocNode(title: part == null ? title : '$part·$title', children: children),
+    );
   }
 
   void useHeadingGroups(String? part, String volume) {
     _partTitle = part ?? _partTitle;
-    final title = _partTitle == null ? volume : '$_partTitle·$volume';
     // 目录按卷展开。把篇名保留在卷头，区分不同篇里的同编号卷。
-    if (title != _volumeTitle) startVolume(title);
+    startVolume(volume);
   }
+
+  void renameChapter(String title) => _openTitle = title;
 
   void startChapter(String title) {
     _openTitle = title;
     _blocks.clear();
     _blockSeq = 0;
     _currentTextLength = 0;
+    _sectionStarts.clear();
+    _nextSectionOffset = TxtChapterSections.targetLength;
   }
 
   void addParagraph(String text, TxtSourceLine sourceLine) {
     if (text.isEmpty) return;
     if (_blockSeq == 0) _start = sourceLine.start;
+    if (indexedContent && _currentTextLength >= _nextSectionOffset) {
+      _sectionStarts.add((
+        byteOffset: sourceLine.start,
+        paragraph: _blockSeq,
+        textOffset: _currentTextLength,
+      ));
+      _nextSectionOffset = TxtChapterSections.nextStartAfter(
+        _currentTextLength,
+      );
+    }
     _end = sourceLine.end;
     _blockSeq++;
+    final positions = transfer;
+    if (positions != null && positions.hasAnchorAt(sourceLine.start)) {
+      positions.restore(
+        sourceLine.start,
+        text,
+        'ch${(chapters.length + 1).toString().padLeft(4, '0')}',
+        'b$_blockSeq',
+        transferredPositions,
+      );
+    }
     // 来源索引只需要字节边界和精确字符数，正文对象留到实际读章时创建。
     // 段间的一个位置权重与 ContentBlock.textLength 保持一致。
     _currentTextLength += text.length + 1;
@@ -366,6 +436,12 @@ class _ChapterBuilder {
     _feedMatches();
     if (indexedContent) {
       ranges[id] = [_start, _end];
+      if (_currentTextLength >= kLongTxtChapterLength) {
+        sectionStarts[id] = [
+          (byteOffset: _start, paragraph: 0, textOffset: 0),
+          ..._sectionStarts,
+        ];
+      }
     } else {
       final content = ChapterContent(
         chapterId: id,

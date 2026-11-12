@@ -101,73 +101,94 @@ class ThoughtPopover extends StatelessWidget {
   final String? actionLabel;
   final VoidCallback? onAction;
   @override
-  Widget build(BuildContext context) => CustomPaint(
-    painter: _BubblePainter(theme.background, theme.primary, tip, below),
-    child: Material(
-      color: Colors.transparent,
-      child: Padding(
-        padding: EdgeInsets.fromLTRB(16, below ? 12 : 4, 16, below ? 4 : 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
+  Widget build(BuildContext context) => ReadingPopoverBubble(
+    theme: theme,
+    tip: tip,
+    below: below,
+    child: Padding(
+      padding: EdgeInsets.fromLTRB(16, below ? 12 : 4, 16, below ? 4 : 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SizedBox(
+            height: math.max(
+              48.0,
+              MediaQuery.textScalerOf(context).scale(16) * 1.5,
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    title,
+                    style: style.copyWith(fontWeight: FontWeight.w600),
+                  ),
+                ),
+                GtButton.icon(
+                  tooltip: '关闭想法',
+                  onPressed: () => Navigator.pop(context),
+                  icon: Icon(Icons.close, color: theme.primary, size: 20),
+                ),
+              ],
+            ),
+          ),
+          Flexible(
+            fit: FlexFit.tight,
+            // 弹窗外框已按文字和安全区算好高度，正文用完实际剩余空间。
+            // 这里再设另一套上限，会在长注释的底部留下大块空白。
+            child: SingleChildScrollView(
+              primary: false,
+              physics: const ClampingScrollPhysics(),
+              child: Text(body, style: style),
+            ),
+          ),
+          if (actionLabel != null && onAction != null)
             SizedBox(
               height: math.max(
                 48.0,
                 MediaQuery.textScalerOf(context).scale(16) * 1.5,
               ),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      title,
-                      style: style.copyWith(fontWeight: FontWeight.w600),
-                    ),
-                  ),
-                  GtButton.icon(
-                    tooltip: '关闭想法',
-                    onPressed: () => Navigator.pop(context),
-                    icon: Icon(Icons.close, color: theme.primary, size: 20),
-                  ),
-                ],
-              ),
-            ),
-            Flexible(
-              fit: FlexFit.tight,
-              // 弹窗外框已按文字和安全区算好高度，正文用完实际剩余空间。
-              // 这里再设另一套上限，会在长注释的底部留下大块空白。
-              child: SingleChildScrollView(
-                primary: false,
-                physics: const ClampingScrollPhysics(),
-                child: Text(body, style: style),
-              ),
-            ),
-            if (actionLabel != null && onAction != null)
-              SizedBox(
-                height: math.max(
-                  48.0,
-                  MediaQuery.textScalerOf(context).scale(16) * 1.5,
-                ),
-                child: Align(
-                  alignment: Alignment.centerRight,
-                  child: GtButton(
-                    onPressed: onAction,
-                    tooltip: actionLabel,
-                    child: Text(
-                      actionLabel!,
-                      style: style.copyWith(
-                        color: theme.primary,
-                        fontWeight: FontWeight.w600,
-                      ),
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: GtButton(
+                  onPressed: onAction,
+                  tooltip: actionLabel,
+                  child: Text(
+                    actionLabel!,
+                    style: style.copyWith(
+                      color: theme.primary,
+                      fontWeight: FontWeight.w600,
                     ),
                   ),
                 ),
-              )
-            else
-              const SizedBox(height: 12),
-          ],
-        ),
+              ),
+            )
+          else
+            const SizedBox(height: 12),
+        ],
       ),
     ),
+  );
+}
+
+/// 想法、脚注和查词共用同一套纸面色、尖角和阴影。
+class ReadingPopoverBubble extends StatelessWidget {
+  const ReadingPopoverBubble({
+    super.key,
+    required this.theme,
+    required this.tip,
+    required this.below,
+    required this.child,
+  });
+
+  final ReadingTheme theme;
+  final double tip;
+  final bool below;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => CustomPaint(
+    painter: _BubblePainter(theme.background, theme.primary, tip, below),
+    child: Material(color: Colors.transparent, child: child),
   );
 }
 

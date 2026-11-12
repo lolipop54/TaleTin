@@ -38,39 +38,89 @@ class NativeTxtStream implements Finalizable {
     (output) => gt_txt_hash_result(_handle, output),
     hexDigest,
   );
-  List<NativeTxtLine> feed(List<int> bytes, {bool finish = false}) {
+  T _feed<T>(List<int> bytes, bool finish, T Function(Uint8List) read) {
     if (_handle == nullptr) throw StateError('TXT 扫描已关闭');
     return withNativeInput(
       bytes,
       (input, length) => withNativeResult(
         (output) => gt_txt_feed(_handle, input, length, finish ? 1 : 0, output),
-        (bytes) {
-          final data = ByteData.sublistView(bytes);
-          final lines = <NativeTxtLine>[];
-          var at = 0;
-          while (at < bytes.length) {
-            final start = data.getUint64(at, Endian.little),
-                end = data.getUint64(at + 8, Endian.little);
-            final raw = data.getUint32(at + 16, Endian.little),
-                length = data.getUint32(at + 20, Endian.little);
-            final units = data.getUint32(at + 24, Endian.little);
-            at += 28;
-            final text = nativeText(Uint8List.sublistView(bytes, at, at + raw));
-            at += raw;
-            final normalized = length == 0xffffffff
-                ? text
-                : nativeText(Uint8List.sublistView(bytes, at, at + length));
-            if (length != 0xffffffff) at += length;
-            if (normalized.length != units) {
-              throw StateError('Rust UTF-16 长度不一致');
-            }
-            lines.add(NativeTxtLine(start, end, text, normalized));
-          }
-          return lines;
-        },
+        read,
       ),
     );
   }
+
+  List<NativeTxtLine> feed(List<int> bytes, {bool finish = false}) =>
+      _feed(bytes, finish, (bytes) {
+        final data = ByteData.sublistView(bytes);
+        final lines = <NativeTxtLine>[];
+        var at = 0;
+        while (at < bytes.length) {
+          final start = data.getUint64(at, Endian.little),
+              end = data.getUint64(at + 8, Endian.little);
+          final raw = data.getUint32(at + 16, Endian.little),
+              length = data.getUint32(at + 20, Endian.little);
+          final units = data.getUint32(at + 24, Endian.little);
+          at += 28;
+          final text = nativeText(Uint8List.sublistView(bytes, at, at + raw));
+          at += raw;
+          final normalized = length == 0xffffffff
+              ? text
+              : nativeText(Uint8List.sublistView(bytes, at, at + length));
+          if (length != 0xffffffff) at += length;
+          if (normalized.length != units) {
+            throw StateError('Rust UTF-16 长度不一致');
+          }
+          lines.add(NativeTxtLine(start, end, text, normalized));
+        }
+        return lines;
+      });
+
+  /// 正文和分节扫描只需要规范化文字。原行仅在空白判定有疑义时解码。
+  List<String> feedParagraphs(
+    List<int> bytes, {
+    required bool Function(String) isBlankLine,
+    bool finish = false,
+  }) => feedParagraphRanges(
+    bytes,
+    isBlankLine: isBlankLine,
+    finish: finish,
+    convert: (text, _) => text,
+  );
+
+  List<T> feedParagraphRanges<T>(
+    List<int> bytes, {
+    required bool Function(String) isBlankLine,
+    required T Function(String text, int byteOffset) convert,
+    bool finish = false,
+  }) => _feed(bytes, finish, (bytes) {
+    final data = ByteData.sublistView(bytes);
+    final paragraphs = <T>[];
+    var at = 0;
+    while (at < bytes.length) {
+      final row = at;
+      final rawStart = at + 28;
+      final rawEnd = rawStart + data.getUint32(at + 16, Endian.little);
+      final length = data.getUint32(at + 20, Endian.little);
+      final units = data.getUint32(at + 24, Endian.little);
+      final reuse = length == 0xffffffff;
+      at = reuse ? rawEnd : rawEnd + length;
+      if (units == 0) continue;
+      final text = nativeText(
+        Uint8List.sublistView(bytes, reuse ? rawStart : rawEnd, at),
+      );
+      if (text.length != units) throw StateError('Rust UTF-16 长度不一致');
+      // 规范化只移除或替换空白，所以有可见文字时原行也一定有正文。
+      if (text.trim().isNotEmpty ||
+          !isBlankLine(
+            reuse
+                ? text
+                : nativeText(Uint8List.sublistView(bytes, rawStart, rawEnd)),
+          )) {
+        paragraphs.add(convert(text, data.getUint64(row, Endian.little)));
+      }
+    }
+    return paragraphs;
+  });
 
   void close() {
     if (_handle != nullptr) {

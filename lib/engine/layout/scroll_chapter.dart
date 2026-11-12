@@ -115,6 +115,8 @@ class ScrollChapter {
     LayoutOptions options, {
     required bool Function() cancelled,
     String chapterTitle = '',
+    bool chapterStart = true,
+    bool chapterEnd = true,
     BlockMeasurementCache? measurementCache,
   }) async {
     final cells = <ScrollCell>[];
@@ -158,9 +160,11 @@ class ScrollChapter {
     );
     // 章题和短横线只给 TXT 补；其他格式按原书内容排，不插入标题。
     final contentTitle =
+        chapterStart &&
         options.insertChapterTitle &&
         ChapterLayout.firstBlockIsChapterTitle(content, chapterTitle);
-    if (options.insertChapterTitle &&
+    if (chapterStart &&
+        options.insertChapterTitle &&
         content.pdfPage == null &&
         !contentTitle &&
         chapterTitle.trim().isNotEmpty) {
@@ -356,7 +360,7 @@ class ScrollChapter {
       } while (offset < text.length);
     }
     // 章尾只留两行正文高度；留白不另造正文块，已有位置和笔记仍指向原文。
-    if (cells.isNotEmpty) {
+    if (chapterEnd && cells.isNotEmpty) {
       final last = cells.removeLast();
       final gap =
           options.textScaler.scale(options.settings.fontSize.toDouble()) *

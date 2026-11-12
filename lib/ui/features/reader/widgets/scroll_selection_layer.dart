@@ -21,11 +21,11 @@ part 'scroll_selection_drag.dart';
 typedef ScrollDecoration = ({SelectionRange range, Color color, String? noteId});
 class ScrollSelectionBackend {
   const ScrollSelectionBackend({required this.motion, required this.hit,
-    required this.sentence, required this.measure, required this.move,
+    required this.initialRange, required this.measure, required this.move,
     this.decorate, this.measureSync, this.contentTap, this.native = false});
   final Listenable motion;
   final Future<Locator?> Function(Offset) hit;
-  final Future<SelectionRange?> Function(Offset) sentence;
+  final Future<SelectionRange?> Function(Offset) initialRange;
   final Future<List<ScrollRangeGeometry>> Function(List<SelectionRange>) measure;
   final List<ScrollRangeGeometry> Function(List<SelectionRange>)? measureSync;
   final Future<void> Function(double) move;
@@ -37,10 +37,11 @@ class ScrollSelectionBackend {
 /// 两种滚动正文共用菜单和手柄；保存仍走已有笔记流程。
 class ScrollSelectionLayer extends ConsumerStatefulWidget {
   const ScrollSelectionLayer({super.key, required this.bookId, required this.backend,
-    required this.theme, required this.child});
+    required this.theme, required this.child, this.enableDictionary = false});
   final String bookId;
   final ScrollSelectionBackend backend;
   final ReadingTheme theme;
+  final bool enableDictionary;
   final Widget child;
   @override
   ConsumerState<ScrollSelectionLayer> createState() => ScrollSelectionLayerState();
@@ -55,6 +56,7 @@ class ScrollSelectionLayerState extends ConsumerState<ScrollSelectionLayer>
   SelectionRange? _speechRange;
   Object? _key;
   int _version = 0;
+  int _startRequest = 0;
   bool _scheduled = false;
   @override
   void initState() { super.initState(); widget.backend.motion.addListener(_schedule); }
@@ -85,23 +87,29 @@ class ScrollSelectionLayerState extends ConsumerState<ScrollSelectionLayer>
     if (mounted && version == _version) setState(() => _geometry = geometry);
   }
   Future<void> begin(Offset point) async {
+    final request = ++_startRequest;
+    final backend = widget.backend;
+    bool current() =>
+        mounted && request == _startRequest && backend == widget.backend;
     await ref.read(readerSessionProvider(widget.bookId).notifier).beginManualReading();
-    final range = await widget.backend.sentence(point);
-    if (!mounted || range == null) return;
-    final geometry = (await widget.backend.measure([range])).first;
-    if (!mounted) return;
+    if (!current()) return;
+    final range = await backend.initialRange(point);
+    if (!current() || range == null) return;
+    final geometry = (await backend.measure([range])).first;
+    if (!current()) return;
     // 初次长按只选当前屏幕看得到的那一段，两端手柄都能立即抓到。
     final visible = geometry.rects.where((r) => r.top >= 0 && r.bottom <= context.size!.height - 44).toList();
     if (visible.isEmpty) return;
     final start = geometry.start == null
-      ? await widget.backend.hit(Offset(visible.first.left + 0.5, visible.first.center.dy)) : range.start;
+      ? await backend.hit(Offset(visible.first.left + 0.5, visible.first.center.dy)) : range.start;
     final end = geometry.end == null
-      ? await widget.backend.hit(Offset(visible.last.right - 0.5, visible.last.center.dy)) : range.end;
-    if (mounted && start != null && end != null) {
+      ? await backend.hit(Offset(visible.last.right - 0.5, visible.last.center.dy)) : range.end;
+    if (current() && start != null && end != null) {
       ref.read(readerProvider.notifier).startSelection(start, end);
     }
   }
   Future<bool> tap(Offset point) async {
+    _startRequest++;
     // native 滚动可能刚停下，先取当前几何再判断，不能点中旧位置。
     await _refresh();
     if (!mounted) return true;
@@ -171,6 +179,7 @@ class ScrollSelectionLayerState extends ConsumerState<ScrollSelectionLayer>
           if ((_dragPoint != null && _dragAtEnd ? _dragPoint : _geometry.first.end) case final end?) _handle(end, true, _geometry.first.endHeight),
         ],
         if (_dragPoint == null) Positioned.fill(child: SelectionActions(bookId: widget.bookId,
+          dictionaryTheme: widget.enableDictionary ? widget.theme : null,
           state: state, rects: _geometry.first.rects, origin: Offset.zero, pageSize: box.biggest)),
       ],
     ]));

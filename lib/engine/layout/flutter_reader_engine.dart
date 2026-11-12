@@ -54,12 +54,13 @@ class FlutterReaderEngine extends ReaderEngine {
     bool atEnd = false,
     LayoutToken? token,
   }) async {
-    if (!ReaderDeliveryExperiments.incremental) {
+    if (!ReaderDeliveryExperiments.incremental && request.txtSections == null) {
       return layoutChapter(request, token: token);
     }
     final task = await _taskFor(request);
     return task.ensure(
       target: target,
+      chapterOffset: request.chapterOffset,
       atEnd: atEnd,
       token: token,
       lookAhead: request.targetFirst ? 0 : 4,
@@ -71,12 +72,15 @@ class FlutterReaderEngine extends ReaderEngine {
 
   Future<ChapterLayoutTask> _taskFor(LayoutRequest request) async {
     final revision = (_allInvalidation, _bookInvalidation[request.bookId] ?? 0);
-    final preparation = _fontPreparation(request);
+    final sections = request.txtSections;
+    final preparation = sections == null ? _fontPreparation(request) : null;
     final options = preparation == null ? request.options : await preparation;
-    final digest = await traceReaderWork(
-      'layout.content_identity',
-      () => ContentFingerprint.of(request.content),
-    );
+    final digest = sections == null
+        ? await traceReaderWork(
+            'layout.content_identity',
+            () => ContentFingerprint.of(request.content),
+          )
+        : ('txt-sections', sections.identity);
     // 核对实际正文摘要与所有使用字号的精确缩放值，相同正文重新解码仍命中。
     final key = (
       revision,
@@ -98,8 +102,8 @@ class FlutterReaderEngine extends ReaderEngine {
     }
     if (revision !=
         (_allInvalidation, _bookInvalidation[request.bookId] ?? 0)) {
-      task.dispose();
-      throw const LayoutCancelled();
+      task.dispose(reason: LayoutCancellationReason.layoutInvalidated);
+      throw const LayoutCancelled(LayoutCancellationReason.layoutInvalidated);
     }
     _tasks[key] = task;
     // 不能回收仍在显示或正在处理前台请求的任务；跳转期间可暂时超过三个。
@@ -108,7 +112,9 @@ class FlutterReaderEngine extends ReaderEngine {
           .where((k) => k != key && !_tasks[k]!.isInUse)
           .firstOrNull;
       if (oldest == null) break;
-      _tasks.remove(oldest)?.dispose();
+      _tasks
+          .remove(oldest)
+          ?.dispose(reason: LayoutCancellationReason.cacheEvicted);
     }
     return task;
   }
@@ -117,7 +123,28 @@ class FlutterReaderEngine extends ReaderEngine {
     LayoutRequest request,
     LayoutOptions options,
   ) async {
-    final store = ReaderDeliveryExperiments.checkpoint ? checkpoints : null;
+    final sections = request.txtSections;
+    if (sections != null) {
+      return ChapterLayoutTask(
+        bookId: request.bookId,
+        contentVersion: request.contentVersion,
+        chapter: request.chapter,
+        content: null,
+        options: options,
+        indexedTxt: sections,
+        measurementCache: _measurements,
+      );
+    }
+    // 长 TXT 每次只量目标附近的段落，既有整章断点的页边界不能混用。
+    final store =
+        ReaderDeliveryExperiments.checkpoint &&
+            !ChapterLayoutTask.usesTxtWindows(
+              request.chapter,
+              request.content,
+              options,
+            )
+        ? checkpoints
+        : null;
     await EnglishHyphenation.prepare();
     final exact =
         '${EnglishHyphenation.fingerprint}|'
@@ -183,6 +210,9 @@ class FlutterReaderEngine extends ReaderEngine {
     LayoutRequest request, {
     LayoutToken? token,
   }) async {
+    if (request.txtSections != null) {
+      return layoutWindow(request, token: token);
+    }
     final trace = ReaderWorkTrace.start('layout.request', {
       'chapter': request.chapter.ordinal,
       'cancellable': token != null,
@@ -287,11 +317,11 @@ class FlutterReaderEngine extends ReaderEngine {
   }) => pageEdgeLocator(layout: layout, pageIndex: pageIndex, atEnd: atEnd);
 
   @override
-  ({Locator start, Locator end})? sentenceRangeAtPoint(
+  Future<({Locator start, Locator end})?> initialSelectionAtPoint(
     ChapterLayout layout,
     int pageIndex,
     Offset position,
-  ) => sentenceRangeAtPointInPage(
+  ) => initialSelectionAtPointInPage(
     layout: layout,
     pageIndex: pageIndex,
     position: position,
@@ -311,7 +341,7 @@ class FlutterReaderEngine extends ReaderEngine {
     _measurements.clear();
     _tasks.removeWhere((_, task) {
       if (bookId != null && task.bookId != bookId) return false;
-      task.dispose();
+      task.dispose(reason: LayoutCancellationReason.layoutInvalidated);
       return true;
     });
   }

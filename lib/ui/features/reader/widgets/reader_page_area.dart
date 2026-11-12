@@ -92,6 +92,8 @@ class _PageAreaState extends ConsumerState<_PageArea> {
   /// 翻页期间暂停菜单与静止手柄的触摸；手柄外观始终随书页移动。
   bool _pageTurning = false;
   bool? _draggedSelectionEnd;
+  Future<void>? _startingSelection;
+  int _selectionRequest = 0;
 
   /// 键盘没弹出时的正文区高度。
   ///
@@ -186,14 +188,16 @@ class _PageAreaState extends ConsumerState<_PageArea> {
                 GestureDetector(
                   // 长按起选、拖动延伸（原型级选区，实现计划 S15）
                   behavior: HitTestBehavior.translucent,
-                  onLongPressStart: (details) => _onLongPress(
-                    details.localPosition,
-                    constraints,
-                    options.contentSize,
-                  ),
+                  onLongPressStart: (details) {
+                    _startingSelection = _onLongPress(
+                      details.localPosition,
+                      constraints,
+                      options.contentSize,
+                    );
+                  },
                   onLongPressMoveUpdate: (details) {
                     // 长按时手指总有一点抖动：没超过阈值就不动选区，
-                    // 否则刚选中的句子会被截断到手指那一点（真机反馈过）
+                    // 否则刚选中的词会被截断到手指那一点。
                     if (details.offsetFromOrigin.distance <
                         kSelectionDragSlop) {
                       return;
@@ -202,6 +206,7 @@ class _PageAreaState extends ConsumerState<_PageArea> {
                       details.localPosition,
                       constraints,
                       options.contentSize,
+                      extend: true,
                     );
                   },
                   onLongPressEnd: (_) {},
@@ -259,6 +264,7 @@ class _PageAreaState extends ConsumerState<_PageArea> {
                   Positioned.fill(
                     child: SelectionActions(
                       bookId: widget.bookId,
+                      dictionaryTheme: widget.settings.theme,
                       state: widget.state,
                       rects: ref
                           .read(readerEngineProvider)

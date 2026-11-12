@@ -1,4 +1,4 @@
-import 'dart:ui' show BoxHeightStyle, BoxWidthStyle;
+import 'dart:ui' show BoxHeightStyle, BoxWidthStyle, GlyphInfo;
 
 import 'package:flutter/painting.dart';
 
@@ -63,6 +63,18 @@ class EdgeAlignedTextPainter extends TextPainter {
   @override
   TextPosition getPositionForOffset(Offset offset) =>
       super.getPositionForOffset(offset + Offset(_edgeShift, 0));
+
+  @override
+  GlyphInfo? getClosestGlyphForOffset(Offset offset) {
+    final shift = Offset(_edgeShift, 0);
+    final glyph = super.getClosestGlyphForOffset(offset + shift);
+    if (glyph == null || shift == Offset.zero) return glyph;
+    return GlyphInfo(
+      glyph.graphemeClusterLayoutBounds.shift(-shift),
+      glyph.graphemeClusterCodeUnitRange,
+      glyph.writingDirection,
+    );
+  }
 
   @override
   Offset getOffsetForCaret(TextPosition position, Rect caretPrototype) {

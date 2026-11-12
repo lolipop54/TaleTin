@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/painting.dart';
 
+import '../selection/initial_text_range.dart';
 import 'measured_block.dart';
 import 'formula_selection.dart';
 
@@ -135,6 +136,62 @@ extension LineTextGeometry on MeasuredBlock {
     final offset = p.getPositionForOffset(Offset(x, line.height / 2)).offset;
     p.dispose();
     return (line.start + offset).clamp(line.start, line.end);
+  }
+
+  /// 长按命中字形，拖手柄才用最近的插入点。否则按住一个字的右半边，
+  /// 插入点会落在这个字之后，起选时就会选成后一个字。
+  Future<({int start, int end})?> initialSelectionInLine(
+    int index,
+    Offset point, {
+    required TextScaler scaler,
+    required double width,
+    required String source,
+    int sourceOffset = 0,
+  }) async {
+    final line = lines[index];
+    if (point.dy < 0 || point.dy >= line.height) return null;
+    final x = point.dx - inset - horizontalOffset(index, width);
+    final origin = sourceOffset - displayPrefixLength;
+
+    Future<({int start, int end})?> textRange(
+      TextPainter painter,
+      double dx,
+      int start,
+    ) async {
+      final glyph = painter.getClosestGlyphForOffset(Offset(dx, 0));
+      final bounds = glyph?.graphemeClusterLayoutBounds;
+      final hit =
+          bounds != null &&
+          dx >= math.max(0, bounds.left) &&
+          dx < math.min(painter.width, bounds.right);
+      painter.dispose();
+      if (!hit) return null;
+      final display = start + glyph!.graphemeClusterCodeUnitRange.start;
+      if (display < displayPrefixLength || display >= line.end) return null;
+      return initialTextRange(source, origin + display);
+    }
+
+    if (hasSegmentedText) {
+      for (final object in inlineImagesInLines(index, index + 1)) {
+        if ((Offset(object.left, object.top) & object.size).contains(
+          Offset(x, point.dy),
+        )) {
+          return (
+            start: origin + object.offset,
+            end: origin + (object.formula?.end ?? object.offset + 1),
+          );
+        }
+      }
+      final hit = segmentAtX(index, x);
+      if (hit == null) return null;
+      final segment = hit.segment;
+      return textRange(
+        _geometrySegment(segment, scaler),
+        x - segment.left,
+        segment.start,
+      );
+    }
+    return textRange(_geometryPainter(index, scaler, width), x, line.start);
   }
 
   Rect? caretRectInLine(

@@ -16,10 +16,15 @@ extension _ReaderPageSelection on _PageAreaState {
   Future<void> _onLongPress(
     Offset localPosition,
     BoxConstraints area,
-    Size contentSize,
-  ) async {
+    Size contentSize, {
+    bool extend = false,
+  }) async {
+    final request = extend ? _selectionRequest : ++_selectionRequest;
+    // 手指可能在分词完成前已经开始移动。先从最初按下的字起选，再扩选。
+    if (extend) await _startingSelection;
+    if (!mounted || request != _selectionRequest) return;
     await ref.read(automaticReadingProvider(widget.bookId).notifier).discard();
-    if (!mounted) return;
+    if (!mounted || request != _selectionRequest) return;
     final session = widget.session;
     final layout = session.layout;
     if (layout == null) return;
@@ -40,16 +45,27 @@ extension _ReaderPageSelection on _PageAreaState {
     final engine = ref.read(readerEngineProvider);
     final point = localPosition - origin;
     final vm = ref.read(readerProvider.notifier);
+    final state = ref.read(readerProvider);
     // 还没起选，或现在这段选区是「点已有高亮」选出来的：都按新选文开始，
     // 不在旧高亮的范围上接着延伸（用户口径：改范围要重新选文字）
-    if (widget.state.selection == null || widget.state.selectionFromMark) {
-      final sentence = engine.sentenceRangeAtPoint(
+    if (state.selection == null || state.selectionFromMark) {
+      if (extend) return;
+      final range = await engine.initialSelectionAtPoint(
         layout,
         session.pageIndex,
         point,
       );
-      if (sentence == null) return;
-      vm.startSelection(sentence.start, sentence.end);
+      if (!mounted ||
+          range == null ||
+          request != _selectionRequest ||
+          _pageTurning ||
+          widget.session.layout != layout ||
+          widget.session.pageIndex != session.pageIndex ||
+          ref.read(readerProvider).controlsVisible ||
+          ref.read(readerProvider).selection != state.selection) {
+        return;
+      }
+      vm.startSelection(range.start, range.end);
       return;
     }
     // 拖出页面下沿/上沿：按拖出的距离整页整页地往后/往前选（原型口径）

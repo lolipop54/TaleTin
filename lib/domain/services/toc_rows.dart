@@ -28,6 +28,7 @@ List<TocRow> flattenTocRows(
   String query, {
   required bool searching,
   bool descending = false,
+  Set<String> expandedSections = const {},
 }) {
   final rows = <TocRow>[];
   for (final index in visible) {
@@ -46,10 +47,24 @@ List<TocRow> flattenTocRows(
     for (final chapter in volume.chapters) {
       if (!searching || wholeVolume || chapter.matches(query)) {
         rows.add(ChapterListRow(chapter));
+        if (expandedSections.contains(chapter.chapterId)) {
+          rows.addAll(
+            visibleTxtSections(chapter, query).map(ChapterListRow.new),
+          );
+        }
       }
     }
   }
   // 反转完整的可见顺序，卷、各级子目录及父项一起反转；保留条目自身的缩进和锚点。
   // 只反转卷或叶子章节会让父项仍留在上方，无法向上展开。
   return descending ? rows.reversed.toList() : rows;
+}
+
+/// 搜索命中某一节时只显示命中的节；只命中章名时展开可看到该章全部小节。
+List<TocEntry> visibleTxtSections(TocEntry chapter, String query) {
+  if (query.isEmpty) return chapter.sections;
+  final matches = chapter.sections
+      .where((section) => section.matches(query))
+      .toList();
+  return matches.isEmpty ? chapter.sections : matches;
 }

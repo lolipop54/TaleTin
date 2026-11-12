@@ -83,7 +83,7 @@
     },
     turnRendered: async function (slot, load) {
       if (!valid(slot, load)) return false;
-      // Dart已等200ms，但繁忙时浏览器可能晚一帧才启动变换。只等阅读器的
+      // Dart 已等过设定的动画时长，但浏览器忙时可能晚一帧才开始变换。只等阅读器的
       // 正文transform过渡结束，不等待书中可能永久循环的其他动画。
       var body = slots[slot].frame.contentDocument.body;
       var transitions = body ? body.getAnimations().filter(function (animation) {

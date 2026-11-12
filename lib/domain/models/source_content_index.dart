@@ -1,3 +1,31 @@
+typedef TxtSectionStart = ({int byteOffset, int paragraph, int textOffset});
+
+List<List<int>> encodeTxtSectionStarts(List<TxtSectionStart> starts) => [
+  for (final start in starts)
+    [start.byteOffset, start.paragraph, start.textOffset],
+];
+
+List<TxtSectionStart>? decodeTxtSectionStarts(Object? value) {
+  if (value is! List || value.isEmpty) return null;
+  final starts = <TxtSectionStart>[];
+  for (final item in value) {
+    if (item case [
+      final int byteOffset,
+      final int paragraph,
+      final int textOffset,
+    ]) {
+      starts.add((
+        byteOffset: byteOffset,
+        paragraph: paragraph,
+        textOffset: textOffset,
+      ));
+    } else {
+      return null;
+    }
+  }
+  return starts;
+}
+
 /// 按需正文所需的最小来源信息。版本只描述存储方式，不改变正文坐标。
 class SourceContentIndex {
   const SourceContentIndex({
@@ -12,6 +40,7 @@ class SourceContentIndex {
     this.mobiIndex = const {},
     this.tocPositions = const {},
     this.tocHeadings = const {},
+    this.txtSectionStarts = const {},
   });
 
   final String format, sourceDigest, charset;
@@ -41,6 +70,10 @@ class SourceContentIndex {
 
   /// Heading fallbacks use the standard body, rather than the original DOM.
   final Map<String, Map<String, double>> tocHeadings;
+
+  /// 原文件的小节起点。字节终点取下一节起点，最后一节取章节字节终点。
+  /// 段落号从零开始，累计字数沿用正文的 UTF-16 和段落分隔权重。
+  final Map<String, List<TxtSectionStart>> txtSectionStarts;
   bool get directMobi => mobiIndex.isNotEmpty;
 
   Map<String, Object?> toJson() => {
@@ -56,6 +89,11 @@ class SourceContentIndex {
     if (directMobi) 'mobiIndex': mobiIndex,
     if (tocPositions.isNotEmpty) 'tocPositions1': tocPositions,
     if (tocHeadings.isNotEmpty) 'tocHeadings1': tocHeadings,
+    if (txtSectionStarts.isNotEmpty)
+      'txtSections1': {
+        for (final entry in txtSectionStarts.entries)
+          entry.key: encodeTxtSectionStarts(entry.value),
+      },
   };
 
   factory SourceContentIndex.fromJson(Map<String, dynamic> json) {
@@ -90,6 +128,7 @@ class SourceContentIndex {
       ),
       publication: Map<String, String>.from(json['publication'] as Map? ?? {}),
       mobiIndex: direct,
+      txtSectionStarts: _readTxtSectionStarts(json['txtSections1']),
       tocPositions: (json['tocPositions1'] as Map? ?? {}).map(
         (chapter, positions) => MapEntry(
           chapter as String,
@@ -115,5 +154,17 @@ class SourceContentIndex {
         ),
       ),
     );
+  }
+
+  // 这是可重建的小节索引。旧书或字段损坏时，正文仍可按原章范围读取。
+  static Map<String, List<TxtSectionStart>> _readTxtSectionStarts(Object? raw) {
+    if (raw is! Map) return const {};
+    final result = <String, List<TxtSectionStart>>{};
+    for (final MapEntry(:key, :value) in raw.entries) {
+      if (key is! String) continue;
+      final starts = decodeTxtSectionStarts(value);
+      if (starts != null) result[key] = starts;
+    }
+    return result;
   }
 }

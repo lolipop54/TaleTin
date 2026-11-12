@@ -149,7 +149,8 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
         ref.watch(readingControlsProvider).value?.statusBar ?? true;
     final showNavigationBar =
         ref.watch(readingControlsProvider).value?.navigationBar ?? true;
-    if (loaded?.settings.layoutMode.isOriginal == true &&
+    if (ReadingLayoutMode.originalIncluded &&
+        loaded?.settings.layoutMode.isOriginal == true &&
         session?.book.format.usesOriginalWebView == true) {
       _keepOriginal = true;
     }
@@ -249,9 +250,13 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
             // 面板自己按键盘高度让位（ReaderSheet 处理），也不会触发整章重排
             resizeToAvoidBottomInset: false,
             body: ReaderTurnStateBoundary(
+              observeStalls:
+                  !settings.settings.layoutMode.isOriginal &&
+                  settings.settings.pageTurnEffect != PageTurnEffect.scroll,
               details: {
                 'layout': settings.settings.layoutMode.name,
                 'effect': settings.settings.pageTurnEffect.name,
+                'spread': settings.settings.spreadEnabled,
                 'format': session?.book.format.name,
                 'background':
                     [
@@ -324,6 +329,10 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
                             statusBar: showStatusBar,
                             navigationBar: showNavigationBar,
                             settingsReady: loaded != null,
+                            noticeAboveControls:
+                                controlsState?.panel == ReaderPanel.none &&
+                                state.controlsVisible &&
+                                !progressTitles.isLoading,
                           ),
                         ),
                       ),

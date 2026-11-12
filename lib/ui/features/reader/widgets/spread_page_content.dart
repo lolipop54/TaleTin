@@ -204,24 +204,42 @@ extension _SpreadPageContent on _ReaderSpreadAreaState {
   }
 
   Future<void> _select(Offset point, {bool extend = false}) async {
+    final request = extend ? _selectionRequest : ++_selectionRequest;
+    if (extend) await _startingSelection;
+    if (!mounted || request != _selectionRequest) return;
     await ref.read(automaticReadingProvider(widget.bookId).notifier).discard();
-    if (!mounted || !isReady || _moving) return;
+    if (!mounted || !isReady || _moving || request != _selectionRequest) {
+      return;
+    }
     final hit = _hit(point);
     if (hit == null) return;
     final (page, side) = hit;
     final local = point - _origin(page, side);
     final engine = ref.read(readerEngineProvider);
     final vm = ref.read(readerProvider.notifier);
-    if (extend && ref.read(readerProvider).selection != null) {
+    final state = ref.read(readerProvider);
+    if (extend) {
+      if (state.selection == null || state.selectionFromMark) return;
       final locator = engine.locatorAtPoint(page.layout, page.pageIndex, local);
       if (locator != null) vm.extendSelection(locator);
     } else {
-      final range = engine.sentenceRangeAtPoint(
+      final pair = _pair;
+      final range = await engine.initialSelectionAtPoint(
         page.layout,
         page.pageIndex,
         local,
       );
-      if (range != null) vm.startSelection(range.start, range.end);
+      if (!mounted ||
+          range == null ||
+          request != _selectionRequest ||
+          !isReady ||
+          _moving ||
+          _pair != pair ||
+          ref.read(readerProvider).controlsVisible ||
+          ref.read(readerProvider).selection != state.selection) {
+        return;
+      }
+      vm.startSelection(range.start, range.end);
     }
   }
 
@@ -417,6 +435,7 @@ extension _SpreadPageContent on _ReaderSpreadAreaState {
         Positioned.fill(
           child: SelectionActions(
             bookId: widget.bookId,
+            dictionaryTheme: widget.settings.theme,
             state: state,
             rects: rects,
             origin: Offset.zero,

@@ -7,6 +7,7 @@ import 'app/app_error_hooks.dart';
 import 'core/diagnostics/app_opening_diagnostics.dart';
 import 'engine/layout/math_typesetting.dart';
 import 'data/services/flutter_tex_formula_renderer.dart';
+import 'data/services/offline_dictionary.dart';
 
 void main() => runWithAppErrors(() {
   installOpeningDiagnostics();
@@ -48,6 +49,25 @@ void main() => runWithAppErrors(() {
     yield LicenseEntryWithLineBreaks([
       'American English hyphenation dictionary',
     ], await rootBundle.loadString('assets/hyphenation/README_hyph_en_US.txt'));
+    if (offlineDictionaryIncluded) {
+      yield LicenseEntryWithLineBreaks(
+        ['中文维基词典 / Chinese Wiktionary (CC BY-SA 4.0)'],
+        await rootBundle.loadString(
+          'assets/licenses/Wiktionary-CC-BY-SA-4.0.txt',
+        ),
+      );
+      yield LicenseEntryWithLineBreaks(
+        [
+          'ECDICT',
+          '汉语开放词网 / Chinese Open Wordnet',
+          'CC-CEDICT',
+          'Princeton WordNet',
+        ],
+        await rootBundle.loadString(
+          'assets/licenses/Offline-dictionary-sources.txt',
+        ),
+      );
+    }
   });
   // StartupGate 读取保存的全局方向后，在书架首帧显示前应用。
   // 数据库初始化与导入残留回收在 StartupGate 内完成，准备好后再显示书架

@@ -1,5 +1,6 @@
 package com.example.gtreader
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
@@ -38,7 +39,10 @@ object PageCapture {
         if (!value) release()
     }
 
-    fun register(engine: FlutterEngine) {
+    fun register(context: Context, engine: FlutterEngine) {
+        OriginalScrollDraw.register(engine)
+        OriginalWebViewStartup.register(context, engine)
+        OriginalBookResources.register(context, engine)
         MethodChannel(engine.dartExecutor.binaryMessenger, "gtreader/page_capture")
             .setMethodCallHandler { call, result ->
                 if (call.method == "setInputTracing") {

@@ -73,11 +73,11 @@ mixin _OriginalScrollSelection on ConsumerState<OriginalScrollArea> {
         final raw = await _selectionCommand('gtScroll.hitText(${point.dx},${point.dy})');
         return raw is Map ? _selectionMap(raw['index'] as int)?.locatorAt(Map<String, Object?>.from(raw)) : null;
       },
-      sentence: (point) async {
+      initialRange: (point) async {
         await _stopNativeScroll();
-        final raw = await _selectionCommand('gtScroll.hitText(${point.dx},${point.dy})');
+        final raw = await _selectionCommand('gtScroll.hitText(${point.dx},${point.dy},true)');
         if (raw is! Map) return null;
-        final range = _selectionMap(raw['index'] as int)?.sentenceAt(Map<String, Object?>.from(raw));
+        final range = await _selectionMap(raw['index'] as int)?.initialRangeAt(Map<String, Object?>.from(raw));
         return range == null ? null : SelectionRange(start: range.start, end: range.end);
       },
       measure: _measureRanges,

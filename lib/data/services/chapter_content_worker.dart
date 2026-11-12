@@ -14,6 +14,7 @@ import '../../domain/models/book_document.dart';
 import '../../domain/models/source_content_index.dart';
 import '../../domain/repositories/chapter_content_repository.dart';
 import '../../domain/services/text_preparation.dart';
+import '../../domain/services/txt_chapter_sections.dart';
 import '../../engine/normalization/content_fingerprint.dart';
 import 'chapter_disk_cache.dart';
 import 'chapter_manifest.dart';
@@ -22,24 +23,38 @@ import 'publication_cache.dart';
 
 part 'pdf_content_worker.dart';
 
-/// 整个正文仓库共用一个后台任务，串行处理 ZIP、TXT 和缓存文件。
-/// 重复章请求由仓库合并；清缓存和换书库也排在正在读的章节之后。
+typedef _LongTxtBody = ({
+  ChapterContent content,
+  String digest,
+  int length,
+  int blocks,
+});
+typedef _TxtCacheRoom = ({int chapters, int units, int blocks});
+
+/// 共用后台任务负责索引核验、ZIP 和磁盘缓存，超长 TXT 正文单独解码。
+/// 正文仓库合并重复请求，清缓存或换源时等待在途读取结束。
 class ChapterContentWorker {
-  ChapterContentWorker._(this.preparation);
+  ChapterContentWorker._(this.preparation, this._libraryRoot, this._cacheRoot);
   final TextPreparationService? preparation;
+  final String _libraryRoot;
+  final String? _cacheRoot;
   final _responses = ReceivePort();
   final _pending = <int, Completer<Object?>>{};
   final _exited = Completer<void>();
   late SendPort _commands;
   var _nextId = 0;
   var _ended = false;
+  int _cacheEpoch = 0;
+  static const _longTxtCacheUnits = 8 * 1024 * 1024;
+  static const _longTxtCacheBlocks = 400000;
+  final _recentLongTxt = <(String, String), _LongTxtBody>{};
 
   static Future<ChapterContentWorker> open({
     required String libraryRoot,
     String? cacheRoot,
     TextPreparationService? preparation,
   }) async {
-    final worker = ChapterContentWorker._(preparation);
+    final worker = ChapterContentWorker._(preparation, libraryRoot, cacheRoot);
     final ready = Completer<Object?>();
     worker._pending[0] = ready;
     worker._responses.listen(worker._receive);
@@ -146,21 +161,106 @@ class ChapterContentWorker {
     bool textOnly = false,
     bool prepareLayoutDigest = false,
   }) async {
-    final (content, digest) = await _request('chapter', (
+    final epoch = _cacheEpoch;
+    // 纯 TXT 的只读定位和阅读使用同一正文，均须由后台核验源文件。
+    final key = (bookId, chapter.contentPath);
+    final cached = _recentLongTxt[key];
+    final (body, digest) = await _request('chapter', (
       bookId,
       chapter,
       textOnly,
       prepareLayoutDigest,
-    )) as (ChapterContent, String?);
+      cached?.digest,
+    )) as (ChapterContent?, String?);
+    final content =
+        body ??
+        (cached != null && digest == cached.digest
+            ? cached.content
+            : await _readLongTxt(_libraryRoot, bookId, chapter, digest!));
     if (digest != null) ContentFingerprint.remember(content, digest);
+    if (!textOnly &&
+        prepareLayoutDigest &&
+        epoch == _cacheEpoch &&
+        digest?.startsWith('txt-source-v') == true &&
+        chapter.textLength <= _longTxtCacheUnits &&
+        content.blocks.length <= _longTxtCacheBlocks) {
+      // 常见往返只涉及两章；字数和段落数量一起限制驻留内存。
+      _rememberLongTxt(key, (
+        content: content,
+        digest: digest!,
+        length: chapter.textLength,
+        blocks: content.blocks.length,
+      ));
+    }
     return content;
   }
+
+  void _rememberLongTxt((String, String) key, _LongTxtBody body) {
+    _recentLongTxt.remove(key);
+    _recentLongTxt[key] = body;
+    while (true) {
+      final room = _txtCacheRoom(_recentLongTxt.values);
+      if (room.chapters >= 0 && room.units >= 0 && room.blocks >= 0) return;
+      _recentLongTxt.remove(_recentLongTxt.keys.first);
+    }
+  }
+
+  static _TxtCacheRoom _txtCacheRoom(Iterable<_LongTxtBody> entries) {
+    var chapters = 2, units = _longTxtCacheUnits, blocks = _longTxtCacheBlocks;
+    for (final entry in entries) {
+      chapters--;
+      units -= entry.length;
+      blocks -= entry.blocks;
+    }
+    return (chapters: chapters, units: units, blocks: blocks);
+  }
+
+  Future<Map<String, List<TxtTocSection>>> txtTocSections(
+    String bookId,
+    String directory,
+    SourceContentIndex index,
+    List<Chapter> chapters,
+  ) => _scanTxtSections((
+    p.join(_libraryRoot, bookId),
+    directory,
+    _cacheRoot,
+    PublicationCache.processEpoch,
+    index,
+    chapters,
+  ));
+
+  Future<(String, List<TxtSectionStart>)?> txtChapterPlan(
+    String bookId,
+    Chapter chapter,
+  ) async =>
+      await _request('txt-plan', (bookId, chapter))
+          as (String, List<TxtSectionStart>)?;
+
+  Future<ChapterContent> txtSection(
+    String bookId,
+    Chapter chapter,
+    String identity,
+    List<TxtSectionStart> starts,
+    int section,
+  ) async => await _request('txt-section', (
+    bookId,
+    chapter,
+    identity,
+    starts,
+    section,
+  )) as ChapterContent;
 
   Future<Object?> pdf(String operation, Object? argument) =>
       _request('pdf', (operation, argument));
 
   Future<void> invalidate([String? bookId]) async {
+    _discardRecentTxt(bookId);
     await _request('invalidate', bookId);
+  }
+
+  void _discardRecentTxt(String? bookId) {
+    _cacheEpoch++;
+    _recentLongTxt.removeWhere((key, _) => bookId == null || key.$1 == bookId);
   }
 
   Future<ChapterManifest?> manifest(String bookId, String directory) async =>
@@ -172,14 +272,77 @@ class ChapterContentWorker {
   ) async => await _request('previous', (bookId, chapter)) as ChapterContent?;
 
   Future<void> clearCache([String? bookId]) async {
+    _discardRecentTxt(bookId);
     await _request('clear', bookId);
   }
 
   Future<void> close() async {
+    _discardRecentTxt(null);
     if (!_ended) await _request('close');
     await _exited.future;
   }
 }
+
+String _longTxtDigest(IndexedChapterReader reader, Chapter chapter) =>
+    'txt-source-v$kContentVersion:${reader.signature}:${chapter.id}';
+
+Future<Map<String, List<TxtTocSection>>> _scanTxtSections(
+  (String, String, String?, String, SourceContentIndex, List<Chapter>) input,
+) => Isolate.run(() async {
+  final (bookDirectory, directory, cacheRoot, cacheEpoch, index, chapters) =
+      input;
+  final reader = IndexedChapterReader.open(
+    bookDirectory,
+    directory,
+    cacheRoot: cacheRoot,
+    cacheEpoch: cacheEpoch,
+    preparedIndex: (kContentVersion, index),
+  );
+  try {
+    return {
+      for (final chapter in chapters)
+        chapter.id: IndexedChapterReader.txtTocOfStarts(
+          await reader.loadTxtSectionStarts(chapter),
+        ),
+    };
+  } finally {
+    await reader.close();
+  }
+});
+
+// 一次性后台任务退出时可以转交整个正文对象，避免复制几十万个段落与行内文字对象。
+Future<ChapterContent> _readLongTxt(
+  String libraryRoot,
+  String bookId,
+  Chapter chapter,
+  String digest,
+) => Isolate.run(
+  () => traceReaderWork('content.long_txt_read', () async {
+    IndexedChapterReader? reader;
+    try {
+      final bookDirectory = p.join(libraryRoot, bookId);
+      reader = IndexedChapterReader.open(
+        bookDirectory,
+        p.join(bookDirectory, p.dirname(chapter.contentPath)),
+      );
+      if (reader.index.format != 'txt' ||
+          _longTxtDigest(reader, chapter) != digest) {
+        throw const ContentFailure(
+          ContentErrorCode.sourceChanged,
+          '正文索引在读取期间改变',
+        );
+      }
+      await reader.verifySource();
+      return await reader.readTxt(chapter);
+    } on ContentFailure {
+      rethrow;
+    } catch (error) {
+      throw ContentFailure(ContentErrorCode.corrupted, '$error');
+    } finally {
+      await reader?.close();
+    }
+  }, {'chapter': chapter.ordinal}),
+);
 
 Future<void> _run((SendPort, String, String?, int, String) start) async {
   final (reply, libraryRoot, cacheRoot, features, cacheEpoch) = start;
@@ -193,6 +356,25 @@ Future<void> _run((SendPort, String, String?, int, String) start) async {
     cacheRoot == null ? null : p.join(cacheRoot, 'chapters'),
   );
   reply.send((0, commands.sendPort, null, null));
+
+  Future<IndexedChapterReader> readerFor(String bookId, Chapter chapter) async {
+    final directory = p.dirname(chapter.contentPath);
+    final key = '$bookId/$directory';
+    final bookDirectory = p.join(libraryRoot, bookId);
+    final reader =
+        readers.remove(key) ??
+        IndexedChapterReader.open(
+          bookDirectory,
+          p.join(bookDirectory, directory),
+          cacheRoot: cacheRoot,
+          cacheEpoch: cacheEpoch,
+        );
+    readers[key] = reader;
+    while (readers.length > 2) {
+      await readers.remove(readers.keys.first)!.close();
+    }
+    return reader;
+  }
 
   Future<void> invalidate(String? bookId) async {
     await pdfCache.close(bookId);
@@ -298,29 +480,51 @@ Future<void> _run((SendPort, String, String?, int, String) start) async {
                     ).read('${chapter.id}.json', chapter)) ??
               cache.read(key, chapter);
           if (!readers.containsValue(reader)) await reader.close();
+        case 'txt-plan':
+          final (bookId, chapter) = argument as (String, Chapter);
+          final reader = await readerFor(bookId, chapter);
+          if (reader.index.format != 'txt') break;
+          final starts = await reader.loadTxtSectionStarts(chapter);
+          if (starts.length > 1) result = (reader.signature, starts);
+        case 'txt-section':
+          final (bookId, chapter, identity, starts, section) =
+              argument as (String, Chapter, String, List<TxtSectionStart>, int);
+          final reader = await readerFor(bookId, chapter);
+          if (identity != reader.signature) {
+            throw const ContentFailure(
+              ContentErrorCode.sourceChanged,
+              '正文索引在读取期间改变',
+            );
+          }
+          final content = await reader.readTxtSection(chapter, starts, section);
+          trace?.details.addAll({
+            'chapter': chapter.ordinal,
+            'section': section,
+            'paragraphs': content.blocks.length,
+          });
+          result = content;
         case 'chapter':
-          final (bookId, chapter, textOnly, prepareLayoutDigest) =
-              argument as (String, Chapter, bool, bool);
+          final (bookId, chapter, textOnly, prepareLayoutDigest, knownDigest) =
+              argument as (String, Chapter, bool, bool, String?);
           trace?.details.addAll({
             'chapter': chapter.ordinal,
             'textOnly': textOnly,
           });
-          final key = '$bookId/${p.dirname(chapter.contentPath)}';
-          final reader =
-              readers.remove(key) ??
-              IndexedChapterReader.open(
-                p.join(libraryRoot, bookId),
-                p.join(libraryRoot, bookId, p.dirname(chapter.contentPath)),
-                cacheRoot: cacheRoot,
-                cacheEpoch: cacheEpoch,
-              );
-          readers[key] = reader;
-          while (readers.length > 2) {
-            await readers.remove(readers.keys.first)!.close();
-          }
+          final reader = await readerFor(bookId, chapter);
           trace?.mark('open_index');
           await reader.verifySource();
           trace?.mark('verify_source');
+          if (reader.index.format == 'txt' &&
+              chapter.textLength >= kLongTxtChapterLength) {
+            // 原字节经核验后可直接解码。超长章读写整份 JSON 比从源文件读更重，
+            // 排版也只需已核验的来源摘要、字节范围和转换版本来区分新旧正文。
+            final digest = _longTxtDigest(reader, chapter);
+            trace?.details['hit'] = knownDigest == digest
+                ? 'recent-txt'
+                : 'read-long-txt';
+            result = (null, digest);
+            break;
+          }
           final cacheKey = '$bookId/${reader.signature}/${chapter.id}.json';
           final store = reader.cache;
           if (!textOnly) await store?.beginPreparation();

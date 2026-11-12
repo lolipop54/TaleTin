@@ -7,7 +7,7 @@
 library;
 
 import 'dart:async';
-import 'dart:ui' show Size;
+import 'dart:ui' show Size, VoidCallback;
 
 import '../../core/diagnostics/reader_work_trace.dart';
 
@@ -15,7 +15,9 @@ import '../../domain/models/book_document.dart';
 import '../../domain/models/content_table.dart';
 import '../../domain/models/locator.dart';
 import '../../domain/services/layout_checkpoint_store.dart';
+import '../../domain/services/txt_chapter_sections.dart';
 import '../normalization/locator_mapper.dart';
+import '../normalization/text_anchor.dart';
 import '../styles/chapter_styler.dart';
 import '../styles/css_layout_styles.dart';
 import 'block_measure.dart';
@@ -47,8 +49,20 @@ class LayoutToken {
 }
 
 /// 排版被取消（参数已变或已切章），调用方直接丢弃即可。
+enum LayoutCancellationReason {
+  requestCancelled,
+  requestSuperseded,
+  cacheEvicted,
+  layoutInvalidated,
+  taskDisposed,
+}
+
 class LayoutCancelled implements Exception {
-  const LayoutCancelled();
+  const LayoutCancelled([
+    this.reason = LayoutCancellationReason.requestCancelled,
+  ]);
+
+  final LayoutCancellationReason reason;
 
   @override
   String toString() => 'LayoutCancelled';
@@ -73,6 +87,7 @@ class ChapterLayout {
     this.isComplete = true,
     this.firstPage = 0,
     this.consumedBeforeWindow = 0,
+    this._txtWindow,
     Map<String, MeasuredBlock>? measuredById,
     Map<String, int>? blockOrders,
     this._consumedBefore,
@@ -89,6 +104,11 @@ class ChapterLayout {
   /// 可用窗口的首个绝对页序。磁盘恢复的旧页不会以空白占位。
   final int firstPage;
   final int consumedBeforeWindow;
+  final int? _txtWindow;
+  bool get paginatesTxtInWindows => _txtWindow != null;
+  bool get readsTxtBySection => task?._indexedTxt != null;
+  bool get hasLaterTxtWindow =>
+      _txtWindow != null && _txtWindow! + 1 < task!._txtWindowCount;
   final List<int>? _consumedBefore;
   Object get identity => task ?? this;
 
@@ -99,7 +119,40 @@ class ChapterLayout {
       identical(page(pageIndex), other.page(otherIndex ?? pageIndex));
 
   Future<ChapterLayout> ensurePage(int index) async =>
-      task == null ? this : task!.ensure(page: index);
+      task == null ? this : task!.ensure(page: index, txtWindow: _txtWindow);
+
+  /// 长章的相邻页可能位于另一个正文窗口，取到页后再切换当前画面。
+  Future<({ChapterLayout layout, int pageIndex})?> adjacentPage(
+    int index, {
+    required bool forward,
+  }) async {
+    final next = index + (forward ? 1 : -1);
+    if (page(next) != null) return (layout: this, pageIndex: next);
+    if (next < 0) return null;
+    if (_txtWindow case final window?) {
+      if (forward && !isComplete) {
+        final current = await ensurePage(next);
+        if (current.page(next) != null) {
+          return (layout: current, pageIndex: next);
+        }
+      }
+      if (forward ? !hasLaterTxtWindow : window == 0) return null;
+      final adjacent = await task!.ensure(
+        txtWindow: window + (forward ? 1 : -1),
+        atEnd: !forward,
+      );
+      return (
+        layout: adjacent,
+        pageIndex: forward ? adjacent.firstPage : adjacent.pageCount - 1,
+      );
+    }
+    if (forward && isComplete) return null;
+    final prepared = await ensurePage(next);
+    return prepared.page(next) == null
+        ? null
+        : (layout: prepared, pageIndex: next);
+  }
+
   Future<ChapterLayout> ensureTarget(Locator target) async =>
       task == null ? this : task!.ensure(target: target);
   Stream<ChapterLayout> get updates => task?.updates ?? const Stream.empty();
@@ -142,20 +195,58 @@ class ChapterLayout {
       index >= firstPage && index < pageCount ? pages[index - firstPage] : null;
 
   /// 章首锚点：第一页的第一行
-  Locator get startLocator => firstPage == 0
-      ? beginLocatorOf(pages.isEmpty ? null : pages.first)
-      : mapper.chapterStart(content.blocks);
+  Locator get startLocator {
+    if (firstPage == 0) {
+      return beginLocatorOf(pages.isEmpty ? null : pages.first);
+    }
+    if (readsTxtBySection) {
+      return _locatorFor(PageAnchor(blockId: 'b1', utf16Offset: 0));
+    }
+    return mapper.chapterStart(content.blocks);
+  }
+
+  Locator? txtLocatorAtOffset(int offset) {
+    final length = content.textLength;
+    return locatorForFraction(
+      content: content,
+      bookId: bookId,
+      contentVersion: contentVersion,
+      chapterId: chapterId,
+      fraction: length == 0 ? 0 : (offset - consumedBeforeWindow) / length,
+    );
+  }
 
   /// 高亮可能从缓存窗口之前开始。它仍覆盖当前窗口里相交的文本。
   bool precedesWindow(Locator locator) {
     if (firstPage == 0 || pages.isEmpty || locator.chapterId != chapterId) {
       return false;
     }
+    if (readsTxtBySection) {
+      final target = TxtChapterSource.paragraphOf(locator.blockId);
+      final first = TxtChapterSource.paragraphOf(content.blocks.first.id)!;
+      return target != null && target < first;
+    }
+    if (task case final layoutTask?) {
+      final order = layoutTask._displayTree.blockIndexById;
+      final target = order[locator.blockId];
+      final first = order[pages.first.start.blockId];
+      return target != null && first != null && target < first;
+    }
     for (final block in content.blocks) {
       if (block.id == pages.first.start.blockId) return false;
       if (block.id == locator.blockId) return true;
     }
     return false;
+  }
+
+  /// 选区的结束端还在后面的节或未测量的段落时，当前已绘制部分仍应高亮。
+  bool followsTxtWindow(Locator locator) {
+    if (!readsTxtBySection || locator.chapterId != chapterId || pages.isEmpty) {
+      return false;
+    }
+    final target = TxtChapterSource.paragraphOf(locator.blockId);
+    final last = TxtChapterSource.paragraphOf(pages.last.end.blockId);
+    return target != null && last != null && target > last;
   }
 
   Locator beginLocatorOf(PageSlice? slice) {
@@ -204,6 +295,9 @@ class ChapterLayout {
     final prefix = _consumedBefore;
     if (prefix != null) {
       consumed += prefix[order.clamp(0, blocks.length)];
+      if (_txtWindow == 0 && order > 0 && blocks.first.isTitleDecoration) {
+        consumed -= blocks.first.text.length + 1;
+      }
     } else {
       for (var i = 0; i < order && i < blocks.length; i++) {
         final block = blocks[i];
@@ -252,7 +346,15 @@ class ChapterLayout {
     return mapper.at(block, _blockOffsetOf(anchor), affinity: anchor.affinity);
   }
 
-  ContentBlock? _contentBlockOf(String blockId) => _contentBlocks[blockId];
+  ContentBlock? _contentBlockOf(String blockId) {
+    // 旧页保留自己的节正文，任务换节之后不能查询任务的新段落表。
+    if (readsTxtBySection) return _contentBlocks[blockId];
+    if (task case final layoutTask?) {
+      final index = layoutTask._displayTree.blockIndexById[blockId];
+      return index == null ? null : content.blocks[index];
+    }
+    return _contentBlocks[blockId];
+  }
 
   /// 块在 [blocks] 中的下标；不在本章时返回 -1。
   /// 章题装饰块是 0，因此正文块的顺序天然排在它后面。

@@ -9,6 +9,21 @@ library;
 
 import 'dart:ffi' as ffi;
 
+@ffi.Native<
+  ffi.Uint32 Function(
+    ffi.Pointer<ffi.Uint16>,
+    ffi.Size,
+    ffi.Size,
+    ffi.Pointer<ffi.Uint32>,
+  )
+>()
+external int gt_chinese_word_at(
+  ffi.Pointer<ffi.Uint16> text,
+  int length,
+  int hit,
+  ffi.Pointer<ffi.Uint32> bounds,
+);
+
 @ffi.Native<ffi.Void Function(ffi.Pointer<ffi.Uint8>, ffi.Size)>()
 external void gt_scan_free(ffi.Pointer<ffi.Uint8> data, int length);
 

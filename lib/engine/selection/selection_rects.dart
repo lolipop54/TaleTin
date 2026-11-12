@@ -1,7 +1,7 @@
 /// 选区矩形与命中测试（实现计划 S15 / S1）。
 ///
 /// 给定两个 Locator（选区两端）算出一页里每行的高亮矩形，把内容盒里的一点
-/// 换算成**真实字符位置**，以及长按起选时给出所在整句。不做笔记 UI、不做跨章选区。
+/// 换算成**真实字符位置**，以及长按起选时给出命中的字或词。
 ///
 /// 坐标口径：矩形都在**页内容盒**坐标系里（左上角为原点），与
 /// `PageCanvas` 的绘制坐标一致——正文盒子在屏幕上居中，命中测试前
@@ -18,10 +18,10 @@ import 'dart:ui' show Offset, Rect;
 import '../../domain/models/book_document.dart';
 import '../../domain/models/locator.dart';
 import '../layout/chapter_layout.dart';
+import '../layout/chapter_paginator.dart';
 import '../layout/measured_block.dart';
 import '../layout/line_text_geometry.dart';
 import '../normalization/locator_mapper.dart';
-import '../normalization/sentence_splitter.dart';
 import 'selection_range.dart';
 
 /// 一页里 [from, to] 选区的高亮矩形（页内容盒坐标）。
@@ -118,90 +118,39 @@ Locator? locatorAtPointInPage({
   return _locatorOf(layout, hit.blockId, hit.offset);
 }
 
-/// 长按起选：这一点所在的**整句**（用听书那套句读切分）。
-///
-/// 按句起选比按行起选更接近用户想选的东西，也不会一点就选中整行；
-/// 之后靠手柄逐字调整（S1b）或拖动延伸。句子在块内，不跨块。
-({Locator start, Locator end})? sentenceRangeAtPointInPage({
+/// 长按命中的字或词。单词跨页时夹在本页内，让两个手柄都能抓到。
+Future<({Locator start, Locator end})?> initialSelectionAtPointInPage({
   required ChapterLayout layout,
   required int pageIndex,
   required Offset position,
-}) {
-  final hit = _hitTest(
-    layout: layout,
-    pageIndex: pageIndex,
-    position: position,
+}) async {
+  final hit = _lineAtPoint(layout, pageIndex, position);
+  if (hit == null || hit.fragment.block.isDecoration) return null;
+  final measured = hit.fragment.block;
+  final block = _contentBlockOf(layout, measured.blockId);
+  if (block == null) return null;
+  final range = await measured.initialSelectionInLine(
+    hit.index,
+    hit.point,
+    scaler: layout.options.textScaler,
+    width: _widthOf(layout, measured),
+    source: blockTextOf(block),
   );
-  if (hit == null) return null;
-  final block = _contentBlockOf(layout, hit.blockId);
-  if (block == null) {
-    return (
-      start: _locatorOf(layout, hit.blockId, hit.lineStart),
-      end: _locatorOf(layout, hit.blockId, hit.lineEnd),
-    );
-  }
-  final text = blockTextOf(block);
-  // 长按选出来的范围只落在本页：句子跨到上一页/下一页时，
-  // 起点夹到本页第一行、终点夹到本页最后一行，
-  // 这样两端手柄都看得见，不用先翻页才能调
-  // 行偏移是「显示文本」坐标（含首行缩进前缀），块偏移是标准化坐标，比之前先换算
-  final prefix = _prefixOf(layout, hit.blockId);
-  final lines = _pageLinesOf(layout, pageIndex, hit.blockId);
-  final minOffset = (lines?.$1 ?? prefix) - prefix;
-  final maxOffset = (lines?.$2 ?? prefix + text.length) - prefix;
-  int clampToPage(int offset) =>
-      math.max(minOffset, math.min(maxOffset, offset));
-
-  final spans = splitSentences(text);
-  if (spans.isEmpty) {
-    return (
-      start: _locatorOf(layout, hit.blockId, clampToPage(0)),
-      end: _locatorOf(layout, hit.blockId, clampToPage(text.length)),
-    );
-  }
-  // 点在块末时（偏移等于整块长度）sentenceIndexAt 会返回句子数，
-  // 取最后一句；不夹住会越界，长按到段落最后一行就会没反应
-  final index = sentenceIndexAt(spans, hit.offset).clamp(0, spans.length - 1);
-  final span = spans[index];
-  final start = clampToPage(span.start);
-  final end = clampToPage(span.end);
-  if (end <= start) {
-    return (
-      start: _locatorOf(layout, hit.blockId, span.start),
-      end: _locatorOf(layout, hit.blockId, span.end),
-    );
-  }
+  if (range == null) return null;
+  final prefix = measured.displayPrefixLength;
+  final start = math.max(
+    range.start,
+    measured.lines[hit.fragment.lineFrom].start - prefix,
+  );
+  final end = math.min(
+    range.end,
+    measured.lines[hit.fragment.lineTo - 1].end - prefix,
+  );
+  if (end <= start) return null;
   return (
-    start: _locatorOf(layout, hit.blockId, start),
-    end: _locatorOf(layout, hit.blockId, end),
+    start: _locatorOf(layout, block.id, start),
+    end: _locatorOf(layout, block.id, end),
   );
-}
-
-/// 这一块的首行缩进前缀长度（块不在本章时为 0）
-int _prefixOf(ChapterLayout layout, String blockId) {
-  for (final block in layout.blocks) {
-    if (block.blockId == blockId) return block.displayPrefixLength;
-  }
-  return 0;
-}
-
-/// 本页上这一块占了哪几行：返回（首行起点、末行终点）的显示偏移。
-///
-/// 这一块不在本页时返回 null（调用方按整块处理）。
-(int, int)? _pageLinesOf(ChapterLayout layout, int pageIndex, String blockId) {
-  final page = layout.page(pageIndex);
-  if (page == null) return null;
-  for (final fragment in page.fragments) {
-    if (fragment.frameOnly) continue;
-    final block = fragment.block;
-    if (block.blockId != blockId || block.lines.isEmpty) continue;
-    final first =
-        block.lines[fragment.lineFrom.clamp(0, block.lines.length - 1)];
-    final last =
-        block.lines[(fragment.lineTo - 1).clamp(0, block.lines.length - 1)];
-    return (first.start, last.end);
-  }
-  return null;
 }
 
 /// 内容盒里的一点 → 所在行的起始/结束偏移（手柄定位与整行回退用）。
@@ -228,6 +177,32 @@ int _prefixOf(ChapterLayout layout, String blockId) {
   required int pageIndex,
   required Offset position,
 }) {
+  final hit = _lineAtPoint(layout, pageIndex, position);
+  if (hit == null) return null;
+  final block = hit.fragment.block;
+  final line = block.lines[hit.index];
+  final prefix = block.displayPrefixLength;
+  final maxOffset = math.max(0, block.text.length - prefix);
+  final display = block.offsetAtInLine(
+    hit.index,
+    hit.point,
+    scaler: layout.options.textScaler,
+    width: _widthOf(layout, block),
+  );
+  int normalized(int offset) => (offset - prefix).clamp(0, maxOffset);
+  return (
+    blockId: block.blockId,
+    offset: normalized(display),
+    lineStart: normalized(line.start),
+    lineEnd: normalized(line.end),
+  );
+}
+
+({PageFragment fragment, int index, Offset point})? _lineAtPoint(
+  ChapterLayout layout,
+  int pageIndex,
+  Offset position,
+) {
   final page = layout.page(pageIndex);
   if (page == null) return null;
 
@@ -248,22 +223,10 @@ int _prefixOf(ChapterLayout layout, String blockId) {
     for (var i = fragment.lineFrom; i < fragment.lineTo; i++) {
       final line = block.lines[i];
       if (position.dy <= y + line.height || i == fragment.lineTo - 1) {
-        // 显示文本偏移 → 标准化正文偏移（减掉首行缩进前缀）
-        final prefix = block.displayPrefixLength;
-        final maxOffset = math.max(0, block.text.length - prefix);
-        final display = _offsetInLine(
-          layout: layout,
-          block: block,
-          lineIndex: i,
-          dx: position.dx,
-          dy: position.dy - y,
-        );
-        final normalized = (display - prefix).clamp(0, maxOffset).toInt();
         return (
-          blockId: block.blockId,
-          offset: normalized,
-          lineStart: (line.start - prefix).clamp(0, maxOffset).toInt(),
-          lineEnd: (line.end - prefix).clamp(0, maxOffset).toInt(),
+          fragment: fragment,
+          index: i,
+          point: Offset(position.dx, position.dy - y),
         );
       }
       y += line.height;
@@ -275,20 +238,7 @@ int _prefixOf(ChapterLayout layout, String blockId) {
 double _widthOf(ChapterLayout layout, MeasuredBlock block) =>
     block.layoutWidth ?? layout.options.contentWidthFor(block.kind);
 
-int _offsetInLine({
-  required ChapterLayout layout,
-  required MeasuredBlock block,
-  required int lineIndex,
-  required double dx,
-  double dy = 0,
-}) => block.offsetAtInLine(
-  lineIndex,
-  Offset(dx, dy),
-  scaler: layout.options.textScaler,
-  width: _widthOf(layout, block),
-);
-
-/// 版式里的块 ID → 原始正文块（摘录、句读切分要回到未加缩进的文本）
+/// 版式里的块 ID → 原始正文块（起选和摘录使用未加缩进的文字）。
 ContentBlock? _contentBlockOf(ChapterLayout layout, String blockId) {
   for (final block in layout.content.blocks) {
     if (block.id == blockId) return block;
@@ -453,6 +403,9 @@ bool _isBefore(
     }
   }
   if (layout.precedesWindow(locator)) return (blockIndex: -1, offset: 0);
+  if (layout.followsTxtWindow(locator)) {
+    return (blockIndex: layout.blocks.length, offset: 0);
+  }
   return null;
 }
 

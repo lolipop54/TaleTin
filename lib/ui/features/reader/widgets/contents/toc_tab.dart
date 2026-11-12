@@ -16,6 +16,7 @@ import 'toc_scrollbar.dart';
 import '../../../../../domain/services/toc_entry_index.dart';
 import 'toc_tree.dart';
 import '../../../../../domain/models/book_document.dart';
+import '../../../../../domain/services/txt_chapter_sections.dart';
 import '../../view_models/toc_presentation_provider.dart';
 
 /// 目录页签：真实目录、搜索和打开时当前章置顶，跳转返回提示显示在正文中。
@@ -42,6 +43,7 @@ class TocTab extends ConsumerStatefulWidget {
 class _TocTabState extends ConsumerState<TocTab> {
   Set<int>? _expanded;
   Set<int>? _searchExpanded;
+  Set<String>? _expandedSections, _searchExpandedSections;
   String _expansionQuery = '';
   List<TocVolume>? _shownVolumes, _defaultVolumes;
   (String?, String?, String?)? _defaultTarget;
@@ -64,6 +66,7 @@ class _TocTabState extends ConsumerState<TocTab> {
   Widget build(BuildContext context) {
     final colors = context.gtColors;
     final tocAsync = ref.watch(bookTocProvider(widget.bookId));
+    final txtSections = ref.watch(readerTxtSectionsProvider(widget.bookId));
     final session = ref.watch(readerSessionProvider(widget.bookId)).value;
     final notifier = ref.read(readerSessionProvider(widget.bookId).notifier);
     final query = widget.query.trim();
@@ -74,6 +77,7 @@ class _TocTabState extends ConsumerState<TocTab> {
         session?.book.format.code == 'pdf' && (tocAsync.value?.isEmpty ?? true)
             ? const <Chapter>[]
             : session?.chapters ?? const <Chapter>[],
+        txtSections.value ?? const <String, List<TxtTocSection>>{},
       )),
     );
     if (tree.hasValue) _shownVolumes = tree.requireValue;
@@ -122,19 +126,30 @@ class _TocTabState extends ConsumerState<TocTab> {
           currentVolume,
       };
       _expanded = null;
+      _expandedSections = null;
     }
     if (volumesChanged || _expansionQuery != query) {
       _expansionQuery = query;
       // 新搜索按是否存在匹配章节决定默认开合，不改变普通目录的状态。
       _searchExpanded = null;
+      _searchExpandedSections = null;
     }
     final requestedExpanded = query.isEmpty
         ? _expanded ?? _defaultExpanded
         : _searchExpanded;
+    final requestedSections = query.isEmpty
+        ? _expandedSections ?? const <String>{}
+        : _searchExpandedSections;
     final prepared = ref.watch(
-      tocRowsProvider((volumes, requestedExpanded, query, _descending)),
+      tocRowsProvider((
+        volumes,
+        requestedExpanded,
+        query,
+        _descending,
+        requestedSections,
+      )),
     );
-    _rowsReady = tree.hasValue && prepared.hasValue;
+    _rowsReady = !txtSections.isLoading && tree.hasValue && prepared.hasValue;
     if (_rowsReady) {
       _shownRows = prepared.requireValue;
       _shownExpanded = prepared.requireValue.expanded;
@@ -145,6 +160,25 @@ class _TocTabState extends ConsumerState<TocTab> {
     final searching = _shownQuery.isNotEmpty;
     final visible = _shownRows?.visible ?? const <int>[];
     final rows = _shownRows?.rows ?? const <TocRow>[];
+    final sections = txtSections.value?[currentChapterId];
+    final offset = session == null
+        ? 0
+        : (session.chapterProgress * session.chapter.textLength).round();
+    final currentSection =
+        sections?.lastIndexWhere((point) => point.offset <= offset) ?? -1;
+    final sectionAnchor = currentSection < 0
+        ? null
+        : TxtChapterSections.anchorFor(sections![currentSection].blockId);
+    final visibleAnchor =
+        sectionAnchor != null &&
+            rows.any(
+              (row) =>
+                  row is ChapterListRow &&
+                  row.chapter.chapterId == currentChapterId &&
+                  row.chapter.anchorId == sectionAnchor,
+            )
+        ? sectionAnchor
+        : currentAnchorId;
     final metrics = TocRowMetrics.resolve(context, colors);
     final extents = [for (final row in rows) metrics.extentOf(row)];
 
@@ -181,7 +215,7 @@ class _TocTabState extends ConsumerState<TocTab> {
                         expanded: expanded,
                         currentChapterId: currentChapterId,
                         currentTocTitle: currentTocTitle,
-                        currentAnchorId: currentAnchorId,
+                        currentAnchorId: visibleAnchor,
                         colors: colors,
                       ),
               ),
@@ -389,15 +423,40 @@ class _TocTabState extends ConsumerState<TocTab> {
       if (_descending && controller?.hasClients == true) {
         // 倒序时章节插在卷头上方；同帧补偿新增／移除的高度，让卷头留在手指附近。
         final metrics = TocRowMetrics.resolve(context, context.gtColors);
-        final matchingCount = searching
-            ? volume.chapters
-                  .where((entry) => entry.matches(_shownQuery))
-                  .length
-            : 0;
-        final count = matchingCount > 0
-            ? matchingCount
-            : volume.chapters.length;
+        final count = flattenTocRows(
+          [volume],
+          [0],
+          {0},
+          _shownQuery,
+          searching: searching,
+          expandedSections: _shownRows!.expandedSections,
+        ).whereType<ChapterListRow>().length;
         final change = count * metrics.chapter;
+        _pendingScrollOffset = controller!.offset + (open ? -change : change);
+      }
+    });
+  }
+
+  void _toggleSections(TocEntry chapter) {
+    final expanded = _shownRows!.expandedSections;
+    final open = expanded.contains(chapter.chapterId);
+    final controller = _listController;
+    setState(() {
+      final next = {...expanded};
+      if (open) {
+        next.remove(chapter.chapterId);
+      } else {
+        next.add(chapter.chapterId);
+      }
+      if (_shownQuery.isEmpty) {
+        _expandedSections = next;
+      } else {
+        _searchExpandedSections = next;
+      }
+      if (_descending && controller?.hasClients == true) {
+        final metrics = TocRowMetrics.resolve(context, context.gtColors);
+        final change =
+            visibleTxtSections(chapter, _shownQuery).length * metrics.chapter;
         _pendingScrollOffset = controller!.offset + (open ? -change : change);
       }
     });
@@ -410,7 +469,7 @@ class _TocTabState extends ConsumerState<TocTab> {
     required bool isCurrent,
     required GtColors colors,
   }) {
-    return GtButton.raw(
+    final titleButton = GtButton.raw(
       onPressed: () async {
         ref.read(readerProvider.notifier).closePanel(collapseControls: true);
         await notifier.goToChapterFromToc(
@@ -419,10 +478,7 @@ class _TocTabState extends ConsumerState<TocTab> {
           anchorId: chapter.anchorId,
         );
       },
-      child: Container(
-        decoration: BoxDecoration(
-          border: Border(bottom: BorderSide(color: colors.borderSubtle)),
-        ),
+      child: Padding(
         padding: EdgeInsets.only(
           left: (isCurrent ? 0 : _chapterRowLead) + chapter.depth * 16,
           top: chapterRowVerticalPadding,
@@ -458,6 +514,42 @@ class _TocTabState extends ConsumerState<TocTab> {
           ],
         ),
       ),
+    );
+    final expanded = _shownRows!.expandedSections.contains(chapter.chapterId);
+    return Container(
+      decoration: BoxDecoration(
+        border: Border(bottom: BorderSide(color: colors.borderSubtle)),
+      ),
+      child: chapter.sections.isEmpty
+          ? titleButton
+          : Row(
+              children: [
+                Expanded(child: titleButton),
+                Tooltip(
+                  message: expanded ? '收起分节' : '展开分节',
+                  child: GtButton.raw(
+                    key: ValueKey('toc-sections-${chapter.chapterId}'),
+                    onPressed: () => _toggleSections(chapter),
+                    child: SizedBox(
+                      width: 36,
+                      height: 36,
+                      child: Center(
+                        child: RotatedBox(
+                          quarterTurns: expanded && _shownDescending ? 2 : 0,
+                          child: GtIcon(
+                            expanded
+                                ? GtIcons.chevronDown
+                                : GtIcons.chevronRight,
+                            size: 18,
+                            color: colors.textSecondary,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
     );
   }
 

@@ -303,7 +303,6 @@
   }
 
   function applyTransform(animate, duration) {
-    duration = duration || 200;
     animate = animate && turnEffect === 'slide';
     if (animate) window.gtReaderPerf?.motion('original.slide');
     var body = document.body;
@@ -337,8 +336,9 @@
 
   function setPage(page, animate, reportPosition, duration) {
     internal.recovery('setPageBefore');
-    duration = duration || 200;
-    // 无动画没有 CSS 过渡，立即提交位置，不能仍等平移的 220ms 定时器。
+    // 正文、页眉页脚和高亮共用这次平移的时长。
+    duration = duration || 250;
+    // 无动画没有 CSS 过渡，立即提交位置，无需等待平移后的位置上报定时器。
     animate = animate !== false && turnEffect === 'slide';
     state.page = Math.max(0, Math.min(page, state.pages - 1));
     internal.recovery('setPageAfter');

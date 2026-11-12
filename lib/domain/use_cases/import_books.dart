@@ -297,8 +297,10 @@ class ImportBooksUseCase {
       }
 
       stagingDir = await _storage.stagingDirectory(jobId);
-      await _checkSpace(stagingDir,
-        picked.name.toLowerCase().endsWith('.pdf') ? null : sizeBytes);
+      await _checkSpace(
+        stagingDir,
+        picked.name.toLowerCase().endsWith('.pdf') ? null : sizeBytes,
+      );
       await _books.upsertJob(
         ImportJobRecord(id: jobId, stage: 'copying', stagingPath: stagingDir),
       );
@@ -473,6 +475,7 @@ class ImportBooksUseCase {
         key: key,
         onProgress: onProgress,
         anchors: anchors,
+        txtPositionHints: unchangedStamp ? null : oldPositions.txtHints,
       );
       timing?.mark('parse_worker_roundtrip');
       trace?.details.addAll({
@@ -713,6 +716,7 @@ class ImportBooksUseCase {
     required String key,
     required ImportProgressCallback onProgress,
     required List<Locator> anchors,
+    required TxtSourcePositionHints? txtPositionHints,
   }) async {
     // 所有支持编码都由后台 Rust 直接扫描原字节，不生成全文转码副本。
     var charset = txtChoice?.charset;
@@ -734,6 +738,7 @@ class ImportBooksUseCase {
       textPath: textPath,
       indexedContent: true,
       locationAnchors: anchors,
+      txtPositionHints: txtPositionHints,
       txt: format == BookFormat.txt
           ? TxtOptions(
               charset: charset,

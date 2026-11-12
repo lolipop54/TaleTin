@@ -28,6 +28,7 @@ import 'reader_source_change.dart';
 import 'reader_settings_view_model.dart';
 import 'automatic_reading.dart';
 import 'reader_progress_return.dart';
+import 'visible_spread.dart';
 import '../widgets/turn_trace.dart';
 
 export 'reader_session_state.dart';
@@ -39,6 +40,7 @@ import '../../../../app/di/source_book_providers.dart';
 import '../../../../app/di/app_font_providers.dart';
 import '../../../../domain/models/annotation.dart';
 import '../../../../domain/models/book_document.dart';
+import '../../../../domain/services/txt_chapter_sections.dart';
 import '../../../../domain/models/book.dart';
 import '../../../../domain/models/bookmark.dart';
 import '../../../../domain/models/locator.dart';
@@ -353,20 +355,26 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
     }
     // 只读当前章正文；整书按需读取，不整本进内存
     final currentChapter = chapters[chapterIndex];
-    final first = await traceTurnStep(
-      'load current-content',
-      () => book.format == BookFormat.txt && !scrolling
-          ? contents.chapterForProgressLayout(bookId, currentChapter)
-          : contents.chapter(
-              bookId,
-              currentChapter,
-              textOnly: book.format == BookFormat.pdf && _mode.isOriginal,
-            ),
-    );
+    final indexedTxt = book.format == BookFormat.txt
+        ? await contents.txtChapterSource(bookId, currentChapter)
+        : null;
+    final first = indexedTxt != null
+        ? null
+        : await traceTurnStep(
+            'load current-content',
+            () => book.format == BookFormat.txt && !scrolling
+                ? contents.chapterForProgressLayout(bookId, currentChapter)
+                : contents.chapter(
+                    bookId,
+                    currentChapter,
+                    textOnly: book.format == BookFormat.pdf && _mode.isOriginal,
+                  ),
+          );
     // 目录跳转保存的是标题锚点；该标题可能在页中部。续读只按页比例上报
     // 会把标题前的上一章页首存回去，导致“下一章”的章名又倒退。
     final anchor = _pendingAnchor;
-    if (anchor != null &&
+    if (first != null &&
+        anchor != null &&
         anchor.utf16Offset == 0 &&
         (_pendingOriginalFraction ?? 0) > 0) {
       for (final block in first.blocks) {
@@ -382,7 +390,7 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
         'bookId': bookId,
         'chapterIndex': chapterIndex,
         'chapters': chapters.length,
-        'characters': first.textLength,
+        'characters': first?.textLength ?? currentChapter.textLength,
         'layoutMode': _mode.name,
         'effect': settings.settings.pageTurnEffect.name,
         'font': settings.settings.fontFamily,
@@ -552,12 +560,26 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
   Future<PageTurnResult> nextPage() async {
     cancelProgressNavigation();
     await beginManualReading();
-    await _ensureForwardPage();
     _clearRestoredPosition();
     final session = state.value;
     if (session == null || !session.isReady) return PageTurnResult.moved;
-    if (session.pageIndex + 1 < session.pageCount) {
-      state = AsyncData(session.copyWith(pageIndex: session.pageIndex + 1));
+    final adjacent = await session.layout!.adjacentPage(
+      session.pageIndex,
+      forward: true,
+    );
+    if (!ref.mounted ||
+        state.value?.pageIndex != session.pageIndex ||
+        session.layout?.samePageAs(state.value?.layout, session.pageIndex) !=
+            true) {
+      return PageTurnResult.moved;
+    }
+    if (adjacent != null) {
+      state = AsyncData(
+        session.copyWith(
+          layout: adjacent.layout,
+          pageIndex: adjacent.pageIndex,
+        ),
+      );
       unawaited(persist());
       return PageTurnResult.moved;
     }
@@ -578,16 +600,17 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
     cancelProgressNavigation();
     await beginManualReading();
     _clearRestoredPosition();
-    var session = state.value;
+    final session = state.value;
     if (session == null || !session.isReady) return PageTurnResult.moved;
     if (session.pageIndex > 0) {
-      final layout = session.layout!;
-      if (layout.page(session.pageIndex - 1) == null) {
-        final prepared = await prepareAdjacent(false);
-        if (!ref.mounted || prepared == null) return PageTurnResult.moved;
-        session = session.copyWith(layout: prepared.layout);
-      }
-      state = AsyncData(session.copyWith(pageIndex: session.pageIndex - 1));
+      final prepared = await prepareAdjacent(false);
+      if (!ref.mounted || prepared == null) return PageTurnResult.moved;
+      state = AsyncData(
+        session.copyWith(
+          layout: prepared.layout,
+          pageIndex: prepared.pageIndex,
+        ),
+      );
       unawaited(persist());
       return PageTurnResult.moved;
     }
@@ -622,7 +645,14 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
       await jumpToOriginalChapter(index, fraction: 0);
       return;
     }
-    await _layoutChapter(chapterIndex: index, options: _options, anchor: null);
+    await _layoutChapter(
+      chapterIndex: index,
+      options: _options,
+      anchor: null,
+      targetFirst:
+          session.book.format == BookFormat.txt &&
+          _options?.settings.spreadEnabled == false,
+    );
   }
 
   /// 按章节 ID 跳转（目录里的章节带的是 ID，不是序号）

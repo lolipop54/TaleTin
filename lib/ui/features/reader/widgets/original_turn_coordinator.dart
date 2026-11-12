@@ -2,7 +2,7 @@ part of 'original_reader_area.dart';
 
 /// 协调一次原书翻页手势、动画交接、忙碌状态与最终提交。
 extension _OriginalTurnCoordinator on _OriginalReaderAreaState {
-  /// 把滑动位移补间到 [target]；固定200ms，沿用easeOutCubic。
+  /// 把滑动位移补间到 [target]；沿用统一翻页时长和 easeOutCubic。
   void _animateSlideTo(double target, {VoidCallback? onDone}) {
     if (widget.settings.pageTurnEffect != PageTurnEffect.slide) {
       _updateState(() => _slide = target);
@@ -223,12 +223,7 @@ extension _OriginalTurnCoordinator on _OriginalReaderAreaState {
     if (!mounted) return;
     if (_handoverTarget != null || _slideAnim.isAnimating) return;
     final point = _toViewport(details.localPosition);
-    await _host?.tap(
-      point.dx,
-      point.dy,
-      zone,
-      animationDurationMs: readerTurnDuration.inMilliseconds,
-    );
+    await _host?.tap(point.dx, point.dy, zone);
     if (zone != 'center') await _waitPlainTurn();
   }
 

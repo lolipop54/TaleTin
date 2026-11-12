@@ -24,6 +24,14 @@ class SpreadFold {
   final Size size;
   final bool backward, edges;
   double get inset => edges ? bookEdgeWidth : 0;
+  Size get leafSize => Size(size.width / 2 - inset, size.height);
+
+  /// 书角用从中缝量起的实际触点，只在翻页画布和起手侧纸边截断。
+  Offset boundCornerTouch(Offset touch) => Offset(
+    touch.dx.clamp(-size.width / 2, leafSize.width),
+    touch.dy.clamp(0.0, size.height),
+  );
+
   late final ui.Image front, back;
   final _paint = Paint()..filterQuality = FilterQuality.low;
   ui.Image _crop(ui.Image source, double x, {required bool mirror}) {
@@ -65,7 +73,7 @@ class SpreadFold {
     double? edgeY,
   }) {
     final half = size.width / 2;
-    final leaf = Size(half - inset, size.height);
+    final leaf = leafSize;
     final corner = Offset(
       leaf.width,
       edgeCurl
@@ -74,16 +82,16 @@ class SpreadFold {
           ? 0
           : leaf.height,
     );
-    final point =
-        (touch == null
-            ? null
-            : Offset(touch.dx * leaf.width / half, touch.dy)) ??
-        PageFold.tapCornerTouch(
-          leaf,
-          progress,
-          backward: false,
-          fromTop: fromTop,
-        );
+    final point = touch == null
+        ? PageFold.tapCornerTouch(
+            leaf,
+            progress,
+            backward: false,
+            fromTop: fromTop,
+          )
+        : edgeCurl
+        ? Offset(touch.dx * leaf.width / half, touch.dy)
+        : boundCornerTouch(touch);
     if ((point - corner).distance < .01) {
       _full(canvas, current);
       return;

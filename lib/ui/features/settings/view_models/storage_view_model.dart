@@ -5,6 +5,7 @@ import '../../../../app/di/app_providers.dart';
 import '../../../../domain/repositories/storage_repository.dart';
 import '../../../../data/repositories/file_storage_repository.dart';
 import '../../../../data/repositories/file_chapter_content_repository.dart';
+import '../../../../platform/channels/installed_storage.dart';
 
 final storageRepositoryProvider = Provider<StorageRepository>((ref) {
   final listening = ref.watch(listeningServiceProvider);
@@ -13,6 +14,7 @@ final storageRepositoryProvider = Provider<StorageRepository>((ref) {
     supportRoot: p.dirname(ref.watch(libraryRootPathProvider)),
     cacheRoot: ref.watch(cacheRootPathProvider),
     originals: ref.watch(epubSourceRepositoryProvider),
+    readInstalledStorage: readInstalledStorage,
     clearChapterCache: contents is FileChapterContentRepository
         ? contents.clearChapterCache
         : null,

@@ -153,6 +153,7 @@ class _ReaderDisplayTransitionState extends State<ReaderDisplayTransition>
         'animating': _opacity.isAnimating,
         'animationValue': _opacity.value,
       },
+      observeStalls: true,
     );
     _smooth = _loading;
     if (_loading) LayoutWorkGate.hold(_layoutWorkOwner);

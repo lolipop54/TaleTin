@@ -456,6 +456,8 @@ extension _ReaderPageContent on _PageAreaState {
         if (!mounted) throw StateError('阅读页已关闭');
         final targetContent = target == null
             ? null
+            : session.book.format == BookFormat.txt
+            ? target.layout.content
             : await resolve.chapter(
                 bookId,
                 session.chapters.firstWhere(

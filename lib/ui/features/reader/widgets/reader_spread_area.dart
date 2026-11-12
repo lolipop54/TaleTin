@@ -1,6 +1,10 @@
 part of '../views/reader_view.dart';
 
-typedef _SpreadPair = ({SpreadPageRef left, SpreadPageRef? right});
+typedef _SpreadPair = ({
+  SpreadPageRef left,
+  SpreadPageRef? right,
+  VoidCallback releaseLayouts,
+});
 
 /// 简化排版双页：两页共享会话和提交入口，每个纸面保留自己的排版与文字坐标。
 class _ReaderSpreadArea extends ConsumerStatefulWidget {
@@ -27,6 +31,8 @@ class _ReaderSpreadAreaState extends ConsumerState<_ReaderSpreadArea> {
   int _generation = 0;
   bool _moving = false, _automaticTurn = false;
   bool? _draggedSelectionEnd;
+  Future<void>? _startingSelection;
+  int _selectionRequest = 0;
   void _selectionDragChanged(bool? end) =>
       setState(() => _draggedSelectionEnd = end);
   Size _size = Size.zero;
@@ -38,7 +44,40 @@ class _ReaderSpreadAreaState extends ConsumerState<_ReaderSpreadArea> {
     super.initState();
     _presenter = ref.read(readerSessionProvider(widget.bookId).notifier);
     _presenter.attachVisualPresenter(_presentationOwner);
+    ReaderTurnStateDiagnostics.attach(
+      this,
+      'simplifiedSpread',
+      _turnState,
+      observeStalls: true,
+    );
   }
+
+  Map<String, Object?> _turnState() {
+    final left = _pair?.left;
+    return {
+      'chapter': widget.session.chapterIndex,
+      'page': widget.session.pageIndex,
+      'displayedPage': left?.pageIndex,
+      'pageMatches': left?.layout.samePageAs(
+        widget.session.layout,
+        left.pageIndex,
+        widget.session.pageIndex,
+      ),
+      'viewportMatches': left?.layout.options.layoutSignature == _viewport,
+      'materialsReady': _materials.isNotEmpty,
+      'inputAllowed': isReady,
+      'moving': _moving,
+      'generation': _generation,
+    };
+  }
+
+  Future<T> _traceSpreadStep<T>(String stage, Future<T> Function() action) =>
+      ReaderTurnStateDiagnostics.step(
+        stage,
+        action,
+        observeStalls: true,
+        owner: this,
+      );
 
   bool get isReady =>
       _pair != null &&
@@ -54,10 +93,13 @@ class _ReaderSpreadAreaState extends ConsumerState<_ReaderSpreadArea> {
   Future<void> turn(bool forward) => PageTurnArea.turn(_input, forward);
   @override
   void dispose() {
+    ReaderTurnStateDiagnostics.detach(this);
     _generation++;
     _presenter.detachVisualPresenter(_presentationOwner);
     _text.dispose();
-    for (final page in [..._materials, ..._targetMaterials]) {
+    _pair?.releaseLayouts();
+    _clearTarget();
+    for (final page in _materials) {
       page.dispose();
     }
     super.dispose();
@@ -74,6 +116,40 @@ class _ReaderSpreadAreaState extends ConsumerState<_ReaderSpreadArea> {
         createLocalImageConfiguration(context),
       ),
   ]);
+
+  void _clearTarget() {
+    _target?.releaseLayouts();
+    _target = null;
+    for (final page in _targetMaterials) {
+      page.dispose();
+    }
+    _targetMaterials = [];
+  }
+
+  Future<_SpreadPair> _pairFrom(SpreadPageRef left) async {
+    final leftTask = left.layout.task;
+    final releaseLeft = leftTask?.retainForDisplay();
+    try {
+      final right = await _reader.adjacentSpreadPage(left, true);
+      final rightTask = right?.layout.task;
+      // 跨章时右页有自己的排版任务，下一次前翻会从它继续查页。
+      final releaseRight = identical(leftTask, rightTask)
+          ? null
+          : rightTask?.retainForDisplay();
+      return (
+        left: left,
+        right: right,
+        releaseLayouts: () {
+          releaseLeft?.call();
+          releaseRight?.call();
+        },
+      );
+    } catch (_) {
+      releaseLeft?.call();
+      rethrow;
+    }
+  }
+
   void _prepare(SpreadPageRef left) {
     final key = (
       left.layout.page(left.pageIndex),
@@ -83,10 +159,11 @@ class _ReaderSpreadAreaState extends ConsumerState<_ReaderSpreadArea> {
     _request = key;
     final generation = ++_generation;
     WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted || generation != _generation) return;
+      _SpreadPair? prepared;
       try {
-        final right = await _reader.adjacentSpreadPage(left, true);
+        final pair = prepared = await _pairFrom(left);
         if (!mounted || generation != _generation) return;
-        final pair = (left: left, right: right);
         final pages = await _load(pair);
         if (!mounted || generation != _generation) {
           for (final p in pages) {
@@ -95,10 +172,13 @@ class _ReaderSpreadAreaState extends ConsumerState<_ReaderSpreadArea> {
           return;
         }
         final old = _materials;
+        final oldPair = _pair;
         setState(() {
           _pair = pair;
           _materials = pages;
         });
+        prepared = null;
+        oldPair?.releaseLayouts();
         WidgetsBinding.instance.addPostFrameCallback((_) {
           for (final p in old) {
             p.dispose();
@@ -110,6 +190,8 @@ class _ReaderSpreadAreaState extends ConsumerState<_ReaderSpreadArea> {
         });
       } catch (error, stack) {
         AppErrors.report(error, stack, operation: '准备横屏双页失败');
+      } finally {
+        prepared?.releaseLayouts();
       }
     });
   }
@@ -137,7 +219,7 @@ class _ReaderSpreadAreaState extends ConsumerState<_ReaderSpreadArea> {
       left = await _reader.adjacentSpreadPage(previous, false) ?? previous;
     }
     if (left == null) return null;
-    return (left: left, right: await _reader.adjacentSpreadPage(left, true));
+    return _pairFrom(left);
   }
 
   ui.Image _image(
@@ -289,7 +371,9 @@ class _ReaderSpreadAreaState extends ConsumerState<_ReaderSpreadArea> {
         final pair = _pair;
         if (pair == null) return const SizedBox.expand();
         Widget page = GestureDetector(
-          onLongPressStart: (event) => _select(event.localPosition),
+          onLongPressStart: (event) {
+            _startingSelection = _select(event.localPosition);
+          },
           onLongPressMoveUpdate: (event) {
             if (event.offsetFromOrigin.distance > kSelectionDragSlop) {
               _select(event.localPosition, extend: true);
@@ -325,29 +409,34 @@ class _ReaderSpreadAreaState extends ConsumerState<_ReaderSpreadArea> {
                 .read(automaticReadingProvider(widget.bookId).notifier)
                 .centerTap(),
             resolvePage: (direction) async {
-              _target = null;
-              for (final p in _targetMaterials) {
-                p.dispose();
-              }
-              _targetMaterials = [];
+              _clearTarget();
               final token = _generation;
-              final next = await _resolve(
-                direction == PageTurnDirection.forward,
+              final next = await _traceSpreadStep(
+                'spread.resolve-page',
+                () => _resolve(direction == PageTurnDirection.forward),
               );
-              if (!mounted || token != _generation || next == null) return null;
-              final materials = await _load(next);
-              if (!mounted || token != _generation) {
-                for (final p in materials) {
-                  p.dispose();
+              if (next == null) return null;
+              var adopted = false;
+              try {
+                if (!mounted || token != _generation) return null;
+                final materials = await _traceSpreadStep(
+                  'spread.prepare-pages',
+                  () => _load(next),
+                );
+                if (!mounted || token != _generation) {
+                  for (final p in materials) {
+                    p.dispose();
+                  }
+                  return null;
                 }
-                return null;
+                _clearTarget();
+                _target = next;
+                _targetMaterials = materials;
+                adopted = true;
+                return const SizedBox.expand();
+              } finally {
+                if (!adopted) next.releaseLayouts();
               }
-              for (final p in _targetMaterials) {
-                p.dispose();
-              }
-              _target = next;
-              _targetMaterials = materials;
-              return const SizedBox.expand();
             },
             prepareFold: (direction) async => _target == null
                 ? null
@@ -363,7 +452,9 @@ class _ReaderSpreadAreaState extends ConsumerState<_ReaderSpreadArea> {
               if (mounted) setState(() => _moving = true);
             },
             onGestureFinished: () {
-              if (mounted) setState(() => _moving = false);
+              if (!mounted) return;
+              _clearTarget();
+              setState(() => _moving = false);
             },
             onTurn: (direction) async {
               final next = _target;
@@ -377,14 +468,23 @@ class _ReaderSpreadAreaState extends ConsumerState<_ReaderSpreadArea> {
                     );
                 return false;
               }
-              if (!_automaticTurn) await _reader.beginManualReading();
+              if (!_automaticTurn) {
+                await _traceSpreadStep(
+                  'spread.manual-reading',
+                  _reader.beginManualReading,
+                );
+              }
               _request = (
                 next.left.layout.page(next.left.pageIndex),
                 next.left.layout.options.layoutSignature,
               );
-              await _reader.commitSpreadPage(pair.left, next.left);
+              await _traceSpreadStep(
+                'spread.commit-page',
+                () => _reader.commitSpreadPage(pair.left, next.left),
+              );
               if (!mounted) return false;
               final old = _materials;
+              final oldPair = _pair;
               setState(() {
                 _pair = next;
                 _materials = _targetMaterials;
@@ -396,6 +496,7 @@ class _ReaderSpreadAreaState extends ConsumerState<_ReaderSpreadArea> {
                   next.left.layout.options.layoutSignature,
                 );
               });
+              oldPair?.releaseLayouts();
               WidgetsBinding.instance.addPostFrameCallback((_) {
                 for (final p in old) {
                   p.dispose();
@@ -406,6 +507,10 @@ class _ReaderSpreadAreaState extends ConsumerState<_ReaderSpreadArea> {
                     next.left.pageIndex,
                   );
                   _publishVisible();
+                  ReaderTurnStateDiagnostics.record('spread.page-presented', {
+                    'page': next.left.pageIndex,
+                    'generation': _generation,
+                  });
                 }
               });
               return true;

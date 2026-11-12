@@ -24,7 +24,7 @@ abstract final class ContentFingerprint {
   static Future<String> of(ChapterContent content) =>
       _digests[content] ??= _work(content, () => _digest(content));
 
-  /// 正文后台把同一次规范编码的摘要随正文交回，排版不用再次编码整章。
+  /// 正文后台可随正文交回规范编码摘要，或已核验的原字节及转换规则身份。
   static void remember(ChapterContent content, String digest) {
     _digests[content] ??= Future.value(digest);
   }

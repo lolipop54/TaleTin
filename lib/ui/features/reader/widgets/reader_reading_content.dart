@@ -8,6 +8,7 @@ class _ReadingContent extends ConsumerStatefulWidget {
     required this.theme,
     required this.settings,
     required this.settingsReady,
+    required this.noticeAboveControls,
     this.statusBar = true,
     this.navigationBar = true,
   });
@@ -21,6 +22,7 @@ class _ReadingContent extends ConsumerStatefulWidget {
 
   /// 本书设置是否已读出来
   final bool settingsReady;
+  final bool noticeAboveControls;
 
   /// 顶部状态栏／底部导航栏当前是否显示；各自决定对应那一边要不要避让。
   final bool statusBar;
@@ -61,7 +63,7 @@ class _ReadingContentState extends ConsumerState<_ReadingContent> {
     _progressReturn.prepareJumpCover = _prepareJumpCover;
     _finishJumpCover = () => ReaderDisplayTransition.finishJump(_transitionKey);
     _progressReturn.finishJumpCover = _finishJumpCover;
-    _progressReturn.finishSeekCover = () =>
+    _progressReturn.finishImmediateJumpCover = () =>
         ReaderDisplayTransition.finishJump(_transitionKey, immediate: true);
   }
 
@@ -70,13 +72,14 @@ class _ReadingContentState extends ConsumerState<_ReadingContent> {
     if (_progressReturn.prepareJumpCover == _prepareJumpCover) {
       _progressReturn.prepareJumpCover = null;
       _progressReturn.finishJumpCover = null;
-      _progressReturn.finishSeekCover = null;
+      _progressReturn.finishImmediateJumpCover = null;
     }
     _displayWork.dispose();
     super.dispose();
   }
 
   Future<NativeReadingFrame?> _captureNative() async {
+    if (!ReadingLayoutMode.originalIncluded) return null;
     if (_scrollKey.currentState != null) {
       return OriginalScrollArea.capture(_scrollKey);
     }
@@ -103,13 +106,15 @@ class _ReadingContentState extends ConsumerState<_ReadingContent> {
         null) {
       return false;
     }
-    if (_scrollKey.currentState case final scroll?) return scroll.isReady;
+    if (ReadingLayoutMode.originalIncluded) {
+      if (_scrollKey.currentState case final scroll?) return scroll.isReady;
+      if (_originalKey.currentState != null) {
+        return OriginalReaderArea.ready(_originalKey);
+      }
+    }
     if (_textScrollKey.currentState case final scroll?) return scroll.isReady;
     if (_pdfKey.currentState case final pdf?) return pdf.isReady;
     if (_spreadKey.currentState case final spread?) return spread.isReady;
-    if (_originalKey.currentState != null) {
-      return OriginalReaderArea.ready(_originalKey);
-    }
     return _pageKey.currentState?.isReady ?? false;
   }
 
@@ -148,9 +153,11 @@ class _ReadingContentState extends ConsumerState<_ReadingContent> {
           await pdf.volumeTurn(forward);
         } else if (_textScrollKey.currentState case final scroll?) {
           await scroll.volumeTurn(forward);
-        } else if (_scrollKey.currentState case final scroll?) {
-          await scroll.volumeTurn(forward);
-        } else if (_originalKey.currentState != null) {
+        } else if (ReadingLayoutMode.originalIncluded &&
+            _scrollKey.currentState != null) {
+          await _scrollKey.currentState!.volumeTurn(forward);
+        } else if (ReadingLayoutMode.originalIncluded &&
+            _originalKey.currentState != null) {
           await OriginalReaderArea.turn(_originalKey, forward);
         } else {
           await _pageKey.currentState?.volumeTurn(forward);
@@ -267,7 +274,7 @@ class _ReadingContentState extends ConsumerState<_ReadingContent> {
               ),
             ),
             // 一次性提示（全书首尾、原书排版不可用）：两种排版模式共用一处显示
-            if (state.notice != null)
+            if (state.notice != null && !widget.noticeAboveControls)
               Align(
                 alignment: Alignment.bottomCenter,
                 child: Padding(
@@ -336,9 +343,10 @@ class _ReadingContentState extends ConsumerState<_ReadingContent> {
       );
     }
 
-    // 原书排版模式：EPUB 且用户选了原书排版时走 WebView
-    if (settings.settings.layoutMode.isOriginal &&
-        session.book.format.supportsOriginalLayout) {
+    // 常量判断让发布编译移除未启用的电子书 WebView 正文；PDF 原页在上方单独处理。
+    if (ReadingLayoutMode.originalIncluded &&
+        settings.settings.layoutMode.isOriginal &&
+        session.book.format.usesOriginalWebView) {
       final original = ref.watch(originalLayoutProvider(bookId));
       // Provider 更新时可能暂存上一份 value；已关闭的旧原书服务不能交给新显示器。
       if (original.isLoading) return const _PreparingState();

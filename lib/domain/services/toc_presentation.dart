@@ -1,4 +1,5 @@
 import '../models/book_document.dart';
+import 'txt_chapter_sections.dart';
 
 /// 只查看到批量阈值就停止，不能为了决定是否后台计算先在界面遍历完整大目录。
 bool largeToc(List<TocNode> nodes, int chapterCount, int limit) {
@@ -38,19 +39,27 @@ class TocEntry {
     required this.chapterId,
     this.anchorId,
     this.depth = 0,
+    this.sections = const [],
   });
 
   final int depth;
   final String title;
   final String chapterId;
   final String? anchorId;
+  final List<TocEntry> sections;
 
-  bool matches(String query) => title.contains(query);
+  bool matches(String query) =>
+      title.contains(query) ||
+      sections.any((section) => section.title.contains(query));
 }
 
 /// 已有目录只展示书里明确列出的目标；读取分段、版权段和脚注不是新目录。
 /// 需要从封面恢复的合集章节由解析器确认后写入目录，不在界面再次猜测。
-List<TocVolume> buildTocVolumes(List<TocNode> nodes, List<Chapter> chapters) {
+List<TocVolume> buildTocVolumes(
+  List<TocNode> nodes,
+  List<Chapter> chapters, {
+  Map<String, List<TxtTocSection>> txtSections = const {},
+}) {
   final ordered = [...chapters]..sort((a, b) => a.ordinal.compareTo(b.ordinal));
   if (nodes.isEmpty) {
     return [
@@ -60,7 +69,11 @@ List<TocVolume> buildTocVolumes(List<TocNode> nodes, List<Chapter> chapters) {
         chapters: [
           for (final c in ordered)
             if (c.title.trim().isNotEmpty)
-              TocEntry(title: c.title, chapterId: c.id),
+              TocEntry(
+                title: c.title,
+                chapterId: c.id,
+                sections: _sectionEntries(c.id, 1, txtSections[c.id]),
+              ),
         ],
       ),
     ];
@@ -69,16 +82,18 @@ List<TocVolume> buildTocVolumes(List<TocNode> nodes, List<Chapter> chapters) {
   final represented = ordered.where((c) => ids.contains(c.id)).toList();
   return _buildAnchorVolumes(nodes, represented, {
     for (var i = 0; i < represented.length; i++) represented[i].id: i,
-  });
+  }, txtSections);
 }
 
 List<TocVolume> _buildAnchorVolumes(
   List<TocNode> nodes,
   List<Chapter> chapters,
   Map<String, int> indexById,
+  Map<String, List<TxtTocSection>> txtSections,
 ) {
   final volumes = <TocVolume>[];
   final targets = <(String, String)>{};
+  final sectionParents = <String>{};
   Iterable<TocEntry> entriesOf(TocNode node, int depth) sync* {
     final id = node.chapterId;
     final target = node.fragment?.isNotEmpty == true
@@ -98,6 +113,9 @@ List<TocVolume> _buildAnchorVolumes(
         chapterId: id,
         anchorId: node.fragment,
         depth: depth < 0 ? 0 : depth,
+        sections: txtSections.containsKey(id) && sectionParents.add(id)
+            ? _sectionEntries(id, depth < 0 ? 1 : depth + 1, txtSections[id])
+            : const [],
       );
     }
     for (final child in node.children) {
@@ -121,3 +139,19 @@ List<TocVolume> _buildAnchorVolumes(
   }
   return volumes;
 }
+
+List<TocEntry> _sectionEntries(
+  String chapterId,
+  int depth,
+  List<TxtTocSection>? sections,
+) => sections == null
+    ? const []
+    : [
+        for (final (index, section) in sections.indexed)
+          TocEntry(
+            title: '第${index + 1}节',
+            chapterId: chapterId,
+            anchorId: TxtChapterSections.anchorFor(section.blockId),
+            depth: depth,
+          ),
+      ];

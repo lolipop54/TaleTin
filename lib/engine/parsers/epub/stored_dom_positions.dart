@@ -38,6 +38,11 @@ class StoredDomPositions {
     for (final r in byPath.values) {'path': r.path, 'length': r.text.length},
   ];
 
+  Iterable<({String text, int start, int end})> textRuns(String blockId) =>
+      (byBlock[blockId] ?? const <_TextPosition>[]).map(
+        (row) => (text: row.text, start: row.offset, end: row.offset + row.length),
+      );
+
   String? linkAt(Locator locator) => byBlock[locator.blockId]
       ?.where(
         (r) =>

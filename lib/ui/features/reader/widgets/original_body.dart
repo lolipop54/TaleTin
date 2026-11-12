@@ -498,7 +498,7 @@ class _OriginalBodyState extends State<OriginalBody> {
     await frame.updateFlight;
     if (!_alive(frame)) return;
     if (afterPageTurn && frame.paginated && !frame.preparationFailed) {
-      // 切页命令及200ms运动已结束；图片就绪后交给Android visual-state / OnDraw
+      // 切页命令及翻页动画已结束；图片就绪后交给Android visual-state / OnDraw
       // 确认同一目标画面，不再先串行等待网页的两个rAF。Flutter交接帧仍保留。
       await frame.host.prepareImagePage();
       await _controller?.callAsyncJavaScript(

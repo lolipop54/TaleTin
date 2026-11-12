@@ -19,7 +19,7 @@ mixin _SimplifiedScrollSelection on ConsumerState<SimplifiedScrollArea> {
     _selectionBackend = ScrollSelectionBackend(motion: Listenable.merge([_window, _window.controller]),
       contentTap: contentTap,
       hit: (point) async => _selectionModel()?.hit(point),
-      sentence: (point) async => _selectionModel()?.sentence(point),
+      initialRange: (point) async => _selectionModel()?.initialRange(point),
       measure: (ranges) async => measure(ranges), measureSync: measure,
       move: (distance) async {
         await _window.maintain();

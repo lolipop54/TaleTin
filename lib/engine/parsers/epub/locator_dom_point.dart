@@ -57,7 +57,7 @@ class LocatorDomMap {
   final StoredDomPositions? _stored;
   ChapterAnchorMap get map => _map!;
 
-  /// 缓存表不保留DOM树，但选句、跨页扩选仍需要同一份文字位置换算器。
+  /// 缓存表不保留 DOM 树，选文和跨页扩选仍使用同一份文字位置换算器。
   LocatorMapper get mapper => _stored?.mapper ?? map.mapper;
   final ChapterContent content;
   final String href;
@@ -226,6 +226,21 @@ class LocatorDomMap {
         for (final segment in map.textMap.segments)
           {'path': _path(segment.node), 'length': segment.rawLength},
       ];
+
+  /// 原书文字节点的内容及其在标准正文里的范围。
+  Iterable<({String text, int start, int end})> textRuns(String blockId) {
+    final stored = _stored;
+    if (stored != null) return stored.textRuns(blockId);
+    final index = content.blocks.indexWhere((block) => block.id == blockId);
+    if (index < 0) return const [];
+    return map.textMap.segmentsOfBlock(map.blocks[index].id).map(
+      (segment) => (
+        text: segment.node.text,
+        start: segment.blockOffset,
+        end: segment.blockOffset + segment.emittedLength,
+      ),
+    );
+  }
 
   /// 滚动宿主沿用正文图片顺序，包含 SVG image，排除未计入正文的内联图片。
   List<List<int>> get imagePaths =>

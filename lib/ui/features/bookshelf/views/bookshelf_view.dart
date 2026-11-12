@@ -200,7 +200,7 @@ class BookshelfView extends ConsumerWidget {
     );
   }
 
-  /// 自适应网格：列数 = max(1, floor((可用宽 + 间距) / (最小宽 + 间距)))。
+  /// 自适应网格：按封面最小宽度计算能放几列，再按窗口形状限制列数。
   Widget _buildGrid(BuildContext context, WidgetRef ref, List<Book> books) {
     final imports = ref.watch(shelfImportItemsProvider);
     final ready = {
@@ -245,10 +245,14 @@ class BookshelfView extends ConsumerWidget {
           // 网格自身左右有页边距，列数与单元宽度都按内容宽度计算
           final contentWidth =
               constraints.maxWidth - GtSize.shelfPagePadding * 2;
+          final windowSize = MediaQuery.sizeOf(context);
+          // 用应用窗口判断横屏空间，分屏时仍按实际可用宽度减列。
+          final wideLandscape =
+              windowSize.width > windowSize.height && windowSize.height >= 600;
           final columns =
               ((contentWidth + gap) / (GtSize.shelfMinItemWidth + gap))
                   .floor()
-                  .clamp(1, 6);
+                  .clamp(1, wideLandscape ? 8 : 6);
           final itemWidth = (contentWidth - gap * (columns - 1)) / columns;
           // 比例与 BookTile 的内容高度同源（含系统字号缩放），
           // 避免封面被拉伸压缩或文字溢出

@@ -35,22 +35,38 @@ mixin _ReaderTocNavigation
     String? title,
     String? anchorId,
     bool rememberReturn = true,
-  }) => rememberReturn
-      ? ref.read(readerProgressReturnProvider(bookId).notifier).jump(() async {
-          await _goToChapterFromToc(
-            chapterId,
-            title: title,
-            anchorId: anchorId,
-          );
-          await waitForTocPosition();
-        })
-      : _goToChapterFromToc(chapterId, title: title, anchorId: anchorId);
+  }) {
+    Future<void> jump() =>
+        _goToChapterFromToc(chapterId, title: title, anchorId: anchorId);
+    if (!rememberReturn) return jump();
+    return ref.read(readerProgressReturnProvider(bookId).notifier).jump(
+      () async {
+        await jump();
+        await waitForTocPosition();
+      },
+    );
+  }
 
   Future<void> _goToChapterFromToc(
     String chapterId, {
     String? title,
     String? anchorId,
   }) async {
+    final sectionBlock = TxtChapterSections.blockOfAnchor(anchorId);
+    final before = state.value;
+    if (before?.book.format == BookFormat.txt && sectionBlock != null) {
+      // 分节定位沿用原章号和真实段落号，直接走通用的跳转及保存流程。
+      await goToLocator(
+        Locator(
+          bookId: bookId,
+          contentVersion: before!.book.contentVersion,
+          chapterId: chapterId,
+          blockId: sectionBlock,
+          utf16Offset: 0,
+        ),
+      );
+      return;
+    }
     cancelProgressNavigation();
     await beginManualReading();
     _clearRestoredPosition();
@@ -59,11 +75,15 @@ mixin _ReaderTocNavigation
     final index = session.chapters.indexWhere((c) => c.id == chapterId);
     if (index < 0) return;
     if (session.book.format == BookFormat.pdf) {
-      final content = await ref.read(chapterContentRepositoryProvider)
-        .chapter(bookId, session.chapters[index], textOnly: true);
+      final content = await ref
+          .read(chapterContentRepositoryProvider)
+          .chapter(bookId, session.chapters[index], textOnly: true);
       final y = anchorId?.startsWith('pdf-y:') == true
-        ? double.tryParse(anchorId!.substring(6)) ?? 0 : 0.0;
-      await goToLocator(content.pdfPage!.anchorAt(content, bookId, chapterId, y));
+          ? double.tryParse(anchorId!.substring(6)) ?? 0
+          : 0.0;
+      await goToLocator(
+        content.pdfPage!.anchorAt(content, bookId, chapterId, y),
+      );
       return;
     }
     if ((session.scrolling || !_mode.isOriginal) &&
@@ -108,7 +128,10 @@ mixin _ReaderTocNavigation
     // 一份 XHTML 内可以有上百个 NCX 锚点。简化正文没有保留 DOM id，
     // 用同名标题块还原稳定 Locator；原书模式再由 Locator 换算章内落点。
     final normalizedTitle = title?.trim();
-    if (normalizedTitle?.isNotEmpty == true) {
+    // TXT 普通目录项就是章首。只有旧目录补出的章内锚点需要读正文查块。
+    final findHeading =
+        session.book.format != BookFormat.txt || anchorId?.isNotEmpty == true;
+    if (findHeading && normalizedTitle?.isNotEmpty == true) {
       final chapter = session.chapters[index];
       final content = await ref
           .read(chapterContentRepositoryProvider)

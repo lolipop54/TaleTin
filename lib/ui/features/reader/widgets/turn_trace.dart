@@ -34,14 +34,22 @@ void traceTurnFlush(String key) {
 }
 
 /// 只包住已有等待，不增加查询、截图或帧等待；成对编号可识别尚未返回的步骤。
-Future<T> traceTurnStep<T>(String label, Future<T> Function() action) {
-  if (!readerTurnStateDiagnosticsEnabled ||
+Future<T> traceTurnStep<T>(
+  String label,
+  Future<T> Function() action, {
+  bool observeStalls = false,
+  Object? owner,
+}) {
+  if (!(readerTurnStateDiagnosticsEnabled ||
+          observeStalls && ReaderTurnStateDiagnostics.enabled) ||
       label.contains('command=__gt.drag')) {
     return _traceTurnStep(label, action);
   }
   return ReaderTurnStateDiagnostics.step(
     label,
     () => _traceTurnStep(label, action),
+    observeStalls: observeStalls,
+    owner: owner,
   );
 }
 

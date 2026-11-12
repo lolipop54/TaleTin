@@ -45,8 +45,14 @@ Future<void> main(List<String> args) async {
       final linker = compiler.resolve(
         '$prefix${code.android.targetNdkApi}-clang${Platform.isWindows ? '.cmd' : ''}',
       );
-      environment['CARGO_TARGET_${target.toUpperCase().replaceAll('-', '_')}_LINKER'] =
-          linker.toFilePath();
+      final targetKey = target.replaceAll('-', '_');
+      environment['CARGO_TARGET_${targetKey.toUpperCase()}_LINKER'] = linker
+          .toFilePath();
+      // Jieba's compressed dictionary uses zstd, which builds C for the target.
+      environment['CC_$targetKey'] = linker.toFilePath();
+      environment['AR_$targetKey'] = compiler
+          .resolve('llvm-ar${Platform.isWindows ? '.exe' : ''}')
+          .toFilePath();
       environment['CARGO_ENCODED_RUSTFLAGS'] =
           '-Clink-arg=-Wl,-z,max-page-size=16384';
     }

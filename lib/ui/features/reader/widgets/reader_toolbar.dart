@@ -9,6 +9,7 @@ import '../../../core/widgets/gt_button.dart';
 import '../../../core/widgets/gt_icon.dart';
 import '../view_models/reader_view_model.dart';
 import '../view_models/reader_session_view_model.dart';
+import '../view_models/toc_presentation_provider.dart';
 import 'reader_panel_motion.dart';
 import '../../../../app/di/reading_controls_providers.dart';
 import '../../settings/view_models/reading_backgrounds.dart';
@@ -88,16 +89,22 @@ Future<void> prepareReaderPanel(
   if (panel == ReaderPanel.contents) {
     // 子路由打开时，父页的订阅会暂停；准备期间另持订阅，保证查询流继续工作。
     final toc = container.listen(bookTocProvider(bookId), (_, _) {});
+    final sections = container.listen(
+      readerTxtSectionsProvider(bookId),
+      (_, _) {},
+    );
     final bookmarks = container.listen(bookmarksProvider(bookId), (_, _) {});
     final notes = container.listen(annotationsProvider(bookId), (_, _) {});
     try {
       await Future.wait([
         container.read(bookTocProvider(bookId).future),
+        container.read(readerTxtSectionsProvider(bookId).future),
         container.read(bookmarksProvider(bookId).future),
         container.read(annotationsProvider(bookId).future),
       ]);
     } finally {
       toc.close();
+      sections.close();
       bookmarks.close();
       notes.close();
     }

@@ -3,15 +3,35 @@
   'use strict';
   const host = window.gtScroll;
   const nodeAt = (doc, path) => path.reduce((n, i) => n.childNodes[i], doc.body);
-  host.hitText = (x, y) => {
+  host.hitText = (x, y, character) => {
     const frame = host.frames.find(f => y + scrollY >= f.offsetTop &&
       y + scrollY < f.offsetTop + f.offsetHeight);
     if (!frame) return null;
     const doc = frame.contentDocument, local = y + scrollY - frame.offsetTop;
     const range = doc.caretRangeFromPoint(x, local);
     if (!range) return null;
-    const item = frame.textNodes.find(n => n.node === range.startContainer);
-    return item ? {index: frame.meta.index, path: item.path, offset: range.startOffset} : null;
+    const node = range.startContainer;
+    const item = frame.textNodes.find(n => n.node === node);
+    if (!item) return null;
+    let offset = range.startOffset;
+    if (character) {
+      // 浏览器返回最近的插入点。起选要核对手指下的字，拖手柄仍用插入点。
+      const glyph = doc.createRange();
+      let hit = false;
+      for (let i = Math.max(0, offset - 1); i <= offset + 1 && i < node.length; i++) {
+        glyph.setStart(node, i);
+        glyph.setEnd(node, i + 1);
+        if (Array.from(glyph.getClientRects()).some(r =>
+          x >= r.left && x < r.right && local >= r.top && local < r.bottom)) {
+          if (!node.nodeValue.charAt(i).trim()) return null;
+          offset = i;
+          hit = true;
+          break;
+        }
+      }
+      if (!hit) return null;
+    }
+    return {index: frame.meta.index, path: item.path, offset};
   };
   function measure(segment) {
     const frame = host.frames.find(f => f.meta.index === segment.index);

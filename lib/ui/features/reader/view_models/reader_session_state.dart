@@ -32,6 +32,7 @@ class ReaderSession {
     this.scrolling = false,
     this.scrollAnchor,
     this.scrollJump,
+    this.scrollSectionOffset,
     this.pdfAtEnd = false,
   });
 
@@ -46,9 +47,10 @@ class ReaderSession {
   /// 原页滚动已抵达实际底部；只影响显示百分比，定位仍保存窗口顶部锚点。
   final bool pdfAtEnd;
   final Locator? scrollAnchor;
+  final int? scrollSectionOffset;
   final ({int token, Locator locator})? scrollJump;
 
-  /// 当前章正文与排版（首次排版完成后才有值）
+  /// 完整章正文与排版。按节读取时，当前节正文随排版保存。
   final ChapterContent? content;
   final ChapterLayout? layout;
   final int pageIndex;
@@ -127,15 +129,21 @@ class ReaderSession {
           locator: anchor,
         );
 
-  double get _scrollFraction => content == null || scrollAnchor == null
-      ? 0
-      : fractionOfLocator(
-          content: content!,
-          bookId: book.id,
-          contentVersion: book.contentVersion,
-          chapterId: chapter.id,
-          locator: scrollAnchor!,
-        );
+  double get _scrollFraction {
+    final current = content;
+    if (current == null || scrollAnchor == null) return 0;
+    final fraction = fractionOfLocator(
+      content: current,
+      bookId: book.id,
+      contentVersion: book.contentVersion,
+      chapterId: chapter.id,
+      locator: scrollAnchor!,
+    );
+    final before = scrollSectionOffset;
+    if (before == null) return fraction;
+    return ((before + fraction * current.textLength) / chapter.textLength)
+        .clamp(0.0, 1.0);
+  }
 
   /// 全书进度 0–1：已完成章节的字数 + 本章已读位置（与排版无关）
   double get bookProgress {
@@ -156,6 +164,11 @@ class ReaderSession {
   /// 「下一章」会停在上一章、再点不动。这里用当前 `Locator` 反算文本比例，
   /// 与原书模式「按标题落点」后的上报位置正好对上（两边都是同一块的位置）。
   double get contentProgress {
+    // 长 TXT 窗口已按真实段落累计字数，直接复用，避免首次绘制再扫整章。
+    if (!scrolling && !isOriginal && layout?.paginatesTxtInWindows == true) {
+      return bookProgress;
+    }
+    if (scrolling && scrollSectionOffset != null) return bookProgress;
     final locator = currentAnchor;
     final chapterContent = content;
     if (locator == null ||
@@ -239,6 +252,7 @@ class ReaderSession {
     bool? scrolling,
     Locator? scrollAnchor,
     ({int token, Locator locator})? scrollJump,
+    int? scrollSectionOffset,
     bool? pdfAtEnd,
   }) => ReaderSession(
     book: book,
@@ -247,12 +261,22 @@ class ReaderSession {
     scrolling: scrolling ?? this.scrolling,
     scrollAnchor: scrollAnchor ?? this.scrollAnchor,
     scrollJump: scrollJump ?? this.scrollJump,
+    scrollSectionOffset: !(scrolling ?? this.scrolling)
+        ? null
+        : content == null
+        ? this.scrollSectionOffset
+        : scrollSectionOffset,
     pdfAtEnd:
         pdfAtEnd ??
         (chapterIndex != null || scrollJump != null || originalJump != null
             ? false
             : this.pdfAtEnd),
-    content: content ?? this.content,
+    content:
+        !(scrolling ?? this.scrolling) &&
+            (layout?.readsTxtBySection == true ||
+                (this.scrollSectionOffset != null && content == null))
+        ? null
+        : content ?? this.content,
     layout: layout ?? this.layout,
     pageIndex: pageIndex ?? this.pageIndex,
     viewportSignature: viewportSignature ?? this.viewportSignature,

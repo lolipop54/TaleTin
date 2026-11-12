@@ -359,6 +359,18 @@ class _BottomControlsState extends ConsumerState<_BottomControls> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  if (widget.visible &&
+                      widget.state.panel == ReaderPanel.none &&
+                      widget.state.notice != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: GtSpacing.s2),
+                      child: IgnorePointer(
+                        child: _ReaderNotice(
+                          key: ValueKey(widget.state.noticeToken),
+                          text: widget.state.notice!,
+                        ),
+                      ),
+                    ),
                   if (_showProgress &&
                       returnState.fromSlider &&
                       returnState.origin != null)

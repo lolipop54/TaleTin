@@ -89,14 +89,14 @@
     if (!path) return null;
     var offset = clampOffset(node, range.startOffset);
     if (character) {
-      // 长按要命中字本身；浏览器返回的是字两侧的插入点，句号附近会串句。
+      // 长按要命中字本身；浏览器返回的插入点可能在按住的字之后。
       var hit = null;
       for (var i = Math.max(0, offset - 1); i <= offset + 1 && i < node.length; i++) {
         var glyph = charRectOf(node, i);
         if (glyph && x >= glyph.left && x < glyph.right &&
             y >= glyph.top && y < glyph.bottom) { hit = i; break; }
       }
-      if (hit === null) return null;
+      if (hit === null || !node.nodeValue.charAt(hit).trim()) return null;
       offset = hit;
     }
     // 光标位上的那个字必须真的落在本页这一栏里：页尾最后一行下方那段空档里，

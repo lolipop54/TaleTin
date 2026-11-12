@@ -12,19 +12,22 @@ class FileStorageRepository implements StorageRepository {
     required this.cacheRoot,
     required this.originals,
     required this.protectedBooks,
+    this.readInstalledStorage,
     this.clearChapterCache,
     this.clearLayoutCache,
   });
   final String supportRoot, cacheRoot;
   final EpubSourceRepository originals;
   final Set<String> Function() protectedBooks;
+  final Future<InstalledStorage?> Function()? readInstalledStorage;
   final Future<void> Function()? clearChapterCache;
   final Future<void> Function()? clearLayoutCache;
   @override
-  Future<StorageUsage> load() {
+  Future<StorageUsage> load() async {
     final support = supportRoot, cache = cacheRoot;
     final protected = {...protectedBooks(), ...originals.activeBookIds};
-    return Isolate.run(() => _scan(support, cache, protected));
+    final installed = await readInstalledStorage?.call();
+    return Isolate.run(() => _scan(support, cache, protected, installed));
   }
 
   @override
@@ -71,6 +74,7 @@ Future<StorageUsage> _scan(
   String support,
   String cache,
   Set<String> protected,
+  InstalledStorage? installed,
 ) async {
   final categories = <String, int>{
     '源书': 0,
@@ -129,5 +133,9 @@ Future<StorageUsage> _scan(
       categories[category] = categories[category]! + length;
     }
   }
-  return StorageUsage(Map.unmodifiable(categories), clearable);
+  return StorageUsage(
+    Map.unmodifiable(categories),
+    clearable,
+    installed: installed,
+  );
 }

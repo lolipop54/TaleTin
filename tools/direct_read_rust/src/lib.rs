@@ -1,4 +1,5 @@
 // Copyright (c) 2026 GT Reader contributors. MIT license, see LICENSE.
+mod chinese_selection;
 mod css;
 mod display_source;
 mod dom;

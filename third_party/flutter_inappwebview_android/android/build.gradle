@@ -21,12 +21,22 @@ rootProject.allprojects {
 
 apply plugin: 'com.android.library'
 
+def includeOriginalLayout = rootProject.findProperty('gtIncludeOriginalLayout') != false
+
 android {
     // Conditional for compatibility with AGP <4.2.
     if (project.android.hasProperty("namespace")) {
         namespace 'com.pichillilorenzo.flutter_inappwebview_android'
     }
     compileSdk 34
+    if (!includeOriginalLayout) {
+        // Flutter 仍生成同一份注册代码；仅提供空入口，不编译实际插件或浏览器页面。
+        sourceSets.main {
+            java.setSrcDirs(['src/disabled/java'])
+            res.setSrcDirs([])
+            manifest.srcFile 'src/disabled/AndroidManifest.xml'
+        }
+    }
 
     defaultConfig {
         minSdkVersion 19
@@ -48,6 +58,9 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
+}
+
+if (includeOriginalLayout) {
     dependencies {
         implementation 'androidx.webkit:webkit:1.12.0'
         implementation 'androidx.browser:browser:1.8.0'

@@ -19,6 +19,14 @@ object ReadingWindow {
     private var volumeKeys = false
     private var channel: MethodChannel? = null
     private var barsRequest = 0L
+
+    private data class ShelfWindowLayout(
+        val multiWindow: Boolean,
+        val width: Int,
+        val height: Int,
+        val visibleInsets: Insets,
+    )
+
     /** 无系统栏的设备没有可等待的可见状态；临时隐藏的栏仍有非零最大占位。 */
     private fun systemBarReady(insets: WindowInsetsCompat, type: Int): Boolean =
         insets.isVisible(type) || insets.getInsetsIgnoringVisibility(type) == Insets.NONE
@@ -100,19 +108,30 @@ object ReadingWindow {
                         if (call.argument<Boolean>("status") != false) controller.show(status) else controller.hide(status)
                         if (call.argument<Boolean>("navigation") != false) controller.show(navigation) else controller.hide(navigation)
                         if (waitingForInsets) {
-                            // 现有系统栏要等到可见；MuMu等没有导航栏的设备不可能报告它可见。
-                            // 使用“不考虑隐藏”的占位区分不存在与暂时隐藏，仍等两帧布局稳定。
                             val decor = activity.window.decorView
+                            val shelfInsets = status or navigation or
+                                WindowInsetsCompat.Type.displayCutout() or WindowInsetsCompat.Type.captionBar()
+                            var previousLayout: ShelfWindowLayout? = null
                             var readyFrames = 0
                             var lastLoggedAt = 0L
                             var nextSnapshotMs = 2000L
                             val check = object : Runnable {
                                 override fun run() {
                                     val insets = ViewCompat.getRootWindowInsets(decor)
-                                    if (insets != null && systemBarReady(insets, status) &&
-                                        systemBarReady(insets, navigation) && !decor.isLayoutRequested) {
-                                        readyFrames++
-                                    } else readyFrames = 0
+                                    val multiWindow = activity.isInMultiWindowMode
+                                    // 分屏的系统栏由系统决定，显示请求不一定会生效。
+                                    // 等当前窗口实际收到的占位稳定。全屏仍等存在的系统栏可见。
+                                    val layout = if (insets != null && !decor.isLayoutRequested &&
+                                        (multiWindow || (systemBarReady(insets, status) &&
+                                            systemBarReady(insets, navigation)))) {
+                                        ShelfWindowLayout(multiWindow, decor.width, decor.height, insets.getInsets(shelfInsets))
+                                    } else null
+                                    readyFrames = when {
+                                        layout == null -> 0
+                                        layout == previousLayout -> readyFrames + 1
+                                        else -> 1
+                                    }
+                                    previousLayout = layout
                                     val elapsed = SystemClock.uptimeMillis() - started
                                     // 两秒首次保存，十秒补一次，之后每分钟一次；不逐帧写盘。
                                     if (elapsed >= nextSnapshotMs || readyFrames >= 2) {
@@ -126,6 +145,7 @@ object ReadingWindow {
                                             "navigationCurrent" to insets?.getInsets(navigation)?.toString(),
                                             "layoutRequested" to decor.isLayoutRequested,
                                             "readyFrames" to readyFrames,
+                                            "multiWindow" to multiWindow,
                                             "attached" to decor.isAttachedToWindow,
                                             "focus" to decor.hasWindowFocus(),
                                             "finishing" to activity.isFinishing,
@@ -138,7 +158,7 @@ object ReadingWindow {
                                     // 只观察原有等待，每秒最多一条；不补超时、不强制完成。
                                     if (tracing && (lastLoggedAt == 0L || SystemClock.uptimeMillis() - lastLoggedAt >= 1000L || readyFrames >= 2)) {
                                         lastLoggedAt = SystemClock.uptimeMillis()
-                                        trace("system-bars-check", "statusVisible=${insets?.isVisible(status)} navigationVisible=${insets?.isVisible(navigation)} statusMax=${insets?.getInsetsIgnoringVisibility(status)} navigationMax=${insets?.getInsetsIgnoringVisibility(navigation)} layoutRequested=${decor.isLayoutRequested} readyFrames=$readyFrames attached=${decor.isAttachedToWindow} focus=${decor.hasWindowFocus()} finishing=${activity.isFinishing} destroyed=${activity.isDestroyed} statusTop=${insets?.getInsets(status)?.top} navigationBottom=${insets?.getInsets(navigation)?.bottom}")
+                                        trace("system-bars-check", "multiWindow=$multiWindow statusVisible=${insets?.isVisible(status)} navigationVisible=${insets?.isVisible(navigation)} statusMax=${insets?.getInsetsIgnoringVisibility(status)} navigationMax=${insets?.getInsetsIgnoringVisibility(navigation)} layoutRequested=${decor.isLayoutRequested} readyFrames=$readyFrames attached=${decor.isAttachedToWindow} focus=${decor.hasWindowFocus()} finishing=${activity.isFinishing} destroyed=${activity.isDestroyed} statusTop=${insets?.getInsets(status)?.top} navigationBottom=${insets?.getInsets(navigation)?.bottom}")
                                     }
                                     if (readyFrames >= 2) {
                                         trace("system-bars-return")
