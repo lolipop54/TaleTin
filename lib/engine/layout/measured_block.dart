@@ -35,6 +35,7 @@ class MeasuredBlock {
     this.imageSize,
     this.resourcePath,
     this.alt,
+    this.noteLink,
     this.inset = 0,
     this.isDecoration = false,
     this.decorationAtStart = false,
@@ -214,6 +215,7 @@ class MeasuredBlock {
     imageSize: imageSize,
     resourcePath: resourcePath,
     alt: alt,
+    noteLink: noteLink,
     inset: inset,
     isDecoration: isDecoration,
     decorationAtStart: decorationAtStart,
@@ -267,6 +269,7 @@ class MeasuredBlock {
     int? boxId,
     bool boxFirst = true,
     bool boxLast = true,
+    double? horizontalShift,
   }) => MeasuredBlock(
     blockId: blockId,
     kind: kind,
@@ -279,7 +282,10 @@ class MeasuredBlock {
     imageSize: imageSize,
     resourcePath: resourcePath,
     alt: alt,
-    inset: bounds.left + (id.startsWith('__parallel_') ? inset : 4),
+    noteLink: noteLink,
+    inset:
+        (horizontalShift ?? bounds.left) +
+        (id.startsWith('__parallel_') ? inset : 4),
     isDecoration: isDecoration,
     decorationAtStart: decorationAtStart,
     displayPrefixLength: displayPrefixLength,
@@ -295,9 +301,8 @@ class MeasuredBlock {
     tableBox: tableBox,
     layoutWidth: width,
     box: id.startsWith('__parallel_') ? box : null,
-    // 只带盒子编号，不带盒子本身：前后段落和表格要算同一组，段距为 0，
-    // 但盒子由分页时生成的那一个表格盒子片段来画。
-    boxId: boxId,
+    // 图文绕排沿用每块自己的外观；表格的外框由分页生成的盒子片段绘制。
+    boxId: id.startsWith('__parallel_') ? this.boxId : boxId,
     containerBoxes: containerBoxes,
     bodyTop: id.startsWith('__parallel_') ? bodyTop : 0,
     bodyBottom: id.startsWith('__parallel_') ? bodyBottom : tableBottom,
@@ -340,6 +345,7 @@ class MeasuredBlock {
   final Size? imageSize;
   final String? resourcePath;
   final String? alt;
+  final String? noteLink;
 
   /// 鍒楄〃椤圭瓑鍧楃殑宸︿晶缁樺埗鍋忕Щ
   final double inset;

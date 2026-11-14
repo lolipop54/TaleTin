@@ -282,6 +282,17 @@ class ChapterPaginator {
           group.add(blocks[++i]);
         }
         if (block.isParallelFlow) {
+          // 浮动插图在页尾放不下时，和旁边的首行一起移到续页，
+          // 避免左边先显示诗句、右边的图到下一页才出现。
+          final imageBottom = group
+              .where((b) => b.imageSize != null && b.tableBounds!.top < .1)
+              .fold(
+                0.0,
+                (bottom, b) => math.max(bottom, b.tableBounds!.bottom),
+              );
+          if (imageBottom > 0 && imageBottom <= pageHeight) {
+            yield ensure(gap + imageBottom, i - group.length + 1);
+          }
           final flowPages = parallelFlowPages(group, offsetIn(gap), pageHeight);
           for (var p = 0; p < flowPages.length; p++) {
             if (p > 0) yield flush();

@@ -355,6 +355,20 @@ class ReaderTextPainter {
             top + line.textTop + segment.top,
           );
           painter.paint(canvas, origin);
+          if (segment.ruby case final ruby?) {
+            final label = RubyLabel.painter(
+              ruby.text,
+              ruby.fontSize,
+              ruby.fontFamily,
+              options.textScaler,
+              color: baseColor,
+            );
+            label.paint(
+              canvas,
+              origin + Offset((segment.width - ruby.width) / 2, -ruby.height),
+            );
+            label.dispose();
+          }
           if (block.hasScript) {
             block.paintScriptsInSegment(
               canvas,

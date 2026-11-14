@@ -524,6 +524,9 @@ impl Builder {
                 if let Some(alt) = image.block.get("alt") {
                     value["a"] = alt.clone();
                 }
+                if let Some(link) = image.block.get("noteLink") {
+                    value["nl"] = link.clone();
+                }
                 value
             })
             .collect();

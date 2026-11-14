@@ -172,7 +172,7 @@ class _LazyMeasuredBlocks implements MeasuredBlockSource {
     final table = _tables[block.id];
     if (_parallel.groups.containsKey(ordinal)) {
       final group = _parallel.measure(ordinal, measurer);
-      _cursor = _parallel.groups[ordinal]!.last.lastBlock! + 1;
+      _cursor = _parallel.ends[ordinal]! + 1;
       for (var i = 0; i < group.length; i++) {
         _queue(group[i], sourceCursor: i == group.length - 1 ? _cursor : null);
       }

@@ -90,15 +90,18 @@ class AppErrorReporter {
     StackTrace stack, {
     required String operation,
     bool notify = true,
+    Map<String, Object?>? details,
+    bool recordCancellation = false,
   }) {
-    if (isExpectedAppCancellation(error)) return null;
+    if (!recordCancellation && isExpectedAppCancellation(error)) return null;
+    final eventContext = details == null ? context : {...context, ...details};
     final text = _limit(error.toString(), 4096);
     final trace = _limit(stack.toString(), 24576);
     final source = _source(trace);
     final type = error is PlatformException
         ? '${error.runtimeType}/${error.code}'
         : error.runtimeType.toString();
-    final key = '$type|$text|$source|$route|$context';
+    final key = '$type|$text|$source|$route|$eventContext';
     final time = now();
     final old = _recent[key];
     final event =
@@ -112,7 +115,7 @@ class AppErrorReporter {
           trace,
           time,
           route,
-          Map.unmodifiable(context),
+          Map.unmodifiable(eventContext),
         );
     if (old != null) event.count++;
     _recent.remove(key);
@@ -235,7 +238,16 @@ abstract final class AppErrors {
     StackTrace stack, {
     required String operation,
     bool notify = true,
-  }) => reporter.report(error, stack, operation: operation, notify: notify);
+    Map<String, Object?>? details,
+    bool recordCancellation = false,
+  }) => reporter.report(
+    error,
+    stack,
+    operation: operation,
+    notify: notify,
+    details: details,
+    recordCancellation: recordCancellation,
+  );
 
   static Future<void> initialize() async {
     if (!Platform.isAndroid) return;

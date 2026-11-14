@@ -8,6 +8,16 @@ mixin _SimplifiedScrollTap on ConsumerState<SimplifiedScrollArea> {
 
   Future<bool> _contentTap(Offset point) async {
     if (!_window.isReady || !_window.controller.hasClients) return true;
+    if (await _imageTap(point)) {
+      return true;
+    }
+    return mounted ? _linkTap(point) : true;
+  }
+
+  Future<bool> _imageTap(Offset point) async {
+    if (!mounted) return true;
+    final viewImages =
+        ref.read(readingControlsProvider).value?.imageViewing != false;
     var before = -_window.controller.offset;
     for (final entry in _window.entries) {
       final layout = entry.layout;
@@ -19,6 +29,9 @@ mixin _SimplifiedScrollTap on ConsumerState<SimplifiedScrollArea> {
         final local = point - Offset(0, before + layout.starts[i]);
         for (final visual in cell.positionedInlineImages) {
           if (!visual.rect.contains(local)) continue;
+          if (await _imageNote(visual.image.noteLink, point)) return true;
+          if (!mounted) return true;
+          if (!viewImages) return false;
           await _session.beginManualReading();
           if (!mounted) return true;
           final image = visual.image, path = image.resourcePath;
@@ -40,6 +53,9 @@ mixin _SimplifiedScrollTap on ConsumerState<SimplifiedScrollArea> {
             .firstOrNull;
         final path = image?.block.resourcePath;
         if (image != null && path != null) {
+          if (await _imageNote(image.block.noteLink, point)) return true;
+          if (!mounted) return true;
+          if (!viewImages) return false;
           final blockId = image.block.blockId;
           await _session.beginManualReading();
           if (!mounted) return true;
@@ -65,6 +81,23 @@ mixin _SimplifiedScrollTap on ConsumerState<SimplifiedScrollArea> {
       }
       before += layout.height;
     }
+    return false;
+  }
+
+  Future<bool> _imageNote(String? link, Offset point) {
+    if (!mounted) return Future.value(true);
+    return openReaderImageNote(
+      context,
+      ref: ref,
+      bookId: widget.bookId,
+      chapters: widget.session.chapters,
+      link: link,
+      point: point,
+      theme: widget.settings.theme,
+    );
+  }
+
+  Future<bool> _linkTap(Offset point) async {
     if (!widget.session.book.format.usesOriginalWebView) return false;
     final selection = _selectionModel();
     if (selection == null) return false;

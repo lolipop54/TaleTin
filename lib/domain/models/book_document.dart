@@ -193,6 +193,7 @@ class InlineImage {
     this.imageMaxWidth,
     this.alt,
     this.styleId,
+    this.noteLink,
   });
 
   /// 在本块文字里的字符位置（UTF-16 code unit）。
@@ -211,6 +212,19 @@ class InlineImage {
 
   final String? alt;
   final int? styleId;
+  final String? noteLink;
+
+  InlineImage positioned(int offset, {int? styleId}) => InlineImage(
+    offset: offset,
+    resourcePath: resourcePath,
+    width: width,
+    height: height,
+    imageWidth: imageWidth,
+    imageMaxWidth: imageMaxWidth,
+    alt: alt,
+    styleId: styleId ?? this.styleId,
+    noteLink: noteLink,
+  );
 
   Map<String, Object?> toJson() => {
     'o': offset,
@@ -221,6 +235,7 @@ class InlineImage {
     if (imageWidth != null) 'iw': imageWidth,
     if (imageMaxWidth != null) 'imw': imageMaxWidth,
     if (alt != null) 'a': alt,
+    if (noteLink != null) 'nl': noteLink,
   };
 
   static InlineImage fromJson(Map<String, Object?> json) => InlineImage(
@@ -235,6 +250,7 @@ class InlineImage {
         ? null
         : [for (final value in json['imw'] as List) (value as num).toInt()],
     alt: json['a'] as String?,
+    noteLink: json['nl'] as String?,
     styleId: (json['sid'] as num?)?.toInt(),
   );
 }
@@ -258,6 +274,7 @@ class ContentBlock {
     this.resourceWidth,
     this.resourceHeight,
     this.alt,
+    this.noteLink,
     this.target,
     this.nest = 0,
     this.ordered = false,
@@ -289,6 +306,7 @@ class ContentBlock {
 
   /// 图片替代文字或脚注文本
   final String? alt;
+  final String? noteLink;
 
   /// 内部链接或脚注目标（阶段 3 使用）
   final String? target;
@@ -366,6 +384,7 @@ class ContentBlock {
         resourceWidth: resourceWidth,
         resourceHeight: resourceHeight,
         alt: alt,
+        noteLink: noteLink,
         target: target,
         nest: nest,
         ordered: ordered,
@@ -417,6 +436,7 @@ class ContentBlock {
     if (resourceWidth != null) 'width': resourceWidth,
     if (resourceHeight != null) 'height': resourceHeight,
     if (alt != null) 'alt': alt,
+    if (noteLink != null) 'noteLink': noteLink,
     if (target != null) 'target': target,
     if (nest > 0) 'nest': nest,
     if (ordered) 'ordered': true,
@@ -458,6 +478,7 @@ class ContentBlock {
       resourceWidth: (json['width'] as num?)?.toInt(),
       resourceHeight: (json['height'] as num?)?.toInt(),
       alt: json['alt'] as String?,
+      noteLink: json['noteLink'] as String?,
       target: json['target'] as String?,
       nest: (json['nest'] as num?)?.toInt() ?? 0,
       ordered: json['ordered'] == true,

@@ -194,18 +194,24 @@ extension _ReaderPageContent on _PageAreaState {
     // 仍重新排队检查文件；尚未准备好时继续走仓库补图与失败恢复。
     final adjacentTasks = <bool, Future<SpreadPageRef?>>{};
     Future<SpreadPageRef?> adjacent(bool forward) =>
-        adjacentTasks.putIfAbsent(forward, () {
+        adjacentTasks.putIfAbsent(forward, () async {
           final target = forward ? peekNext : peekPrevious;
           if (target != null &&
               _pageMaterials.contains(
                 content(target.layout, target.pageIndex),
                 createLocalImageConfiguration(context),
               )) {
-            return Future.value(target);
+            return target;
           }
-          return ref
-              .read(readerSessionProvider(bookId).notifier)
-              .prepareAdjacent(forward);
+          try {
+            return await ref
+                .read(readerSessionProvider(bookId).notifier)
+                .prepareAdjacent(forward);
+          } catch (_) {
+            // 找邻页失败时不会进入 prepareFold，下一次手势需要重新请求。
+            adjacentTasks.remove(forward);
+            rethrow;
+          }
         });
 
     final manual = PageTurnArea(
@@ -296,12 +302,28 @@ extension _ReaderPageContent on _PageAreaState {
             return true;
           }
         }
+        // 关闭大图时，保留上面的链接等操作，其余按普通书页点击处理。
+        final viewImages =
+            ref.read(readingControlsProvider).value?.imageViewing != false;
         // 行内图片（生僻字）只做单张大图预览，不进入连续图片窗口：
         // 它混在正文里，前后通常都是文字，不是漫画分页序列。
         for (final fragment in layout.page(session.pageIndex)!.fragments) {
           if (!mounted) return true;
           final image = fragment.inlineImageAt(localPoint);
           if (image == null) continue;
+          if (await openReaderImageNote(
+            context,
+            ref: ref,
+            bookId: bookId,
+            chapters: session.chapters,
+            link: image.noteLink,
+            point: point,
+            theme: widget.settings.theme,
+          )) {
+            return true;
+          }
+          if (!mounted) return true;
+          if (!viewImages) return false;
           final path = image.resourcePath;
           final file = File(canvas.resolveResource(path));
           if (path.toLowerCase().endsWith('.svg')) {
@@ -320,6 +342,19 @@ extension _ReaderPageContent on _PageAreaState {
           final path = fragment.block.resourcePath;
           final rect = fragment.imageRectIn(layout.contentSize.width);
           if (rect != null && path != null && rect.contains(localPoint)) {
+            if (await openReaderImageNote(
+              context,
+              ref: ref,
+              bookId: bookId,
+              chapters: session.chapters,
+              link: fragment.block.noteLink,
+              point: point,
+              theme: widget.settings.theme,
+            )) {
+              return true;
+            }
+            if (!mounted) return true;
+            if (!viewImages) return false;
             final file = File(canvas.resolveResource(path));
             if (await tryReaderImageGallery(
               context,

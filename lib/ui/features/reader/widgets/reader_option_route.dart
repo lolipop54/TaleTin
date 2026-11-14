@@ -111,24 +111,30 @@ Future<T?> showReaderOption<T>(
                         left: 0,
                         right: 0,
                         bottom: 0,
-                        child: SafeArea(
-                          top: false,
-                          maintainBottomViewPadding: true,
-                          child: Consumer(
-                            builder: (context, ref, _) => ReaderToolbar(
-                              showListening: !ref.watch(
-                                pdfModeProvider(bookId),
+                        child: Consumer(
+                          builder: (context, ref, _) {
+                            final theme = ref
+                                .watch(readerSettingsProvider(bookId))
+                                .value!
+                                .theme;
+                            return ColoredBox(
+                              color: theme.background,
+                              child: SafeArea(
+                                top: false,
+                                maintainBottomViewPadding: true,
+                                child: ReaderToolbar(
+                                  showListening: !ref.watch(
+                                    pdfModeProvider(bookId),
+                                  ),
+                                  theme: theme,
+                                  blocked: parent,
+                                  onSelect: controller.busy
+                                      ? null
+                                      : controller.close,
+                                ),
                               ),
-                              theme: ref
-                                  .watch(readerSettingsProvider(bookId))
-                                  .value!
-                                  .theme,
-                              blocked: parent,
-                              onSelect: controller.busy
-                                  ? null
-                                  : controller.close,
-                            ),
-                          ),
+                            );
+                          },
                         ),
                       ),
                   ],

@@ -1,9 +1,15 @@
 part of 'pdf_reader_area.dart';
 
 class _PdfScroll extends ConsumerStatefulWidget {
-  const _PdfScroll({super.key, required this.parent, required this.book});
+  const _PdfScroll({
+    super.key,
+    required this.parent,
+    required this.book,
+    required this.fixedView,
+  });
   final PdfReaderArea parent;
   final PdfBookController book;
+  final bool fixedView;
   @override
   ConsumerState<_PdfScroll> createState() => _PdfScrollState();
 }
@@ -15,7 +21,7 @@ class _PdfScrollState extends ConsumerState<_PdfScroll>
   final _images = <int, ui.Image>{};
   final _pending = <int, Future<void>>{};
   final _controller = ScrollController();
-  final _offsets = <double>[0];
+  List<double> _offsets = [0];
   late final _ticker = createTicker(_tick);
   late final _automatic = ref.read(
     automaticReadingProvider(parent.bookId).notifier,
@@ -28,8 +34,11 @@ class _PdfScrollState extends ConsumerState<_PdfScroll>
   Object? _requested;
   bool _ready = false, _jumping = false;
   Object? _error;
-  double _fixedScale = 1, _fixedX = 0;
+  ({double scale, double pixels, double x})? _zoomTarget;
+  double _listScale = 1, _listX = 0;
+  bool _loadingZoom = false;
   bool get ready => _ready && _controller.hasClients && _error == null;
+  bool get _canScroll => ready && !_jumping && !_loadingZoom && view.canTurn;
   PdfReaderArea get parent => widget.parent;
   ReaderSessionNotifier get session =>
       ref.read(readerSessionProvider(parent.bookId).notifier);
@@ -38,12 +47,12 @@ class _PdfScrollState extends ConsumerState<_PdfScroll>
   @override
   void initState() {
     super.initState();
-    _fixedScale = view.scale;
-    _fixedX = view.offset.dx;
-    view.offset = Offset(_fixedX, 0);
+    _listScale = view.scale;
+    _listX = view.offset.dx;
+    view.offset = Offset(_listX, 0);
     _controller.addListener(_moved);
     _backend = AutomaticScrollBackend(
-      ready: () => ready && view.canTurn,
+      ready: () => _canScroll,
       start: (speed) async {
         _speed = speed;
         _clock.reset();
@@ -59,18 +68,8 @@ class _PdfScrollState extends ConsumerState<_PdfScroll>
     _automatic.attach(_backend);
   }
 
-  int _indexAt(double offset) {
-    var low = 0, high = _offsets.length - 2;
-    while (low < high) {
-      final mid = (low + high + 1) ~/ 2;
-      if (_offsets[mid] <= offset) {
-        low = mid;
-      } else {
-        high = mid - 1;
-      }
-    }
-    return low;
-  }
+  int _indexAt(double offset, {double? scale}) =>
+      _pdfPageAt(_offsets, offset / (scale ?? _listScale));
 
   Future<void> _prepare(int index) {
     if (index < 0 ||
@@ -97,11 +96,8 @@ class _PdfScrollState extends ConsumerState<_PdfScroll>
   void _warm(int index) {
     final offset = _controller.hasClients
         ? _controller.offset
-        : _offsets[index];
-    final last = math.max(
-      index + 2,
-      _indexAt(math.min(_offsets.last, offset + _height)) + 1,
-    );
+        : _offsets[index] * _listScale;
+    final last = math.max(index + 2, _indexAt(offset + _height) + 1);
     for (var i = index - 1; i <= last; i++) {
       unawaited(
         _prepare(i).catchError((Object error, StackTrace stack) {
@@ -121,16 +117,19 @@ class _PdfScrollState extends ConsumerState<_PdfScroll>
 
   Future<void> _prepareViewport(double offset) async {
     final first = _indexAt(offset);
-    final last = _indexAt(math.min(_offsets.last, offset + _height));
+    final last = _indexAt(offset + _height);
     await Future.wait([
       for (var i = first - 1; i <= last + 1; i++) _prepare(i),
     ]);
   }
 
   void _moved() {
-    if (!_ready || _jumping || !view.canTurn || !_controller.hasClients) return;
-    final index = _indexAt(_controller.offset);
-    _warm(index);
+    if (!_canScroll) return;
+    _warm(_indexAt(_controller.offset));
+    _scheduleReport();
+  }
+
+  void _scheduleReport() {
     _saving?.cancel();
     _saving = Timer(
       const Duration(milliseconds: 150),
@@ -139,9 +138,10 @@ class _PdfScrollState extends ConsumerState<_PdfScroll>
   }
 
   Future<void> _report() async {
-    if (!_ready || _jumping || !view.canTurn || !_controller.hasClients) return;
-    final offset = _controller.offset;
-    final index = _indexAt(offset);
+    if (!_canScroll) return;
+    final pixels = _controller.offset;
+    final offset = pixels / _listScale;
+    final index = _indexAt(pixels);
     final y =
         ((offset - _offsets[index]) / (_offsets[index + 1] - _offsets[index]))
             .clamp(0.0, 1.0);
@@ -149,14 +149,15 @@ class _PdfScrollState extends ConsumerState<_PdfScroll>
       index,
       y: y,
       scrollToken: parent.session.scrollJump?.token,
-      atEnd: offset >= _controller.position.maxScrollExtent - .5,
+      atEnd: _controller.offset >= _controller.position.maxScrollExtent - .5,
     );
   }
 
   double _bounded(double target) {
     if (!_controller.hasClients) return target;
     final position = _controller.position;
-    final current = _indexAt(position.pixels.clamp(0.0, _offsets.last));
+    if (!_canScroll) return position.pixels;
+    final current = _indexAt(position.pixels);
     var first = current, last = current;
     while (first > 0 && _images.containsKey(first - 1)) {
       first--;
@@ -166,10 +167,10 @@ class _PdfScrollState extends ConsumerState<_PdfScroll>
     }
     return target
         .clamp(
-          _offsets[first],
+          _offsets[first] * _listScale,
           math.max(
-            _offsets[first],
-            _offsets[last + 1] - position.viewportDimension,
+            _offsets[first] * _listScale,
+            _offsets[last + 1] * _listScale - position.viewportDimension,
           ),
         )
         .clamp(position.minScrollExtent, position.maxScrollExtent)
@@ -177,7 +178,7 @@ class _PdfScrollState extends ConsumerState<_PdfScroll>
   }
 
   void _tick(Duration elapsed) {
-    if (!ready || !view.canTurn) {
+    if (!_canScroll) {
       _automatic.reportAdvancing(false);
       return;
     }
@@ -193,67 +194,141 @@ class _PdfScrollState extends ConsumerState<_PdfScroll>
   }
 
   Future<void> volumeTurn(bool forward) async {
-    if (!ready || !view.canTurn) return;
+    if (!_canScroll) return;
     await session.beginManualReading();
+    if (!mounted || !_canScroll) return;
+    final position = _controller.offset;
+    final scale = view.scale;
     final target = (_controller.offset + _height * .8 * (forward ? 1 : -1))
-        .clamp(0.0, math.max(0.0, _offsets.last - _height));
-    await _prepareViewport(target.toDouble());
-    if (mounted) _controller.jumpTo(target.toDouble());
+        .clamp(0.0, _maxPixels(scale));
+    await _prepareViewport(target);
+    if (!mounted ||
+        !_canScroll ||
+        view.scale != scale ||
+        _controller.offset != position) {
+      return;
+    }
+    _controller.jumpTo(target);
     await _report();
   }
 
-  List<double> _pageOffsets(double scale) {
-    final result = <double>[0];
-    for (final page in widget.book.file.document.pages) {
-      result.add(result.last + (_width * page.height / page.width + 8) * scale);
-    }
-    return result;
+  double _maxPixels(double scale) =>
+      math.max(0, _offsets.last * scale - _height);
+
+  double _clampX(double x, double scale) {
+    final limit = math.max(0.0, _width * (scale - 1) / 2);
+    return x.clamp(-limit, limit);
   }
 
-  /// 调整中只变换当前窗口。确认时先备好接续后会露出的页面，再一次交接几何与位置。
-  Future<void> confirmView(bool reset) async {
-    if (!ready || view.busy || view.touching) return;
-    view.preparing(true);
+  void _pan(Offset delta, Offset _) {
+    if (!_canScroll) return;
+    final x = _clampX(_clampX(_listX, _listScale) + delta.dx, _listScale);
+    if (x != view.offset.dx) {
+      _listX = x;
+      view.update(view.scale, Offset(x, 0));
+    }
+  }
+
+  void _zoom(double scale, Offset from, Offset to, bool singleFinger) {
+    if (_jumping) return;
+    if (widget.fixedView && view.editing) {
+      // 调整时只变换当前视窗。固定或重置时才把位移换算进连续列表。
+      final center = Offset(_width / 2, _height / 2);
+      final offset = singleFinger
+          ? view.fixedDrag(to - from)
+          : to - center - (from - center - view.offset) * (scale / view.scale);
+      view.update(
+        scale,
+        Offset(
+          offset.dx.clamp(-center.dx * scale, center.dx * scale),
+          offset.dy.clamp(-center.dy * scale, center.dy * scale),
+        ),
+      );
+      return;
+    }
+    final previous = _zoomTarget;
+    final oldScale = previous?.scale ?? view.scale;
+    final ratio = scale / oldScale;
+    final oldPixels = previous?.pixels ?? _controller.offset;
+    final oldX = previous?.x ?? view.offset.dx;
+    final center = _width / 2;
+    _zoomTarget = (
+      scale: scale,
+      pixels: ((oldPixels + from.dy) * ratio - to.dy).clamp(
+        0.0,
+        _maxPixels(scale),
+      ),
+      x: _clampX(to.dx - center - (from.dx - center - oldX) * ratio, scale),
+    );
+    if (!_loadingZoom) unawaited(_applyZoom());
+  }
+
+  /// 已有位图时直接跟手更新。缩小时如需新页，保留旧画面并合并期间的新触点位置。
+  Future<void> _applyZoom({bool confirm = false}) async {
+    _loadingZoom = true;
+    final version = _version;
     try {
-      final scale = reset ? 1.0 : view.scale;
-      final ratio = scale / _fixedScale;
-      final offsets = _pageOffsets(scale);
-      final shiftY = reset ? 0.0 : view.offset.dy;
-      final target =
-          ((_controller.offset + _height / 2) * ratio - _height / 2 - shiftY)
-              .clamp(0.0, math.max(0.0, offsets.last - _height))
-              .toDouble();
-      var first = 0;
-      while (first + 1 < offsets.length - 1 && offsets[first + 1] <= target) {
-        first++;
+      while (mounted && version == _version && _zoomTarget != null) {
+        final target = _zoomTarget!;
+        final first = _indexAt(target.pixels, scale: target.scale);
+        final last = _indexAt(target.pixels + _height, scale: target.scale);
+        final missing = [
+          for (var i = first; i <= last; i++)
+            if (!_images.containsKey(i)) _prepare(i),
+        ];
+        if (missing.isNotEmpty) {
+          await Future.wait(missing);
+          continue;
+        }
+        _zoomTarget = null;
+        // 新的页高和视窗顶部在同一帧交接，当前位置保持在手指下方。
+        _controller.position.correctPixels(target.pixels);
+        _listScale = target.scale;
+        _listX = target.x;
+        if (confirm) {
+          view.confirm(
+            appliedScale: target.scale,
+            landing: Offset(target.x, 0),
+          );
+        } else {
+          view.update(target.scale, Offset(target.x, 0));
+        }
+        _warm(first);
       }
-      var last = first;
-      while (last + 1 < offsets.length - 1 &&
-          offsets[last + 1] < target + _height) {
-        last++;
-      }
-      await Future.wait([for (var i = first; i <= last; i++) _prepare(i)]);
-      if (!mounted) return;
-      setState(() {
-        _fixedScale = scale;
-        _fixedX = reset ? 0 : view.offset.dx;
-        _offsets
-          ..clear()
-          ..addAll(offsets);
-        // 布局前修改偏移，避免先按旧位置画一帧再jumpTo造成上下跳变。
-        _controller.position.correctPixels(target);
-        view.confirm(reset: reset, scroll: true);
-      });
-      await WidgetsBinding.instance.endOfFrame;
-      if (!mounted) return;
-      _warm(_indexAt(target));
-      await _report();
     } catch (e, stack) {
-      if (mounted) {
-        view.preparing(false);
+      if (mounted && version == _version) {
+        if (confirm && view.busy) view.preparing(false);
+        _zoomTarget = null;
         session.reportPositionFailure(e, stack);
       }
+    } finally {
+      _loadingZoom = false;
+      if (mounted && version == _version) {
+        if (!view.touching) _scheduleReport();
+      }
     }
+  }
+
+  Future<void> confirmView(bool reset, {bool clampHorizontal = false}) async {
+    if (!ready || _jumping || _loadingZoom || view.touching || view.busy) {
+      return;
+    }
+    final scale = reset ? 1.0 : view.scale;
+    final target =
+        (_controller.offset + _height / 2) * scale / _listScale -
+        _height / 2 -
+        (reset ? 0 : view.offset.dy);
+    _zoomTarget = (
+      scale: scale,
+      pixels: target.clamp(0.0, _maxPixels(scale)),
+      x: reset
+          ? 0.0
+          : clampHorizontal
+          ? _clampX(view.offset.dx, scale)
+          : view.offset.dx,
+    );
+    view.preparing(true);
+    await _applyZoom(confirm: true);
   }
 
   void _request() {
@@ -263,8 +338,11 @@ class _PdfScrollState extends ConsumerState<_PdfScroll>
     _requested = revision;
     final version = ++_version;
     _jumping = true;
+    _zoomTarget = null;
     scheduleMicrotask(() async {
       try {
+        if (!mounted || version != _version) return;
+        if (view.busy) view.preparing(false);
         final anchor = s.scrollJump?.locator ?? session.scrollOpeningAnchor;
         final index = anchor == null
             ? s.chapterIndex
@@ -273,9 +351,10 @@ class _PdfScrollState extends ConsumerState<_PdfScroll>
         final content = await widget.book.content(actual);
         final y = anchor == null ? 0.0 : content.pdfPage!.yOf(anchor);
         final target =
-            (_offsets[actual] + y * (_offsets[actual + 1] - _offsets[actual]))
-                .clamp(0.0, math.max(0.0, _offsets.last - _height))
-                .toDouble();
+            ((_offsets[actual] +
+                        y * (_offsets[actual + 1] - _offsets[actual])) *
+                    _listScale)
+                .clamp(0.0, _maxPixels(_listScale));
         await _prepareViewport(target);
         if (!mounted || version != _version) return;
         await WidgetsBinding.instance.endOfFrame;
@@ -331,9 +410,10 @@ class _PdfScrollState extends ConsumerState<_PdfScroll>
       }
       if (_width != constraints.maxWidth) {
         _width = constraints.maxWidth;
-        _offsets
-          ..clear()
-          ..addAll(_pageOffsets(_fixedScale));
+        _offsets = [0];
+        for (final page in widget.book.file.document.pages) {
+          _offsets.add(_offsets.last + _width * page.height / page.width + 8);
+        }
       }
       final info = readerInformation(
         context,
@@ -350,6 +430,11 @@ class _PdfScrollState extends ConsumerState<_PdfScroll>
         1600,
       );
       _request();
+      // Sliver 会在布局时测量页高。每帧冻结倍率，缩放完成后由这一帧同时更新
+      // 可见页、滚动范围与手指下的位置。
+      final scale = _listScale;
+      final preview = view.editing;
+      final ratio = preview ? view.scale / scale : 1.0;
       return Stack(
         fit: StackFit.expand,
         children: [
@@ -360,12 +445,11 @@ class _PdfScrollState extends ConsumerState<_PdfScroll>
             right: 0,
             child: PdfZoomSurface(
               view: view,
-              onEnd: () {
-                // 手动缩回原大小也要还原列表页高，不能只还原外层变换。
-                if (!view.editing && (_fixedScale != 1 || _fixedX != 0)) {
-                  unawaited(confirmView(true));
-                }
-              },
+              fixedView: widget.fixedView,
+              canStart: () => ready && !_jumping && !_loadingZoom,
+              onZoom: _zoom,
+              onPan: _pan,
+              onEnd: _scheduleReport,
               onBegin: () {
                 // 停止手指前一刻的惯性，缩放期间不滚入下一页。
                 if (_controller.hasClients) {
@@ -378,51 +462,54 @@ class _PdfScrollState extends ConsumerState<_PdfScroll>
                   unawaited(session.beginManualReading());
                 },
                 child: GestureDetector(
-                  onTap: _automatic.centerTap,
+                  onTap: () {
+                    if (_canScroll) _automatic.centerTap();
+                  },
                   child: ClipRect(
                     child: Transform(
                       alignment: Alignment.center,
                       transform: Matrix4.identity()
                         ..translateByDouble(
-                          view.offset.dx - _fixedX * view.scale / _fixedScale,
-                          view.offset.dy,
+                          preview ? view.offset.dx - _listX * ratio : 0,
+                          preview ? view.offset.dy : 0,
                           0,
                           1,
                         )
-                        ..scaleByDouble(
-                          view.scale / _fixedScale,
-                          view.scale / _fixedScale,
-                          1,
-                          1,
-                        ),
-                      child: ListView.builder(
+                        ..scaleByDouble(ratio, ratio, 1, 1),
+                      child: CustomScrollView(
                         controller: _controller,
                         physics: _PdfReadyPhysics(limit: _bounded),
-                        itemCount: widget.book.chapters.length,
-                        // 缩放会同时改变所有页高；按已知尺寸定位，不能沿用
-                        // 普通SliverList在缩放前缓存的子项起点。
-                        itemExtentBuilder: (index, _) =>
-                            _offsets[index + 1] - _offsets[index],
-                        itemBuilder: (_, index) => SizedBox(
-                          height: _offsets[index + 1] - _offsets[index],
-                          child: Padding(
-                            padding: EdgeInsets.only(bottom: 8 * _fixedScale),
-                            child: _images[index] == null
-                                ? const SizedBox.shrink()
-                                : OverflowBox(
-                                    minWidth: _width * _fixedScale,
-                                    maxWidth: _width * _fixedScale,
-                                    child: Transform.translate(
-                                      offset: Offset(_fixedX, 0),
-                                      child: RawImage(
-                                        image: _images[index],
-                                        fit: BoxFit.fill,
-                                        width: _width * _fixedScale,
+                        slivers: [
+                          _PdfPagesSliver(
+                            offsets: _offsets,
+                            scale: scale,
+                            delegate: SliverChildBuilderDelegate(
+                              (_, index) => Padding(
+                                padding: EdgeInsets.only(bottom: 8 * scale),
+                                child: _images[index] == null
+                                    ? const SizedBox.shrink()
+                                    : OverflowBox(
+                                        minWidth: _width * scale,
+                                        maxWidth: _width * scale,
+                                        child: Transform.translate(
+                                          offset: Offset(
+                                            widget.fixedView
+                                                ? _listX
+                                                : _clampX(_listX, scale),
+                                            0,
+                                          ),
+                                          child: RawImage(
+                                            image: _images[index],
+                                            fit: BoxFit.fill,
+                                            width: _width * scale,
+                                          ),
+                                        ),
                                       ),
-                                    ),
-                                  ),
+                              ),
+                              childCount: widget.book.chapters.length,
+                            ),
                           ),
-                        ),
+                        ],
                       ),
                     ),
                   ),
@@ -437,6 +524,91 @@ class _PdfScrollState extends ConsumerState<_PdfScroll>
       );
     },
   );
+}
+
+int _pdfPageAt(List<double> offsets, double pixels) {
+  var low = 0, high = offsets.length - 2;
+  while (low < high) {
+    final mid = (low + high + 1) ~/ 2;
+    if (offsets[mid] <= pixels) {
+      low = mid;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return low;
+}
+
+/// 页高来自 PDF 元数据。直接用累计页高定位，缩放时无需逐页测量到当前页。
+class _PdfPagesSliver extends SliverMultiBoxAdaptorWidget {
+  const _PdfPagesSliver({
+    required this.offsets,
+    required this.scale,
+    required super.delegate,
+  });
+
+  final List<double> offsets;
+  final double scale;
+
+  @override
+  _RenderPdfPages createRenderObject(BuildContext context) => _RenderPdfPages(
+    offsets,
+    scale,
+    childManager: context as SliverMultiBoxAdaptorElement,
+  );
+
+  @override
+  void updateRenderObject(BuildContext context, _RenderPdfPages renderObject) {
+    renderObject.updateGeometry(offsets, scale);
+  }
+}
+
+class _RenderPdfPages extends RenderSliverFixedExtentBoxAdaptor {
+  _RenderPdfPages(this._offsets, this._scale, {required super.childManager});
+
+  List<double> _offsets;
+  double _scale;
+
+  void updateGeometry(List<double> offsets, double scale) {
+    if (identical(offsets, _offsets) && scale == _scale) return;
+    _offsets = offsets;
+    _scale = scale;
+    markNeedsLayout();
+  }
+
+  @override
+  double? get itemExtent => null;
+
+  @override
+  ItemExtentBuilder get itemExtentBuilder =>
+      (index, _) => (_offsets[index + 1] - _offsets[index]) * _scale;
+
+  @override
+  double indexToLayoutOffset(double itemExtent, int index) =>
+      _offsets[index] * _scale;
+
+  @override
+  int getMinChildIndexForScrollOffset(double scrollOffset, double itemExtent) =>
+      _pdfPageAt(_offsets, scrollOffset / _scale);
+
+  @override
+  int getMaxChildIndexForScrollOffset(double scrollOffset, double itemExtent) =>
+      _pdfPageAt(_offsets, scrollOffset / _scale);
+
+  @override
+  double computeMaxScrollOffset(
+    SliverConstraints constraints,
+    double itemExtent,
+  ) => _offsets.last * _scale;
+
+  @override
+  double estimateMaxScrollOffset(
+    SliverConstraints constraints, {
+    int? firstIndex,
+    int? lastIndex,
+    double? leadingScrollOffset,
+    double? trailingScrollOffset,
+  }) => _offsets.last * _scale;
 }
 
 class _PdfReadyPhysics extends ClampingScrollPhysics {

@@ -343,6 +343,10 @@ class _BottomControlsState extends ConsumerState<_BottomControls> {
           statusBar: showStatusBar,
           navigationBar: showNavigationBar,
         );
+        final horizontal = EdgeInsets.only(
+          left: insets.left,
+          right: insets.right,
+        );
         return Positioned(
           bottom: 0,
           left: 0,
@@ -350,169 +354,161 @@ class _BottomControlsState extends ConsumerState<_BottomControls> {
           child: ReaderControlsEntrance(
             visible: widget.visible,
             top: false,
-            child: Padding(
-              padding: EdgeInsets.only(
-                left: insets.left,
-                right: insets.right,
-                bottom: insets.bottom,
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (widget.visible &&
-                      widget.state.panel == ReaderPanel.none &&
-                      widget.state.notice != null)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: GtSpacing.s2),
-                      child: IgnorePointer(
-                        child: _ReaderNotice(
-                          key: ValueKey(widget.state.noticeToken),
-                          text: widget.state.notice!,
-                        ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (widget.visible &&
+                    widget.state.panel == ReaderPanel.none &&
+                    widget.state.notice != null)
+                  Padding(
+                    padding: horizontal.copyWith(bottom: GtSpacing.s2),
+                    child: IgnorePointer(
+                      child: _ReaderNotice(
+                        key: ValueKey(widget.state.noticeToken),
+                        text: widget.state.notice!,
                       ),
                     ),
-                  if (_showProgress &&
-                      returnState.fromSlider &&
-                      returnState.origin != null)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 12),
-                      child: ProgressReturnButton(
-                        colors: theme.controlsColors,
-                        busy: returnState.busy,
-                        onPressed: () => ref
-                            .read(readerProgressReturnProvider(bookId).notifier)
-                            .returnToOrigin(),
-                      ),
+                  ),
+                if (_showProgress &&
+                    returnState.fromSlider &&
+                    returnState.origin != null)
+                  Padding(
+                    padding: horizontal.copyWith(bottom: 12),
+                    child: ProgressReturnButton(
+                      colors: theme.controlsColors,
+                      busy: returnState.busy,
+                      onPressed: () => ref
+                          .read(readerProgressReturnProvider(bookId).notifier)
+                          .returnToOrigin(),
                     ),
-                  Container(
+                  ),
+                Container(
+                  // 安全区只给按钮让位，面板底色仍需遮住边缘的阅读信息。
+                  color: theme.background,
+                  padding: horizontal.copyWith(bottom: insets.bottom),
+                  child: Column(
                     key: const ValueKey('reader-bottom-controls-surface'),
-                    color: theme.background,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        _ProgressReveal(
-                          reducedMotion: MediaQuery.disableAnimationsOf(
-                            context,
-                          ),
-                          alignment: Alignment.bottomCenter,
-                          child: !_showProgress
-                              ? const SizedBox(width: double.infinity)
-                              : Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    // 正文与控制条之间的分隔线（参考图 03）
-                                    Container(height: 1, color: dividerColor),
-                                    SizedBox(
-                                      height: 44,
-                                      child: Padding(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 6,
-                                        ),
-                                        child: Row(
-                                          children: [
-                                            _ChapterNavButton(
-                                              label: '上一章',
-                                              icon: GtIcons.chevronLeft,
-                                              color: theme,
-                                              onTap: () => unawaited(
-                                                _goToAdjacentChapter(-1),
-                                              ),
-                                            ),
-                                            const Spacer(),
-                                            _ChapterNavButton(
-                                              label: '下一章',
-                                              icon: GtIcons.chevronRight,
-                                              color: theme,
-                                              onTap: () => unawaited(
-                                                _goToAdjacentChapter(1),
-                                              ),
-                                              iconFirst: false,
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ),
-                                    Padding(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _ProgressReveal(
+                        reducedMotion: MediaQuery.disableAnimationsOf(context),
+                        alignment: Alignment.bottomCenter,
+                        child: !_showProgress
+                            ? const SizedBox(width: double.infinity)
+                            : Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  // 正文与控制条之间的分隔线（参考图 03）
+                                  Container(height: 1, color: dividerColor),
+                                  SizedBox(
+                                    height: 44,
+                                    child: Padding(
                                       padding: const EdgeInsets.symmetric(
-                                        horizontal: 16,
-                                      ),
-                                      child: SettingsSlider(
-                                        trackThickness:
-                                            GtSliderSize.trackThicknessSmall,
-                                        thumbRadius:
-                                            GtSliderSize.thumbRadiusSmall,
-                                        label: '',
-                                        compact: true,
-                                        showNumber: false,
-                                        disableWhileSaving: false,
-                                        backgroundColor: theme.background,
-                                        value: progress.clamp(0.0, 1.0),
-                                        min: 0,
-                                        max: 1,
-                                        divisions: 10000,
-                                        format: (v) =>
-                                            '${(v * 100).toStringAsFixed(2)}%',
-                                        onPreview: (v) {
-                                          if (v != null) {
-                                            ref
-                                                .read(
-                                                  readerProgressReturnProvider(
-                                                    bookId,
-                                                  ).notifier,
-                                                )
-                                                .beginSlider();
-                                            setState(() {
-                                              _seekVersion++;
-                                              _dragProgress = v;
-                                            });
-                                          }
-                                        },
-                                        save:
-                                            session == null || titles.isLoading
-                                            ? null
-                                            : _seek,
-                                      ),
-                                    ),
-                                    Padding(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 18,
-                                        vertical: 2,
+                                        horizontal: 6,
                                       ),
                                       child: Row(
                                         children: [
-                                          Expanded(
-                                            child: Text(
-                                              title,
-                                              style: GtText.caption(
-                                                theme.secondary,
-                                              ),
-                                              overflow: TextOverflow.ellipsis,
+                                          _ChapterNavButton(
+                                            label: '上一章',
+                                            icon: GtIcons.chevronLeft,
+                                            color: theme,
+                                            onTap: () => unawaited(
+                                              _goToAdjacentChapter(-1),
                                             ),
                                           ),
-                                          const SizedBox(width: 12),
-                                          Text(
-                                            '${(progress * 100).toStringAsFixed(2)}%',
-                                            style: GtText.caption(
-                                              theme.secondary,
+                                          const Spacer(),
+                                          _ChapterNavButton(
+                                            label: '下一章',
+                                            icon: GtIcons.chevronRight,
+                                            color: theme,
+                                            onTap: () => unawaited(
+                                              _goToAdjacentChapter(1),
                                             ),
+                                            iconFirst: false,
                                           ),
                                         ],
                                       ),
                                     ),
-                                    const SizedBox(height: GtSpacing.s3),
-                                  ],
-                                ),
-                        ),
-                        ReaderToolbar(
-                          showListening: !ref.watch(pdfModeProvider(bookId)),
-                          theme: theme,
-                          onSelect: (panel) => unawaited(_openPanel(panel)),
-                        ),
-                      ],
-                    ),
+                                  ),
+                                  Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 16,
+                                    ),
+                                    child: SettingsSlider(
+                                      trackThickness:
+                                          GtSliderSize.trackThicknessSmall,
+                                      thumbRadius:
+                                          GtSliderSize.thumbRadiusSmall,
+                                      label: '',
+                                      compact: true,
+                                      showNumber: false,
+                                      disableWhileSaving: false,
+                                      backgroundColor: theme.background,
+                                      value: progress.clamp(0.0, 1.0),
+                                      min: 0,
+                                      max: 1,
+                                      divisions: 10000,
+                                      format: (v) =>
+                                          '${(v * 100).toStringAsFixed(2)}%',
+                                      onPreview: (v) {
+                                        if (v != null) {
+                                          ref
+                                              .read(
+                                                readerProgressReturnProvider(
+                                                  bookId,
+                                                ).notifier,
+                                              )
+                                              .beginSlider();
+                                          setState(() {
+                                            _seekVersion++;
+                                            _dragProgress = v;
+                                          });
+                                        }
+                                      },
+                                      save: session == null || titles.isLoading
+                                          ? null
+                                          : _seek,
+                                    ),
+                                  ),
+                                  Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 18,
+                                      vertical: 2,
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                            title,
+                                            style: GtText.caption(
+                                              theme.secondary,
+                                            ),
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 12),
+                                        Text(
+                                          '${(progress * 100).toStringAsFixed(2)}%',
+                                          style: GtText.caption(
+                                            theme.secondary,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  const SizedBox(height: GtSpacing.s3),
+                                ],
+                              ),
+                      ),
+                      ReaderToolbar(
+                        showListening: !ref.watch(pdfModeProvider(bookId)),
+                        theme: theme,
+                        onSelect: (panel) => unawaited(_openPanel(panel)),
+                      ),
+                    ],
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
         );

@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
-/// assets/icons 下的 SVG 图标名（24×24 线性风格，stroke 1.75）。
+/// assets/icons 下的 SVG 图标名（24×24，轮廓图标线宽 1.75）。
 /// 通过 [GtIcon] 渲染并用主题色覆盖 currentColor。
 /// 只登记当前界面使用的图标；删除素材时同步移除对应常量。
 abstract final class GtIcons {
@@ -28,12 +28,15 @@ abstract final class GtIcons {
   static const folderUp = 'folder-up';
   static const caretDown = 'caret-down';
   static const bookmark = 'bookmark';
+  static const pencil = 'pencil';
   static const toc = 'toc';
   // 阅读控制
+  static const bookmarkFilled = 'bookmark-filled';
   static const brightness = 'brightness';
   static const headphones = 'headphones';
   static const autoRead = 'auto-read';
   static const cycle = 'cycle';
+  static const documentCheck = 'document-check';
   // 播放与听书
   static const play = 'play';
   static const pause = 'pause';

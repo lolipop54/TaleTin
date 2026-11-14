@@ -48,7 +48,8 @@ class PublicationCache {
   // content44：列表内段落编号、旧式p对齐与空白段断点重新核对。
   // content45：hidden 空章题不再产生边距，旧章节原地补齐显示来源。
   // content46：保留解析后的字体族候选和章内 @font-face 资料。
-  static const _contentRevision = 'content46';
+  // content47：保存图片脚注的目标地址，正文字符与位置不变。
+  static const _contentRevision = 'content47';
   static final processEpoch = DateTime.now().microsecondsSinceEpoch.toString();
   static const budget = 64 * 1024 * 1024;
   final String root, directory, epoch;
@@ -184,10 +185,11 @@ class PublicationCache {
     }
   }
 
-  /// Pin before publishing. A unique temporary path allows two independent
-  /// workers to prepare the same immutable asset without sharing a .pending.
-  void write(File target, List<int> bytes) {
-    preparing(target);
+  /// 缩略图写入期间由整书任务保护，写好即可参与回收。正文资源通常需保留到章节登记。
+  /// 使用独立临时文件，多个后台任务可以同时生成同一份不可变资源。
+  void write(File target, List<int> bytes, {bool retainUntilPinned = true}) {
+    assert(retainUntilPinned || _preparationDepth > 0);
+    if (retainUntilPinned) preparing(target);
     target.parent.createSync(recursive: true);
     final next = File('${target.path}.$epoch.$_id.pending');
     try {

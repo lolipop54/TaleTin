@@ -105,11 +105,11 @@ class ImportBooksUseCase {
   final bool optimizeLocations;
 
   /// 单本源文件大小上限，与 MOBI／AZW3 原生读取器的 GT_SOURCE_LIMIT 一致。
-  static const int _maxSourceMiB = 500;
-  static const int maxSourceBytes = _maxSourceMiB * 1024 * 1024;
+  static const int _maxSourceGiB = 1;
+  static const int maxSourceBytes = _maxSourceGiB * 1024 * 1024 * 1024;
   static const _sourceTooLarge = ImportFailure(
     ImportErrorCode.tooLarge,
-    '超过 $_maxSourceMiB MB',
+    '超过 $_maxSourceGiB GB',
   );
 
   /// 空间校验余量：复制与解析产物会同时存在，按源文件的 2.2 倍加余量估算

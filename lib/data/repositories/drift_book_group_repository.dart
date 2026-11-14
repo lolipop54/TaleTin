@@ -1,3 +1,4 @@
+import 'package:characters/characters.dart';
 import 'package:drift/drift.dart';
 import 'package:uuid/uuid.dart';
 
@@ -30,17 +31,11 @@ class DriftBookGroupRepository implements BookGroupRepository {
 
   @override
   Future<BookGroup> create(String name) => db.transaction(() async {
-    final trimmed = name.trim();
-    if (trimmed.isEmpty) throw const FormatException('请输入分组名称');
-    if (trimmed.length > 40) throw const FormatException('分组名称最多 40 个字');
-    if (const ['全部', '在读', '已读', '未分组'].contains(trimmed)) {
-      throw const FormatException('请换一个名称，避免与默认分类重复');
-    }
     final groups = await load();
-    if (groups.any((g) => g.name == trimmed)) {
-      throw const FormatException('已经有同名分组，请换一个名称');
-    }
-    final group = BookGroup(id: const Uuid().v4(), name: trimmed);
+    final group = BookGroup(
+      id: const Uuid().v4(),
+      name: _validatedName(name, groups),
+    );
     await db.customStatement(
       'INSERT INTO book_groups(id, name, sort_order) VALUES (?, ?, ?)',
       [group.id, group.name, groups.length],
@@ -48,6 +43,40 @@ class DriftBookGroupRepository implements BookGroupRepository {
     db.notifyUpdates({const TableUpdate('book_groups')});
     return group;
   });
+
+  @override
+  Future<BookGroup> rename(String id, String name) => db.transaction(() async {
+    final groups = await load();
+    final current = groups.firstWhere((group) => group.id == id);
+    final trimmed = _validatedName(name, groups, exceptId: id);
+    if (trimmed == current.name) return current;
+    // 只改名称，书籍归属和分组顺序仍沿用原来的分组 ID。
+    await db.customStatement('UPDATE book_groups SET name = ? WHERE id = ?', [
+      trimmed,
+      id,
+    ]);
+    db.notifyUpdates({const TableUpdate('book_groups')});
+    return BookGroup(id: id, name: trimmed);
+  });
+
+  String _validatedName(
+    String name,
+    List<BookGroup> groups, {
+    String? exceptId,
+  }) {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) throw const FormatException('请输入分组名称');
+    if (trimmed.characters.length > 40) {
+      throw const FormatException('分组名称最多 40 个字');
+    }
+    if (const ['全部', '在读', '已读', '未分组'].contains(trimmed)) {
+      throw const FormatException('请换一个名称，避免与默认分类重复');
+    }
+    if (groups.any((g) => g.id != exceptId && g.name == trimmed)) {
+      throw const FormatException('已经有同名分组，请换一个名称');
+    }
+    return trimmed;
+  }
 
   @override
   Future<void> delete(String id) => db.transaction(() async {

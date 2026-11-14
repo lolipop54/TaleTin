@@ -20,6 +20,13 @@ impl Builder {
                 .unwrap_or_default()
                 .contains("doc-noteref")
             || attr(node, "role").unwrap_or_default().split_whitespace().any(|v| v == "doc-backlink")
+            // EPUB2 注释也会用带语义类名的图片作为唯一编号，没有可匹配的文字。
+            || (find(node, "img").is_some()
+                && attr(node, "class").is_some_and(|classes| {
+                    classes.split_whitespace().any(|class| {
+                        matches!(class, "duokan-footnote" | "noteref" | "footnote")
+                    })
+                }))
             // 很多 EPUB2 书不给 noteref 标记，只写 <a href="#filepos...">[1]</a>
             || (looks_like_note_marker(&text_of(node))
                 && (!fragment.is_empty() || superscript_note_marker(node)))

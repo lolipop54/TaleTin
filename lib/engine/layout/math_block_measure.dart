@@ -2,11 +2,15 @@ part of 'block_measure.dart';
 
 extension MathBlockMeasurement on BlockMeasurer {
   /// 长段滚动分批时不能切进公式内部，否则两批都会退回普通文字绘制。
-  int formulaSafeEnd(ContentBlock block, int end) {
+  int inlineSafeEnd(ContentBlock block, int end) {
     final tree = displayTree ?? formulaTree;
     final index = tree?.blockIndexById[block.id];
     final source = tree?.source;
-    if (index == null || source == null || tree!.formulas.isEmpty) return end;
+    if (index == null || source == null) return end;
+    for (final ruby in RubySource.of(source, index)) {
+      if (ruby.start < end && end < ruby.end) end = ruby.end;
+    }
+    if (tree!.formulas.isEmpty) return end;
     for (final e in source.elements) {
       if (!tree.formulas.containsKey(e.id)) continue;
       for (final range in e.ranges.where((r) => r.block == index)) {

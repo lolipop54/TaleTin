@@ -546,7 +546,7 @@ class ChapterLayout {
         if (token?.isCancelled ?? false) throw const LayoutCancelled();
         if (parallel.groups.containsKey(i)) {
           measured.addAll(parallel.measure(i, measurer));
-          i = parallel.groups[i]!.last.lastBlock!;
+          i = parallel.ends[i]!;
           await Future<void>.delayed(Duration.zero);
           continue;
         }

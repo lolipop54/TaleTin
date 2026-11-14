@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../app/di/app_providers.dart';
 import '../../../../domain/models/locator.dart';
 import '../../../../domain/services/reader_image_sequence.dart';
+import '../../../../engine/layout/chapter_layout.dart' show LayoutCancelled;
 import '../../../core/widgets/gt_button.dart';
 import '../view_models/reader_session_view_model.dart';
 import '../../../../app/di/source_book_providers.dart';
@@ -93,27 +94,70 @@ Future<bool> tryReaderImageGallery(
       loadSequence: (isActive) => sequence(isActive: isActive),
       loadFrame: preparedFrame,
       onClose: (locator) async {
-        if (ref.read(readerSourceChangeProvider(bookId))) return;
-        final current = ref.read(readerSessionProvider(bookId)).value;
-        if (current == null) return;
-        if (!identical(current.book, session.book)) {
-          final found = await ref
-              .read(sourcePositionResolverProvider)
-              .resolve(
-                locator.copyWith(needsRelocation: true),
-                current.chapters,
-              );
-          if (found == null) return;
-          locator = found;
-        }
+        var step = 'checkSource';
+        ReaderSession? current;
+        SpreadPageRef? spreadLeft;
         try {
-          await notifier.goToImage(locator);
-        } catch (error) {
-          if (!isSourceChange(error) &&
-              !ref.read(readerSourceChangeProvider(bookId))) {
-            rethrow;
+          if (ref.read(readerSourceChangeProvider(bookId))) return;
+          current = ref.read(readerSessionProvider(bookId)).value;
+          if (current == null) return;
+          if (!identical(current.book, session.book)) {
+            step = 'resolveSourcePosition';
+            final found = await ref
+                .read(sourcePositionResolverProvider)
+                .resolve(
+                  locator.copyWith(needsRelocation: true),
+                  current.chapters,
+                );
+            if (found == null) return;
+            locator = found;
           }
-          ref.read(readerSourceChangeProvider(bookId).notifier).markChanged();
+          await notifier.goToImage(
+            locator,
+            onStep: (name, [left]) {
+              step = name;
+              if (left != null) spreadLeft = left;
+            },
+          );
+        } catch (error, stack) {
+          if (context.mounted &&
+              (isSourceChange(error) ||
+                  ref.read(readerSourceChangeProvider(bookId)))) {
+            ref.read(readerSourceChangeProvider(bookId).notifier).markChanged();
+            return;
+          }
+          // 其他入口会忽略正常取消。这里已经要向用户提示失败，需留下取消原因。
+          final from = current ?? session;
+          final options = from.layout?.options;
+          final left = spreadLeft;
+          AppErrors.report(
+            error,
+            stack,
+            operation: '返回图片位置失败',
+            notify: !isExpectedAppCancellation(error),
+            recordCancellation: true,
+            details: {
+              'step': step,
+              'format': from.book.format.name,
+              'original': from.isOriginal,
+              'scrolling': from.scrolling,
+              'landscape': options?.settings.landscape,
+              'spread': options?.settings.spreadEnabled,
+              'chapter': from.chapterIndex,
+              'page': from.pageIndex,
+              'targetChapter': from.chapters.indexWhere(
+                (chapter) => chapter.id == locator.chapterId,
+              ),
+              if (left != null) ...{
+                'targetLeftChapter': from.chapters.indexWhere(
+                  (chapter) => chapter.id == left.layout.chapterId,
+                ),
+                'targetLeftPage': left.pageIndex,
+              },
+              if (error is LayoutCancelled) 'cancelReason': error.reason.name,
+            },
+          );
+          rethrow;
         }
       },
     ),
@@ -189,8 +233,7 @@ class _ReaderImageGalleryState extends State<ReaderImageGallery> {
     try {
       await widget.onClose(_sequence.images[_index].locator);
       if (mounted) Navigator.of(context).pop();
-    } catch (appError, appStack) {
-      AppErrors.report(appError, appStack, operation: '返回图片位置失败');
+    } catch (_) {
       if (mounted) setState(() => _error = '正文定位失败，请重试关闭图片');
     } finally {
       if (mounted) setState(() => _closing = false);

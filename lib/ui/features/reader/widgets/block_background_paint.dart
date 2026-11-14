@@ -101,7 +101,10 @@ void _paintContainers(
 ) {
   final runs = <int, List<(Rect, ContainerBoxFrame, bool, bool)>>{};
   for (final fragment in fragments) {
-    if (fragment.block.tableId != null && !fragment.block.isTableBox) continue;
+    final block = fragment.block;
+    if (block.tableId != null && !block.isTableBox && !block.isParallelFlow) {
+      continue;
+    }
     for (final frame in fragment.block.containerBoxes) {
       final part = containerBackgroundPart(fragment, frame);
       if (part != null) (runs[frame.elementId] ??= []).add(part);

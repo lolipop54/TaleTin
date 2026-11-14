@@ -99,7 +99,7 @@ class ChapterLayoutTask {
   Future<void> _flight = Future.value();
   bool _complete = false, _background = false, _wantBackground = false;
   LayoutCancellationReason? _disposalReason;
-  bool get _disposed => _disposalReason != null;
+  bool get isDisposed => _disposalReason != null;
   Object? _failure;
   int _foreground = 0;
   int _visibleUsers = 0;
@@ -546,7 +546,7 @@ class ChapterLayoutTask {
 
   void resumeBackground() {
     _wantBackground = true;
-    if (_background || (_complete && _checkpointLimit == 0) || _disposed) {
+    if (_background || (_complete && _checkpointLimit == 0) || isDisposed) {
       return;
     }
     _background = true;
@@ -566,13 +566,13 @@ class ChapterLayoutTask {
     try {
       while (_wantBackground &&
           (!_complete || _checkpointLimit != 0) &&
-          !_disposed) {
+          !isDisposed) {
         final wake = _wake = Completer<void>();
         _timer = Timer(const Duration(milliseconds: 8), () {
           if (!wake.isCompleted) wake.complete();
         });
         await wake.future;
-        if (!_wantBackground || _disposed) break;
+        if (!_wantBackground || isDisposed) break;
         if (LayoutWorkGate.blocked || _foreground > 0) continue;
         if (!identical(source, _source)) {
           source = _source;
@@ -583,7 +583,7 @@ class ChapterLayoutTask {
           final batch = Stopwatch()..start();
           if (_checkpointLimit != 0 &&
               _wantBackground &&
-              !_disposed &&
+              !isDisposed &&
               !LayoutWorkGate.blocked &&
               _foreground == 0 &&
               _source.encodeCheckpointRows(_checkpointLimit, batch)) {
@@ -591,7 +591,7 @@ class ChapterLayoutTask {
           }
           while (_wantBackground &&
               !_complete &&
-              !_disposed &&
+              !isDisposed &&
               !LayoutWorkGate.blocked &&
               _foreground == 0 &&
               batch.elapsedMicroseconds < 1500) {
@@ -607,7 +607,7 @@ class ChapterLayoutTask {
             if (batch.elapsedMicroseconds >= 1500) break;
           }
         });
-        if (!_disposed &&
+        if (!isDisposed &&
             ((!wasComplete && _complete) || _pages.length - published >= 12)) {
           published = _pages.length;
           if (_events.hasListener) _events.add(snapshot);
@@ -622,7 +622,7 @@ class ChapterLayoutTask {
       if (error is! LayoutCancelled) _failure = error;
     } finally {
       _background = false;
-      if (_wantBackground && !_disposed && _failure == null) {
+      if (_wantBackground && !isDisposed && _failure == null) {
         resumeBackground();
       }
     }
@@ -631,7 +631,7 @@ class ChapterLayoutTask {
   void dispose({
     LayoutCancellationReason reason = LayoutCancellationReason.taskDisposed,
   }) {
-    if (_disposed) return;
+    if (isDisposed) return;
     _disposalReason = reason;
     pauseBackground();
     unawaited(_events.close());

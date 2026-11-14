@@ -6,19 +6,19 @@ import '../../../../app/di/book_group_providers.dart';
 import '../../../../domain/models/book.dart';
 import '../../../../domain/models/book_group.dart';
 import '../../../../domain/repositories/book_group_repository.dart';
+import '../../../../platform/channels/system_toast.dart';
 import '../../../core/theme/gt_tokens.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/widgets/gt_button.dart';
-import '../../../core/widgets/gt_dialog_action.dart';
 import '../view_models/bookshelf_view_model.dart';
+import 'book_group_dialog.dart';
 import 'book_group_row.dart';
-import 'new_book_group_dialog.dart';
 
 Future<void> showBookGroupSheet(
   BuildContext context,
-  WidgetRef ref,
-  List<Book> books,
-) async {
+  WidgetRef ref, {
+  List<Book> books = const [],
+}) async {
   final groups = await ref.read(bookGroupsProvider.future);
   if (!context.mounted) return;
   await showModalBottomSheet<bool>(
@@ -36,11 +36,7 @@ Future<void> showBookGroupSheet(
       groups: groups,
       books: books,
       repository: ref.read(bookGroupRepositoryProvider),
-      onDeleted: (id) {
-        if (ref.read(bookshelfProvider).groupId == id) {
-          ref.read(bookshelfProvider.notifier).setFilter(ShelfFilter.ungrouped);
-        }
-      },
+      onDeleted: ref.read(bookshelfProvider.notifier).groupDeleted,
     ),
   );
 }
@@ -50,7 +46,7 @@ class BookGroupSheet extends StatefulWidget {
   const BookGroupSheet({
     super.key,
     required this.groups,
-    required this.books,
+    this.books = const [],
     required this.repository,
     this.onDeleted,
   });
@@ -65,11 +61,25 @@ class BookGroupSheet extends StatefulWidget {
 class _BookGroupSheetState extends State<BookGroupSheet> {
   late List<BookGroup> groups = [...widget.groups];
   late final memberships = widget.books.map((b) => b.groupId).toSet();
+  bool sorting = false;
   bool busy = false;
+  bool finishAfterSave = false;
   String? error;
 
+  // 书架分组栏打开面板时没有待移动的书，分组行只显示名称和管理按钮。
+  bool get canMoveBooks => widget.books.isNotEmpty;
+
+  void toggleSorting() {
+    // 允许保存期间点「完成」，等写入成功再恢复移动和编辑，避免两次修改交叉。
+    if (busy) {
+      finishAfterSave = true;
+      return;
+    }
+    setState(() => sorting = !sorting);
+  }
+
   Future<void> move(String? id) async {
-    if (busy) return;
+    if (!canMoveBooks || busy || sorting) return;
     setState(() {
       busy = true;
       error = null;
@@ -92,8 +102,7 @@ class _BookGroupSheetState extends State<BookGroupSheet> {
   }
 
   Future<void> reorder(int oldIndex, int newIndex) async {
-    if (busy) return;
-    if (oldIndex == newIndex) return;
+    if (busy || !sorting || oldIndex == newIndex) return;
     final previous = [...groups];
     setState(() {
       groups.insert(newIndex, groups.removeAt(oldIndex));
@@ -102,52 +111,39 @@ class _BookGroupSheetState extends State<BookGroupSheet> {
     });
     try {
       await widget.repository.reorder(groups.map((g) => g.id).toList());
-      if (mounted) setState(() => busy = false);
+      if (mounted) {
+        setState(() {
+          busy = false;
+          if (finishAfterSave) sorting = false;
+          finishAfterSave = false;
+        });
+      }
     } catch (appError, appStack) {
       AppErrors.report(appError, appStack, operation: '分组排序未保存');
       if (mounted) {
         setState(() {
           groups = previous;
           busy = false;
+          finishAfterSave = false;
           error = '顺序没有保存成功，请重试';
         });
       }
     }
   }
 
-  Future<void> delete(String id) async {
-    if (busy) return;
+  Future<void> delete(BookGroup group) async {
+    if (busy || sorting) return;
     setState(() {
       busy = true;
       error = null;
     });
-    final name = groups.firstWhere((group) => group.id == id).name;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        scrollable: true,
-        title: Text('删除分组“$name”？'),
-        content: const Text('组内书籍将移到“未分组”，书籍、笔记和阅读记录会保留。'),
-        actions: [
-          GtDialogAction(
-            key: const ValueKey('book-group-delete-cancel'),
-            onPressed: () => Navigator.pop(dialogContext, false),
-            label: '取消',
-          ),
-          GtDialogAction(
-            key: const ValueKey('book-group-delete-confirm'),
-            role: GtDialogActionRole.danger,
-            onPressed: () => Navigator.pop(dialogContext, true),
-            label: '删除',
-          ),
-        ],
-      ),
-    );
+    final confirmed = await confirmBookGroupDeletion(context, group);
     if (!mounted) return;
-    if (confirmed != true) {
+    if (!confirmed) {
       setState(() => busy = false);
       return;
     }
+    final id = group.id;
     try {
       await widget.repository.delete(id);
       if (!mounted) return;
@@ -168,15 +164,37 @@ class _BookGroupSheetState extends State<BookGroupSheet> {
     }
   }
 
+  Future<void> edit(BookGroup group) async {
+    if (busy || sorting) return;
+    final edited = await showBookGroupDialog(
+      context,
+      widget.repository,
+      group: group,
+    );
+    if (edited == null || !mounted) return;
+    setState(() {
+      groups = [for (final row in groups) row.id == edited.id ? edited : row];
+      error = null;
+    });
+  }
+
   Future<void> create() async {
-    if (busy) return;
-    final group = await showNewBookGroupDialog(context, widget.repository);
-    if (group != null && mounted) setState(() => groups = [...groups, group]);
+    if (busy || sorting) return;
+    final group = await showBookGroupDialog(context, widget.repository);
+    if (group == null || !mounted) return;
+    setState(() {
+      groups = [...groups, group];
+      error = null;
+    });
+    if (canMoveBooks) {
+      SystemToast.show('退出多选后，长按书架分组标签可编辑分组').ignore();
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final colors = context.gtColors;
+    final canSelectGroup = canMoveBooks && !busy && !sorting;
     return PopScope(
       canPop: !busy,
       child: ConstrainedBox(
@@ -190,10 +208,23 @@ class _BookGroupSheetState extends State<BookGroupSheet> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Padding(
-                padding: const EdgeInsets.fromLTRB(20, 24, 20, 16),
-                child: Text(
-                  '移动到分组',
-                  style: GtText.sectionTitle(colors.textPrimary),
+                padding: const EdgeInsets.fromLTRB(20, 12, 20, 4),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        canMoveBooks ? '移动到分组' : '编辑分组',
+                        style: GtText.sectionTitle(colors.textPrimary),
+                      ),
+                    ),
+                    GtButton(
+                      key: const ValueKey('book-group-sort'),
+                      onPressed: groups.isEmpty || (busy && !sorting)
+                          ? null
+                          : toggleSorting,
+                      child: Text(sorting ? '完成' : '排序'),
+                    ),
+                  ],
                 ),
               ),
               if (error != null)
@@ -213,14 +244,14 @@ class _BookGroupSheetState extends State<BookGroupSheet> {
                     name: '未分组',
                     selected:
                         memberships.length == 1 && memberships.single == null,
-                    onTap: busy ? null : () => move(null),
+                    onTap: canSelectGroup ? () => move(null) : null,
                   ),
                   footer: Center(
                     child: Padding(
                       padding: const EdgeInsets.symmetric(vertical: 12),
                       child: GtButton(
                         key: const ValueKey('book-group-create'),
-                        onPressed: busy ? null : create,
+                        onPressed: busy || sorting ? null : create,
                         child: const Text('新建分组'),
                       ),
                     ),
@@ -233,9 +264,12 @@ class _BookGroupSheetState extends State<BookGroupSheet> {
                         selected:
                             memberships.length == 1 &&
                             memberships.single == groups[i].id,
-                        onTap: busy ? null : () => move(groups[i].id),
-                        dragIndex: i,
-                        onDelete: busy ? null : () => delete(groups[i].id),
+                        onTap: canSelectGroup ? () => move(groups[i].id) : null,
+                        showActions: !sorting,
+                        onEdit: busy ? null : () => edit(groups[i]),
+                        onDelete: busy ? null : () => delete(groups[i]),
+                        dragIndex: sorting ? i : null,
+                        dragEnabled: !busy,
                         onMoveUp: busy || i == 0
                             ? null
                             : () => reorder(i, i - 1),

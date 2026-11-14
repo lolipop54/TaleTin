@@ -33,19 +33,24 @@ class PdfBookController {
   Future<ChapterContent> content(int index) =>
       contents.chapter(book.id, chapters[index], textOnly: true);
 
-  Future<Uint8List> render(int index, int width) async {
-    return _render(index, () => file.render(index, width));
-  }
+  Future<Uint8List> thumbnail(int index, int width) => _track(
+    () => contents.pdfThumbnail(
+      book.id,
+      chapters[index],
+      width,
+      () => file.render(index, width),
+    ),
+  );
 
   Future<(int, int, Uint8List)> raster(int index, int width) =>
-      _render(index, () => file.raster(index, width));
+      _track(() async {
+        await content(index); // 缓存/句柄不能绕过源文件内容核验。
+        return file.raster(index, width);
+      });
 
-  Future<T> _render<T>(int index, Future<T> Function() action) async {
+  Future<T> _track<T>(Future<T> Function() action) async {
     if (_closed) throw StateError('PDF阅读会话已关闭');
-    final task = () async {
-      await content(index); // 缓存/句柄不能绕过源文件内容核验。
-      return action();
-    }();
+    final task = action();
     final done = task.then<void>((_) {}, onError: (Object _) {});
     _pending.add(done);
     try {

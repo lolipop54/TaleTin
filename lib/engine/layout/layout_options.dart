@@ -194,7 +194,9 @@ class LayoutOptions {
   /// 68：普通正文字号基准、隐藏章题、中文标点断行、扉页定位及p标题。
   /// 69：裸三角及箭头使用单色字形，行内装饰按自身字体和基线计算高度。
   /// 70：独立公式保留原来的行高和基线，作废中间测试包的测量结果。
-  static const int engineVersion = 70;
+  /// 71：拼音注音、图片高度与注释，以及浮动图文测量。
+  /// 72：浮动图文继续保留块的边框和背景，旧测量会在读章时更新。
+  static const int engineVersion = 72;
 
   double get contentWidth => contentSize.width;
 

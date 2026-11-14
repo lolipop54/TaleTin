@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <rect x="3.125" y="2.125" width="16.75" height="19.75" rx="2.875" fill="currentColor"/>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M8 8h7m-7 4h7" stroke="white" stroke-width="1.75"/>
+    <!-- The outline's check starts at (13,17), relative to the preceding line's end at (15,12). -->
+    <path d="M13 17l3 3 5-5" stroke="white" stroke-width="3.15"/>
+    <path d="M13 17l3 3 5-5" stroke="currentColor" stroke-width="1.75"/>
+  </g>
+</svg>

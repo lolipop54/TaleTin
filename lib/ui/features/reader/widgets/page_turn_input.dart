@@ -1,7 +1,7 @@
 part of 'page_turn_area.dart';
 
 extension _PageTurnInput on _PageTurnAreaState {
-  /// 无动画翻页的距离阈值：页宽的 1/4。
+  /// 按距离判定翻页时，需要拖开阅读视窗宽度的 1/4。
   static const double _commitFraction = 0.25;
 
   /// 甩动判定速度（像素/秒）。
@@ -87,47 +87,55 @@ extension _PageTurnInput on _PageTurnAreaState {
         if (!_ignorePointer) _turnLog?.event('gesture.tap');
         if (!_ignorePointer) _finishInput(() => _onTapUp(details, width));
       },
-      onHorizontalDragStart: (details) {
-        _stallEvent('gesture.drag.start');
-        if (!_ignorePointer) {
-          _turnLog?.operationActive = true;
-          _turnLog?.event('gesture.drag');
-        }
-        _responseTrace.recognized(_pointer);
-        traceTurn('recognizer start $_traceInput');
-        if (!_ignorePointer) _onDragStart(details);
-      },
-      onHorizontalDragUpdate: (details) {
-        if (!_ignorePointer) _logDrag(details);
-        if (turnTraceEnabled) {
-          traceTurnSample('drag-$_pointer', [
-            details.sourceTimeStamp?.inMicroseconds,
-            details.localPosition.dx,
-            details.localPosition.dy,
-            details.delta.dx,
-            details.delta.dy,
-            _ignorePointer,
-            _dragAccepted,
-          ]);
-        }
-        if (!_ignorePointer) _onDragUpdate(details, width);
-      },
-      onHorizontalDragEnd: (details) {
-        _stallEvent('gesture.drag.end');
-        traceTurnFlush('drag-$_pointer');
-        traceTurn('recognizer end $_traceInput distance=$_dragged');
-        if (!_ignorePointer && _dragAccepted) {
-          _finishInput(() => _onDragEnd(details, width));
-        }
-      },
-      onHorizontalDragCancel: () {
-        _stallEvent('gesture.drag.cancel');
-        traceTurnFlush('drag-$_pointer');
-        traceTurn('recognizer cancel $_traceInput');
-        if (!_ignorePointer && _dragAccepted) {
-          _finishInput(() => _onDragCancel(width));
-        }
-      },
+      onHorizontalDragStart: !widget.dragEnabled
+          ? null
+          : (details) {
+              _stallEvent('gesture.drag.start');
+              if (!_ignorePointer) {
+                _turnLog?.operationActive = true;
+                _turnLog?.event('gesture.drag');
+              }
+              _responseTrace.recognized(_pointer);
+              traceTurn('recognizer start $_traceInput');
+              if (!_ignorePointer) _onDragStart(details);
+            },
+      onHorizontalDragUpdate: !widget.dragEnabled
+          ? null
+          : (details) {
+              if (!_ignorePointer) _logDrag(details);
+              if (turnTraceEnabled) {
+                traceTurnSample('drag-$_pointer', [
+                  details.sourceTimeStamp?.inMicroseconds,
+                  details.localPosition.dx,
+                  details.localPosition.dy,
+                  details.delta.dx,
+                  details.delta.dy,
+                  _ignorePointer,
+                  _dragAccepted,
+                ]);
+              }
+              if (!_ignorePointer) _onDragUpdate(details, width);
+            },
+      onHorizontalDragEnd: !widget.dragEnabled
+          ? null
+          : (details) {
+              _stallEvent('gesture.drag.end');
+              traceTurnFlush('drag-$_pointer');
+              traceTurn('recognizer end $_traceInput distance=$_dragged');
+              if (!_ignorePointer && _dragAccepted) {
+                _finishInput(() => _onDragEnd(details, width));
+              }
+            },
+      onHorizontalDragCancel: !widget.dragEnabled
+          ? null
+          : () {
+              _stallEvent('gesture.drag.cancel');
+              traceTurnFlush('drag-$_pointer');
+              traceTurn('recognizer cancel $_traceInput');
+              if (!_ignorePointer && _dragAccepted) {
+                _finishInput(() => _onDragCancel(width));
+              }
+            },
       child: ClipRect(
         child: ValueListenableBuilder<int>(
           valueListenable: _motion,
@@ -167,7 +175,7 @@ extension _PageTurnInput on _PageTurnAreaState {
 
   /// 点按使用与拖动相同的准备、动画和提交顺序。
   Future<void> _tapTurn(PageTurnDirection direction, {Offset? position}) async {
-    if (_committing) return;
+    if (_committing || !(widget.inputAllowed?.call() ?? true)) return;
     final size = context.size!;
     final backward = direction == PageTurnDirection.backward;
     _onDragStart(
@@ -249,7 +257,11 @@ extension _PageTurnInput on _PageTurnAreaState {
     _releaseDirection = 0;
   }
 
-  void _onDragUpdate(DragUpdateDetails details, double width) {
+  void _onDragUpdate(
+    DragUpdateDetails details,
+    double width, {
+    Widget? neighbour,
+  }) {
     if (!_dragAccepted || _committing || _controller.isAnimating) return;
     final delta = details.delta.dx;
     if (delta == 0 && _direction == null) return;
@@ -260,7 +272,8 @@ extension _PageTurnInput on _PageTurnAreaState {
           : PageTurnDirection.backward;
       // 相邻页可能还没排好：这时不推移画面，手势照常走完，
       // 松手按累计位移与甩动判定是否翻页（章首往回拖不会再没反应）
-      _neighbour = forward ? widget.nextPage : widget.previousPage;
+      _neighbour =
+          neighbour ?? (forward ? widget.nextPage : widget.previousPage);
       if (!widget.spread && !forward && widget.effect == PageTurnEffect.curl) {
         // 单页回翻从纸边中部展开。双页由绘制层镜像左页，沿用起手时的书角或纸边。
         _edgeCurl = true;
@@ -354,10 +367,12 @@ extension _PageTurnInput on _PageTurnAreaState {
             (widget.effect == PageTurnEffect.cover && !forward)
         ? _dragged
         : _offset;
-    // 有动画时按最后明确方向收尾；只有无动画仍判断距离和速度。
+    // PDF 自由浏览只看松手时拖开的距离。放大后传入的是越过页边的位移。
     final committed =
         !cancelled &&
-        (widget.effect != PageTurnEffect.none
+        (widget.requireDragDistance
+            ? shift.abs() > width * _commitFraction
+            : widget.effect != PageTurnEffect.none
             ? (_releaseDirection == (forward ? -1 : 1))
             : forward
             ? (-shift > width * _commitFraction || velocity < -_flingVelocity)

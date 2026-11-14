@@ -20,6 +20,7 @@ import '../../../core/theme/reading_theme.dart';
 import 'footnote_popover.dart';
 
 import '../../../../app/di/app_providers.dart';
+import '../../../../app/di/reading_controls_providers.dart';
 import '../../../../domain/models/locator.dart' show SelectionRange;
 import '../../../../domain/models/book.dart';
 import '../../../../engine/layout/layout_options.dart';

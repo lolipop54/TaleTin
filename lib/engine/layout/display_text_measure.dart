@@ -38,7 +38,7 @@ extension _DisplayTextMeasurement on BlockMeasurer {
       }
       parts.add(
         _measureText(
-          _displaySlice(block, from, to),
+          _sliceDisplayBlock(block, from, to),
           withIndent: withIndent && from == 0,
           styleLevel: styleLevel,
           sourceOffset: cuts[i],
@@ -46,6 +46,14 @@ extension _DisplayTextMeasurement on BlockMeasurer {
         ),
       );
     }
+    return _mergeDisplayText(block, parts);
+  }
+
+  /// 多段显示范围可有不同宽度，合并后仍用同一块的字符坐标。
+  MeasuredBlock _mergeDisplayText(
+    ContentBlock block,
+    List<MeasuredBlock> parts,
+  ) {
     final runs = <TextRun>[], styles = <TextStyle>[];
     final lines = <MeasuredLine>[];
     final images = <InlineImagePlacement>[];
@@ -105,6 +113,7 @@ extension _DisplayTextMeasurement on BlockMeasurer {
                   letterSpacing: s.letterSpacing,
                   top: s.top,
                   baseline: s.baseline,
+                  ruby: s.ruby,
                 ),
             ],
           ),
@@ -124,6 +133,7 @@ extension _DisplayTextMeasurement on BlockMeasurer {
             resourcePath: image.resourcePath,
             alt: image.alt,
             formula: image.formula?.shifted(cursor),
+            noteLink: image.noteLink,
           ),
         );
       }
@@ -189,77 +199,111 @@ extension _DisplayTextMeasurement on BlockMeasurer {
       hasScript: parts.any((part) => part.hasScript),
       marker: first.marker,
       markerInset: first.markerInset,
+      marginTop: first.marginTop,
+      marginBottom: parts.last.marginBottom,
       containerBoxes: frames,
       inlineImages: images,
       inlineBoxes: boxes,
     );
   }
+}
 
-  ContentBlock _displaySlice(ContentBlock block, int from, int to) {
-    var offset = 0;
-    final runs = <TextRun>[];
-    for (final run in block.runs) {
-      final end = offset + run.text.length;
-      if (end > from && offset < to) {
-        runs.add(
-          TextRun(
-            run.text.substring(
-              math.max(0, from - offset),
-              math.min(run.text.length, to - offset),
-            ),
-            styleId: run.styleId,
-            link: run.link,
-            footnote: run.footnote,
-          ),
-        );
+extension FloatTextMeasurement on BlockMeasurer {
+  MeasuredBlock wrapBesideFloat(
+    ContentBlock block,
+    BlockMeasurer fullWidth,
+    double heightBeside, {
+    required bool withIndent,
+  }) {
+    final narrow = measure(block, withIndent: withIndent);
+    if (narrow.height <= heightBeside || narrow.lines.length < 2) return narrow;
+    var y = narrow.bodyTop;
+    for (var i = 0; i + 1 < narrow.lines.length; i++) {
+      y += narrow.lines[i].height;
+      if (y < heightBeside - .1) continue;
+      final end = narrow.lines[i].end - narrow.displayPrefixLength;
+      // 同一偏移也可能有图片。只在图片会自然落入后半段的行界处重排。
+      if (end <= 0 ||
+          end >= block.runLength ||
+          narrow.inlineImages.any(
+            (p) => p.line <= i && p.offset - narrow.displayPrefixLength == end,
+          )) {
+        continue;
       }
-      offset = end;
+      final head = _measureText(
+        _sliceDisplayBlock(block, 0, end),
+        withIndent: withIndent,
+      );
+      if (head.lines.length != i + 1 ||
+          head.height - head.bodyBottom < heightBeside - .1) {
+        continue;
+      }
+      final tail = fullWidth._measureText(
+        _sliceDisplayBlock(block, end, block.runLength),
+        withIndent: false,
+        sourceOffset: end,
+      );
+      return _mergeDisplayText(block, [head, tail]);
     }
-    return ContentBlock(
-      id: block.id,
-      kind: block.kind,
-      level: block.level,
-      runs: runs,
-      styleId: block.styleId,
-      nest: block.nest,
-      ordered: block.ordered,
-      ordinal: block.ordinal,
-      isQuoteContainer: block.isQuoteContainer,
-      boxId: block.boxId,
-      parentBox: block.parentBox,
-      breaks: [
-        for (final p in block.breaks)
-          if (p >= from && p < to) p - from,
-      ],
-      inlineImages: [
-        for (final image in block.inlineImages)
-          if (image.offset >= from &&
-              (image.offset < to || to == block.runLength))
-            InlineImage(
-              offset: image.offset - from,
-              resourcePath: image.resourcePath,
-              width: image.width,
-              height: image.height,
-              alt: image.alt,
-              imageWidth: image.imageWidth,
-              imageMaxWidth: image.imageMaxWidth,
-              styleId: image.styleId,
-            ),
-      ],
-      inlineBoxes: [
-        for (final s in block.inlineBoxes)
-          if (s.start < to && s.end > from)
-            InlineBoxSpan(
-              start: math.max(s.start, from) - from,
-              end: math.min(s.end, to) - from,
-              id: s.id,
-              box: s.box,
-              scale: s.scale,
-              styleId: s.styleId,
-              first: s.first && s.start >= from,
-              last: s.last && s.end <= to,
-            ),
-      ],
-    );
+    return narrow;
   }
+}
+
+ContentBlock _sliceDisplayBlock(ContentBlock block, int from, int to) {
+  var offset = 0;
+  final runs = <TextRun>[];
+  for (final run in block.runs) {
+    final end = offset + run.text.length;
+    if (end > from && offset < to) {
+      runs.add(
+        TextRun(
+          run.text.substring(
+            math.max(0, from - offset),
+            math.min(run.text.length, to - offset),
+          ),
+          styleId: run.styleId,
+          link: run.link,
+          footnote: run.footnote,
+        ),
+      );
+    }
+    offset = end;
+  }
+  return ContentBlock(
+    id: block.id,
+    kind: block.kind,
+    level: block.level,
+    runs: runs,
+    styleId: block.styleId,
+    nest: block.nest,
+    ordered: block.ordered,
+    ordinal: block.ordinal,
+    isQuoteContainer: block.isQuoteContainer,
+    boxId: block.boxId,
+    parentBox: block.parentBox,
+    breaks: [
+      for (final p in block.breaks)
+        if (p >= from && p < to) p - from,
+    ],
+    inlineImages: [
+      for (final image in block.inlineImages)
+        if (image.offset >= from &&
+            (image.offset < to || to == block.runLength))
+          image.positioned(image.offset - from),
+    ],
+    inlineBoxes: [
+      for (final s in block.inlineBoxes)
+        if (s.start < to && s.end > from)
+          InlineBoxSpan(
+            start: math.max(s.start, from) - from,
+            end: math.min(s.end, to) - from,
+            id: s.id,
+            box: s.box,
+            scale: s.scale,
+            styleId: s.styleId,
+            first: s.first && s.start >= from,
+            last: s.last && s.end <= to,
+          ),
+    ],
+  );
 }

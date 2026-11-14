@@ -17,9 +17,14 @@ final readingControlsReadyProvider = FutureProvider<void>((ref) async {
 
 /// 设置页与阅读面板共用全局开关；阅读面板的常亮入口放在亮度面板。
 class ReadingControlsOptions extends ConsumerWidget {
-  const ReadingControlsOptions({super.key, this.includeKeepAwake = true});
+  const ReadingControlsOptions({
+    super.key,
+    this.includeKeepAwake = true,
+    this.includePdfFixedViewMode = true,
+  });
 
   final bool includeKeepAwake;
+  final bool includePdfFixedViewMode;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -66,6 +71,12 @@ class ReadingControlsOptions extends ConsumerWidget {
             (value) => vm.change(awake: value),
           ),
         option('音量键翻页', controls.volumeKeys, (value) => vm.change(keys: value)),
+        if (includePdfFixedViewMode)
+          option(
+            '固定视图模式',
+            controls.pdfFixedViewMode,
+            (value) => vm.change(pdfFixedViewMode: value),
+          ),
         option(
           '底部上滑退出',
           controls.swipeUpToExit,

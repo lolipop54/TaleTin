@@ -36,6 +36,7 @@ import 'prose_line_breaks.dart';
 import 'edge_aligned_text_painter.dart';
 import 'block_measurement_cache.dart';
 import 'run_style_resolver.dart';
+import 'ruby_source.dart';
 
 part 'inline_text_measure.dart';
 part 'block_box_measure.dart';
@@ -47,6 +48,7 @@ part 'text_block_measure.dart';
 part 'display_text_measure.dart';
 part 'math_block_measure.dart';
 part 'hyphen_line_fit.dart';
+part 'inline_image_measure.dart';
 
 class BlockMeasurer {
   BlockMeasurer(
@@ -56,6 +58,7 @@ class BlockMeasurer {
     this.formulaTree,
     this.flatNest = false,
     this.tableBody = false,
+    this.floatInsets,
     BlockMeasurementCache? cache,
   }) : _cache = cache ?? BlockMeasurementCache();
   final BlockMeasurementCache _cache;
@@ -82,6 +85,7 @@ class BlockMeasurer {
 
   /// 普通表格单元格正文沿用阅读器两端对齐，表头仍遵守作者对齐。
   final bool tableBody;
+  final ({int parentId, double left, double right})? floatInsets;
 
   /// 章题装饰块使用的块 ID：它不是正文块，正文拼接校验时跳过。
   static const String titleBlockId = '__chapter_title__';
@@ -117,6 +121,7 @@ class BlockMeasurer {
       asChapterTitle,
       flatNest,
       tableBody,
+      floatInsets,
       EnglishHyphenation.isPrepared,
       sourceOffset,
       displayTree?.formulas.length ?? 0,
@@ -545,6 +550,7 @@ class BlockMeasurer {
       imageSize: size,
       resourcePath: block.resourcePath,
       alt: block.alt,
+      noteLink: block.noteLink,
       inset: spacing.left,
       layoutWidth: maxWidth,
       height: size.height + bodyTop + bodyBottom,

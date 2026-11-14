@@ -4,7 +4,21 @@ part of 'reader_session_view_model.dart';
 mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
   StreamSubscription<ChapterLayout>? _layoutUpdates;
   ChapterLayout? _observedLayout;
+  ChapterLayoutTask? _displayLayoutTask;
+  void Function()? _releaseDisplayLayoutTask;
   final _neighborPreparations = <Object, Future<ChapterLayout>>{};
+
+  /// 已交付的页仍可能需要继续补排，后台暂停时也要保留当前任务。
+  void _retainDisplayLayout(ReaderSession? session) {
+    final task = !_mode.isOriginal && session?.scrolling == false
+        ? session?.layout?.task
+        : null;
+    if (identical(task, _displayLayoutTask)) return;
+    final releasePrevious = _releaseDisplayLayoutTask;
+    _releaseDisplayLayoutTask = task?.retainForDisplay();
+    _displayLayoutTask = task;
+    releasePrevious?.call();
+  }
 
   /// 切章入口共用的排版失效处理：旧邻章和未完成请求必须一起失效。
   /// 听书追赶不经过手动排版入口，也不能继续沿用追赶前的翻页材料。
@@ -25,6 +39,7 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
     LayoutOptions options,
   ) =>
       layout != null &&
+          layout.task?.isDisposed != true &&
           layout.bookId == session.book.id &&
           layout.contentVersion == session.book.contentVersion &&
           layout.chapterId == session.chapters[index].id &&
@@ -392,6 +407,8 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
       chapterIndex,
       options,
     );
+    // 读取正式正文时仍可能有别的排版请求，先保护已选中的预取结果。
+    final releaseMatching = matching?.task?.retainForDisplay();
     try {
       final indexed = matching?.readsTxtBySection == true
           ? matching
@@ -470,6 +487,8 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
     } on Object catch (error, stack) {
       if (!token.isCancelled && ref.mounted) state = AsyncError(error, stack);
       return false;
+    } finally {
+      releaseMatching?.call();
     }
     if (token.isCancelled) return false;
 
@@ -481,6 +500,8 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
       _ => 0,
     };
 
+    // 首屏还要等可直接翻到的跨章页，期间新的当前章不能被回收。
+    final releasePreparingLayout = layout.task?.retainForDisplay();
     try {
       // PDF一页就是一个内部章。跳转先显示目标页，不等待两侧扫描页提图；
       // 后面的预取仍准备相邻页，用户立刻翻页时也沿用等待目标就绪的流程。
@@ -525,6 +546,8 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
       }
     } on LayoutCancelled {
       return false;
+    } finally {
+      releasePreparingLayout?.call();
     }
 
     // 上次的位置用完了（第一次排版就落在它那一页）
@@ -642,8 +665,15 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
       return;
     }
     if (!_canPrefetchChapter(session, previousIndex)) return;
-    final chapter = session.chapters[previousIndex];
-    if (_previousChapterLayout?.chapterId == chapter.id) return;
+    bool hasPreparedPrevious() =>
+        _matchingChapterLayout(
+          _previousChapterLayout,
+          session,
+          previousIndex,
+          options,
+        ) !=
+        null;
+    if (hasPreparedPrevious()) return;
     final signature = options.layoutSignature;
     final version = _tokenVersion;
     unawaited(() async {
@@ -664,7 +694,7 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
           return;
         }
         // 手势可能已经准备了上一页；迟到的预取不能把动画的页片段换掉。
-        if (_previousChapterLayout?.chapterId == chapter.id) return;
+        if (hasPreparedPrevious()) return;
         _previousChapterLayout = layout;
         traceTurn(
           'prefetch previous ready chapter=$previousIndex pages=${layout.pageCount}',

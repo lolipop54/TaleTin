@@ -36,9 +36,14 @@ class ReaderSettingsState {
   final ReadingSettings fontSettings;
   final bool pdf;
   final bool supportsBookFonts;
-  ReadingLayoutMode get layoutMode =>
-      fontSettings.layoutMode.forBuild(pdf: pdf);
+  ReadingLayoutMode get layoutMode => fontSettings.layoutModeFor(pdf: pdf);
   bool get pdfMode => pdf && layoutMode.isOriginal;
+  bool freePdfView({required bool fixedView}) => pdfMode && !fixedView;
+
+  PageTurnEffect pageTurnFor({required bool fixedView}) =>
+      freePdfView(fixedView: fixedView)
+      ? settings.pageTurnEffect.forPdfFreeView()
+      : settings.pageTurnEffect;
   bool get _bookFonts =>
       supportsBookFonts &&
       !layoutMode.isOriginal &&
@@ -240,14 +245,15 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
   /// PDF切回原页前交接听书位置；源书已变更时不能再读取旧正文。
   Future<void> _prepareSettings(ReadingSettings next) async {
     final current = state.value;
-    if (current?.layoutMode != next.layoutMode.forBuild(pdf: _pdf)) {
+    final mode = next.layoutModeFor(pdf: _pdf);
+    if (current?.layoutMode != mode) {
       final book = await ref.read(bookRepositoryProvider).findById(bookId);
       if (!ref.mounted) return;
       if (book?.status == BookStatus.sourceChanged) {
         ref.read(readerSourceChangeProvider(bookId).notifier).markChanged();
         return;
       }
-      if (_pdf && next.layoutMode.isOriginal) {
+      if (_pdf && mode.isOriginal) {
         final service = ref.read(listeningServiceProvider);
         if (service.snapshot.bookId == bookId &&
             service.snapshot.desiredPlaying) {
@@ -263,7 +269,7 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
   }
 
   Future<void> _prepareFont(ReadingSettings settings) async {
-    final original = settings.layoutMode.forBuild(pdf: _pdf).isOriginal;
+    final original = settings.layoutModeFor(pdf: _pdf).isOriginal;
     if (original && settings.useOriginalFont) return;
     // 原书正文由 WebView 准备内置字体；在这里用 Flutter 再预排一次，
     // 会同步读取整份中文字体，既阻塞加载动画，也没有参与正文绘制。
@@ -316,22 +322,22 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
       _applySettings((o) => o.copyWith(fontWeight: value));
 
   void restoreOriginalFont() => _applySettings(
-    (o) => o.withFontChoice('__original', o.layoutMode.forBuild(pdf: _pdf)),
+    (o) => o.withFontChoice('__original', o.layoutModeFor(pdf: _pdf)),
   );
 
   void setFontFamily(String family) => _applySettings(
-    (o) => o.withFontChoice(family, o.layoutMode.forBuild(pdf: _pdf)),
+    (o) => o.withFontChoice(family, o.layoutModeFor(pdf: _pdf)),
   );
 
   /// 弹层等待保存成功才关闭；失败由串行入口提示，仍保留候选和旧正文。
   Future<bool> confirmFontChoice(String id) async {
     await _applySettings(
-      (o) => o.withFontChoice(id, o.layoutMode.forBuild(pdf: _pdf)),
+      (o) => o.withFontChoice(id, o.layoutModeFor(pdf: _pdf)),
     );
     final current = state.value?.fontSettings;
     return current != null &&
         (id == '__original'
-            ? current.usesBookFont(current.layoutMode.forBuild(pdf: _pdf))
+            ? current.usesBookFont(current.layoutModeFor(pdf: _pdf))
             : !current.useOriginalFont &&
                   !current.useBookFontsInSimplified &&
                   current.fontFamily == id);
@@ -341,13 +347,15 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
     (o) => o.withFontChoice(
       // 显式存系统字体，不能用 null（null 会继承全局宋体）。
       readingFontFamily(font) ?? 'sans-serif',
-      o.layoutMode.forBuild(pdf: _pdf),
+      o.layoutModeFor(pdf: _pdf),
     ),
   );
 
-  /// 全局排版模式；TXT仍使用简化正文，PDF按对应模式显示。
-  void setLayoutMode(ReadingLayoutMode mode) =>
-      _applySettings((s) => s.copyWith(layoutMode: mode));
+  /// 所有 PDF 共用一项模式，其他格式沿用各自的排版规则。
+  void setLayoutMode(ReadingLayoutMode mode) => _applySettings(
+    (s) =>
+        _pdf ? s.copyWith(pdfLayoutMode: mode) : s.copyWith(layoutMode: mode),
+  );
 
   void setPageTurnEffect(PageTurnEffect effect) =>
       _applySettings((o) => o.copyWith(pageTurnEffect: effect));

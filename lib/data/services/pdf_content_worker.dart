@@ -24,8 +24,28 @@ class _PdfContentCache {
     return reader;
   }
 
+  Future<void> _trimReaders(IndexedChapterReader current) async {
+    while (_readers.length > 2) {
+      final idle = _readers.keys
+          .where(
+            (k) =>
+                !_preparing.containsValue(_readers[k]) &&
+                !_readers[k]!.cache!.hasReadingChapters &&
+                _readers[k] != current,
+          )
+          .firstOrNull;
+      if (idle == null) break;
+      await _readers.remove(idle)!.close();
+    }
+  }
+
   Future<Object?> run((String, Object?) command) async {
     final (operation, argument) = command;
+    if (operation == 'thumbnail') {
+      final (bookId, page, width, bytes) =
+          argument as (String, Chapter, int, Uint8List?);
+      return _thumbnail(bookId, page, width, bytes);
+    }
     if (operation == 'retain') {
       final (bookId, owner, chapters) =
           argument as (String, String, List<Chapter>);
@@ -47,18 +67,7 @@ class _PdfContentCache {
     if (operation == 'start') {
       final (key, bookId, chapter) = argument as (String, String, Chapter);
       final reader = _reader(bookId, chapter);
-      while (_readers.length > 2) {
-        final idle = _readers.keys
-            .where(
-              (k) =>
-                  !_preparing.containsValue(_readers[k]) &&
-                  !_readers[k]!.cache!.hasReadingChapters &&
-                  _readers[k] != reader,
-            )
-            .firstOrNull;
-        if (idle == null) break;
-        await _readers.remove(idle)!.close();
-      }
+      await _trimReaders(reader);
       await reader.cache!.beginPreparation();
       _preparing[key] = reader;
       try {
@@ -113,6 +122,33 @@ class _PdfContentCache {
       }
     } else if (operation == 'abort') {
       _end(argument as String);
+    }
+    return null;
+  }
+
+  Future<Uint8List?> _thumbnail(
+    String bookId,
+    Chapter page,
+    int width,
+    Uint8List? bytes,
+  ) async {
+    final reader = _reader(bookId, page);
+    await _trimReaders(reader);
+    await reader.verifySource();
+    final store = reader.cache!;
+    final file = store.file('pdf_thumbnails/${page.ordinal}-$width.png');
+    try {
+      if (bytes == null) {
+        return file.existsSync() ? file.readAsBytesSync() : null;
+      }
+      await store.beginPreparation();
+      try {
+        store.write(file, bytes, retainUntilPinned: false);
+      } finally {
+        store.endPreparation();
+      }
+    } on FileSystemException {
+      // 缓存被回收或磁盘写不进去时，已渲染的缩略图仍可以显示。
     }
     return null;
   }

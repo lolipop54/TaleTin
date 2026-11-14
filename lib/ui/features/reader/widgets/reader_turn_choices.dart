@@ -13,9 +13,11 @@ class ReaderTurnChoices extends StatelessWidget {
     required this.selected,
     required this.onSelect,
     this.curlOnly = false,
+    this.effects = PageTurnEffect.values,
   });
   final PageTurnEffect selected;
   final bool curlOnly;
+  final List<PageTurnEffect> effects;
   final ValueChanged<PageTurnEffect> onSelect;
 
   static ImageProvider image(PageTurnEffect effect, double pixelRatio) =>
@@ -24,8 +26,11 @@ class ReaderTurnChoices extends StatelessWidget {
         width: (80 * pixelRatio).ceil(),
       );
 
-  static Future<void> prepare(BuildContext context) => Future.wait([
-    for (final effect in PageTurnEffect.values)
+  static Future<void> prepare(
+    BuildContext context, {
+    List<PageTurnEffect> effects = PageTurnEffect.values,
+  }) => Future.wait([
+    for (final effect in effects)
       precacheImage(
         image(effect, MediaQuery.devicePixelRatioOf(context)),
         context,
@@ -40,7 +45,7 @@ class ReaderTurnChoices extends StatelessWidget {
       physics: const ClampingScrollPhysics(),
       child: Row(
         children: [
-          for (final effect in PageTurnEffect.values)
+          for (final effect in effects)
             Semantics(
               selected: effect == selected,
               child: GtButton.raw(

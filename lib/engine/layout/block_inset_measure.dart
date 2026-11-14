@@ -92,6 +92,7 @@ extension _BlockInsetMeasurement on BlockMeasurer {
       styleTable,
       options,
       ownStyle: ownStyle,
+      floatInsets: floatInsets,
       // 图片尺寸随后由 _measureImage 按自己的 width 处理，不能扣两遍。
       constrainOwnWidth: block.kind != BlockKind.image,
       ownHeading: block.kind == BlockKind.heading,

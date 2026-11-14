@@ -40,6 +40,59 @@ part 'page_turn_state_logging.dart';
 enum PageTurnDirection { forward, backward }
 
 class PageTurnArea extends StatefulWidget {
+  static bool settling(GlobalKey key) {
+    final state = key.currentState;
+    return state is _PageTurnAreaState &&
+        (state._committing ||
+            state._finishingInput ||
+            state._controller.isAnimating);
+  }
+
+  /// PDF 拖过页边时，把剩余触点位移交给同一套平移和松手处理。
+  static bool beginExternalDrag(GlobalKey key, Offset position) {
+    final state = key.currentState;
+    if (state is! _PageTurnAreaState || state._inputBlockReason() != null) {
+      return false;
+    }
+    state._pointerCancelled = false;
+    state._onDragStart(DragStartDetails(localPosition: position));
+    return state._dragAccepted;
+  }
+
+  static void updateExternalDrag(
+    GlobalKey key,
+    Offset position,
+    double delta, {
+    Widget? neighbour,
+  }) {
+    final state = key.currentState;
+    if (state is! _PageTurnAreaState) return;
+    state._onDragUpdate(
+      DragUpdateDetails(
+        globalPosition: position,
+        localPosition: position,
+        delta: Offset(delta, 0),
+        primaryDelta: delta,
+      ),
+      state.context.size!.width,
+      neighbour: neighbour,
+    );
+  }
+
+  static Future<void> endExternalDrag(
+    GlobalKey key, {
+    required bool cancelled,
+  }) async {
+    final state = key.currentState;
+    if (state is! _PageTurnAreaState || !state._dragAccepted) return;
+    final width = state.context.size!.width;
+    await state._finishInput(
+      () => cancelled
+          ? state._onDragCancel(width)
+          : state._onDragEnd(DragEndDetails(primaryVelocity: 0), width),
+    );
+  }
+
   /// PDF第二指按下时撤销尚未提交的翻页，后续移动交给缩放。
   static void cancelGesture(GlobalKey key) {
     final state = key.currentState;
@@ -58,9 +111,8 @@ class PageTurnArea extends StatefulWidget {
   static Future<void> turn(GlobalKey key, bool forward) async {
     final state = key.currentState;
     if (state is _PageTurnAreaState &&
-        !state._controller.isAnimating &&
-        !state._committing &&
-        !state._finishingInput) {
+        !state._dragAccepted &&
+        state._inputBlockReason() == null) {
       await state._finishInput(
         () => state._tapTurn(
           forward ? PageTurnDirection.forward : PageTurnDirection.backward,
@@ -88,6 +140,8 @@ class PageTurnArea extends StatefulWidget {
     this.traceLabel = 'simplified',
     this.inputRevision,
     this.inputAllowed,
+    this.dragEnabled = true,
+    this.requireDragDistance = false,
     this.spread = false,
     this.slideImages = false,
   });
@@ -109,6 +163,10 @@ class PageTurnArea extends StatefulWidget {
   /// 外部跳转或排版变化使未处理手势失效，正常翻页不改变此值。
   final Object? inputRevision;
   final bool Function()? inputAllowed;
+  final bool dragEnabled;
+
+  /// 松手时按当前拖开的距离判定，短划和快速甩动都不能跳过门槛。
+  final bool requireDragDistance;
   final Future<Widget?> Function(PageTurnDirection)? resolvePage;
   final VoidCallback? onInteractionStart;
   final void Function(PageTurnDirection)? onSettling;

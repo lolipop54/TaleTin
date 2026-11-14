@@ -57,10 +57,16 @@ class DisplayBoxLayout {
     bool constrainOwnWidth = true,
     bool ownHeading = false,
     int initialIndentDepth = 0,
+    ({int parentId, double left, double right})? floatInsets,
   }) {
     final page = available ?? options.contentWidth;
     final raw = <(DisplayContainer, BlockBox?, ComputedStyle, bool)>[];
-    var reference = page;
+    final rootFloat =
+        floatInsets != null &&
+        !containers.any((c) => c.elementId == floatInsets.parentId);
+    var reference = rootFloat
+        ? page - floatInsets.left - floatInsets.right
+        : page;
     var indentDepth = initialIndentDepth;
     for (final c in containers) {
       // 与原书阅读共用产品规则：引用/列表第二层起不再增加左右外边距。
@@ -83,6 +89,9 @@ class DisplayBoxLayout {
         heading: c.role == 'heading',
         ignoreHorizontalMargins: nestedIndent,
       ).$2;
+      if (c.elementId == floatInsets?.parentId) {
+        reference -= floatInsets!.left + floatInsets.right;
+      }
     }
     final own = ownStyle == null
         ? null
@@ -97,7 +106,9 @@ class DisplayBoxLayout {
     final factor = total > page * .75 ? page * .75 / total : 1.0;
     final chain = <(DisplayContainer, BlockBox)>[];
     final ownBox = own == null ? null : _fit(own, factor);
-    var left = origin, right = 0.0, top = 0.0, bottom = 0.0;
+    var left = origin + (rootFloat ? floatInsets.left : 0.0);
+    var right = rootFloat ? floatInsets.right : 0.0;
+    var top = 0.0, bottom = 0.0;
     final frames = <ContainerBoxFrame>[];
     for (final (c, originalBox, style, nestedIndent) in raw) {
       final box = originalBox == null ? null : _fit(originalBox, factor);
@@ -112,25 +123,30 @@ class DisplayBoxLayout {
       );
       left += marginLeft;
       right += marginRight;
-      if (box == null) continue;
-      chain.add((c, box));
-      // 内层框从外层内容区开始；上下同样累计，不能只算横向位置。
-      frames.add(
-        ContainerBoxFrame(
-          elementId: c.elementId,
-          box: box,
-          first: c.first,
-          last: c.last,
-          left: left,
-          width: contentWidth + box.insetLeft + box.insetRight,
-          top: top,
-          bottom: bottom,
-        ),
-      );
-      left += box.insetLeft;
-      right += box.insetRight;
-      if (c.first) top += box.insetTop;
-      if (c.last) bottom += box.insetBottom;
+      if (box != null) {
+        chain.add((c, box));
+        // 内层框从外层内容区开始；上下同样累计，不能只算横向位置。
+        frames.add(
+          ContainerBoxFrame(
+            elementId: c.elementId,
+            box: box,
+            first: c.first,
+            last: c.last,
+            left: left,
+            width: contentWidth + box.insetLeft + box.insetRight,
+            top: top,
+            bottom: bottom,
+          ),
+        );
+        left += box.insetLeft;
+        right += box.insetRight;
+        if (c.first) top += box.insetTop;
+        if (c.last) bottom += box.insetBottom;
+      }
+      if (c.elementId == floatInsets?.parentId) {
+        left += floatInsets!.left;
+        right += floatInsets.right;
+      }
     }
     final containerWidth = page - (left - origin) - right;
     if (ownStyle != null && constrainOwnWidth) {

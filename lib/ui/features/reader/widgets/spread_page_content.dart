@@ -310,11 +310,26 @@ extension _SpreadPageContent on _ReaderSpreadAreaState {
       }
       return true;
     }
+    final viewImages =
+        ref.read(readingControlsProvider).value?.imageViewing != false;
     // 行内图片只做单张大图预览，不进入连续图片窗口。
     for (final f in page.layout.page(page.pageIndex)!.fragments) {
       final image = f.inlineImageAt(local);
       if (image == null) continue;
       if (!mounted) return true;
+      if (await openReaderImageNote(
+        context,
+        ref: ref,
+        bookId: widget.bookId,
+        chapters: widget.session.chapters,
+        link: image.noteLink,
+        point: point,
+        theme: widget.settings.theme,
+      )) {
+        return true;
+      }
+      if (!mounted) return true;
+      if (!viewImages) return false;
       final path = image.resourcePath;
       final file = File(canvas.resolveResource(path));
       if (path.toLowerCase().endsWith('.svg')) {
@@ -333,6 +348,19 @@ extension _SpreadPageContent on _ReaderSpreadAreaState {
       final rect = f.imageRectIn(page.layout.contentSize.width);
       if (rect == null || path == null || !rect.contains(local)) continue;
       if (!mounted) return true;
+      if (await openReaderImageNote(
+        context,
+        ref: ref,
+        bookId: widget.bookId,
+        chapters: widget.session.chapters,
+        link: f.block.noteLink,
+        point: point,
+        theme: widget.settings.theme,
+      )) {
+        return true;
+      }
+      if (!mounted) return true;
+      if (!viewImages) return false;
       if (await tryReaderImageGallery(
         context,
         ref,

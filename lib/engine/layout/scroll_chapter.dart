@@ -246,7 +246,7 @@ class ScrollChapter {
         if (cancelled()) throw const ScrollPreparationCancelled();
         final end = block.kind == BlockKind.codeBlock
             ? text.length
-            : measurer.formulaSafeEnd(
+            : measurer.inlineSafeEnd(
                 block,
                 snapToGrapheme(text, math.min(text.length, offset + 2048)),
               );
@@ -279,17 +279,9 @@ class ScrollChapter {
                 // 长段分批测量时，行内图片要跟着所在文字一起移动
                 inlineImages: [
                   for (final image in block.inlineImages)
-                    if (image.offset >= offset && image.offset < end)
-                      InlineImage(
-                        offset: image.offset - offset,
-                        resourcePath: image.resourcePath,
-                        width: image.width,
-                        height: image.height,
-                        imageWidth: image.imageWidth,
-                        imageMaxWidth: image.imageMaxWidth,
-                        alt: image.alt,
-                        styleId: image.styleId,
-                      ),
+                    if (image.offset >= offset &&
+                        (image.offset < end || end == text.length))
+                      image.positioned(image.offset - offset),
                 ],
               );
         var measured = measurer.measure(

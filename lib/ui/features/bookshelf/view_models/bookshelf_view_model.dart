@@ -110,6 +110,10 @@ class BookshelfViewModel extends Notifier<BookshelfState> {
   void setGroup(String id) =>
       state = state.copyWith(filter: ShelfFilter.all, groupId: id);
 
+  void groupDeleted(String id) {
+    if (state.groupId == id) setFilter(ShelfFilter.ungrouped);
+  }
+
   Future<void> setSort(ShelfSort sort) async {
     if (state.savingSort) return;
     state = state.copyWith(savingSort: true);

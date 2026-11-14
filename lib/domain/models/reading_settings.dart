@@ -7,7 +7,7 @@ library;
 
 /// 排版模式（设计文档 2.4「排版模式」）。
 ///
-/// - [simplified]：简化排版，Flutter 自研分页（默认）；
+/// - [simplified]：简化排版，Flutter 自研分页（电子书默认）；
 /// - [original]：原书排版，WebView 按原书 CSS 渲染（支持原书样式的格式，见
 ///   `docs/原书排版260929-261016/原书排版模式实现计划.md`）。
 ///
@@ -26,15 +26,15 @@ enum ReadingLayoutMode {
   final String code;
 
   /// 只限制电子书的原书排版。PDF 的 original 代表原页模式。
-  /// 保存值保持原样，供 PDF 和重新启用原书排版的构建使用。
+  /// 保存值保持原样，供重新启用原书排版的构建使用。
   ReadingLayoutMode forBuild({required bool pdf}) =>
       originalIncluded || pdf ? this : simplified;
 
-  /// 解码：值不认识时回退简化排版（单项越界只回退该项，设计文档 7.2）
-  static ReadingLayoutMode fromCode(Object? code) => values.firstWhere(
-    (mode) => mode.code == code,
-    orElse: () => ReadingLayoutMode.simplified,
-  );
+  /// 解码：旧数据缺少字段或值不认识时，使用对应格式的默认模式。
+  static ReadingLayoutMode fromCode(
+    Object? code, {
+    ReadingLayoutMode fallback = simplified,
+  }) => values.firstWhere((mode) => mode.code == code, orElse: () => fallback);
 
   /// 是否用 WebView 渲染原书样式
   bool get isOriginal => this == ReadingLayoutMode.original;
@@ -50,6 +50,11 @@ enum PageTurnEffect {
 
   const PageTurnEffect(this.label);
   final String label;
+  static const pdfFreeViewEffects = [slide, scroll];
+
+  PageTurnEffect forPdfFreeView() =>
+      this == PageTurnEffect.scroll ? this : PageTurnEffect.slide;
+
   static PageTurnEffect fromCode(Object? code) => values.firstWhere(
     (value) => value.name == code,
     orElse: () => PageTurnEffect.curl,
@@ -110,6 +115,7 @@ class ReadingSettings {
     this.useOriginalFont = true,
     this.useBookFontsInSimplified = false,
     this.layoutMode = ReadingLayoutMode.simplified,
+    this.pdfLayoutMode = ReadingLayoutMode.original,
     this.pageTurnEffect = PageTurnEffect.curl,
     this.autoScrollSpeed = 24,
     this.autoScanSeconds = 8,
@@ -163,8 +169,15 @@ class ReadingSettings {
     );
   }
 
-  /// 排版模式（简化 / 原书）；PDF 对应原页模式，TXT 不显示此设置
+  /// EPUB／MOBI／AZW3 的排版模式。
   final ReadingLayoutMode layoutMode;
+
+  /// PDF 独立保存模式。旧设置没有这一项时默认显示原页。
+  final ReadingLayoutMode pdfLayoutMode;
+
+  ReadingLayoutMode layoutModeFor({required bool pdf}) =>
+      pdf ? pdfLayoutMode : layoutMode.forBuild(pdf: false);
+
   final PageTurnEffect pageTurnEffect;
 
   /// 滚动速度用逻辑像素/秒；扫描耗时单独保存，互不换算。
@@ -203,6 +216,7 @@ class ReadingSettings {
     bool? useBookFontsInSimplified,
     bool clearFontFamily = false,
     ReadingLayoutMode? layoutMode,
+    ReadingLayoutMode? pdfLayoutMode,
     PageTurnEffect? pageTurnEffect,
     double? autoScrollSpeed,
     int? autoScanSeconds,
@@ -235,6 +249,7 @@ class ReadingSettings {
     fontOnlyInReader: fontOnlyInReader ?? this.fontOnlyInReader,
     fontFamily: clearFontFamily ? null : (fontFamily ?? this.fontFamily),
     layoutMode: layoutMode ?? this.layoutMode,
+    pdfLayoutMode: pdfLayoutMode ?? this.pdfLayoutMode,
     pageTurnEffect: pageTurnEffect ?? this.pageTurnEffect,
     autoScrollSpeed: (autoScrollSpeed ?? this.autoScrollSpeed).clamp(12, 80),
     autoScanSeconds: (autoScanSeconds ?? this.autoScanSeconds).clamp(2, 30),
@@ -260,6 +275,7 @@ class ReadingSettings {
         fontFamily: overrides.fontFamily ?? fontFamily,
         fontOnlyInReader: fontOnlyInReader,
         layoutMode: overrides.layoutMode ?? layoutMode,
+        pdfLayoutMode: pdfLayoutMode,
         pageTurnEffect: overrides.pageTurnEffect ?? pageTurnEffect,
         autoScrollSpeed: overrides.autoScrollSpeed ?? autoScrollSpeed,
         autoScanSeconds: overrides.autoScanSeconds ?? autoScanSeconds,
@@ -282,6 +298,7 @@ class ReadingSettings {
     if (fontFamily != null) 'fontFamily': fontFamily,
     // 老数据没有这一项：读出来就是默认的简化排版（加键不迁移 schema）
     'layoutMode': layoutMode.code,
+    'pdfLayoutMode': pdfLayoutMode.code,
     'pageTurnEffect': pageTurnEffect.name,
     'autoScrollSpeed': autoScrollSpeed,
     'autoScanSeconds': autoScanSeconds,
@@ -332,6 +349,10 @@ class ReadingSettings {
       fontOnlyInReader: json['fontOnlyInReader'] as bool? ?? true,
       fontFamily: family is String && family.isNotEmpty ? family : null,
       layoutMode: ReadingLayoutMode.fromCode(json['layoutMode']),
+      pdfLayoutMode: ReadingLayoutMode.fromCode(
+        json['pdfLayoutMode'],
+        fallback: base.pdfLayoutMode,
+      ),
       pageTurnEffect: PageTurnEffect.fromCode(json['pageTurnEffect']),
       autoScrollSpeed:
           (json['autoScrollSpeed'] as num?)?.toDouble().clamp(12, 80) ?? 24,
@@ -358,6 +379,7 @@ class ReadingSettings {
       other.fontFamily == fontFamily &&
       other.fontOnlyInReader == fontOnlyInReader &&
       other.layoutMode == layoutMode &&
+      other.pdfLayoutMode == pdfLayoutMode &&
       other.pageTurnEffect == pageTurnEffect &&
       other.autoScrollSpeed == autoScrollSpeed &&
       other.autoScanSeconds == autoScanSeconds &&
@@ -379,6 +401,7 @@ class ReadingSettings {
     fontFamily,
     fontOnlyInReader,
     layoutMode,
+    pdfLayoutMode,
     pageTurnEffect,
     bookEdges,
     landscape,

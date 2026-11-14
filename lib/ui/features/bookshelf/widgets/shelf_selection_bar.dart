@@ -114,7 +114,7 @@ class ShelfSelectionBar extends ConsumerWidget {
                 GtIcons.folderInput,
                 selected.isEmpty
                     ? null
-                    : () => showBookGroupSheet(context, ref, selected),
+                    : () => showBookGroupSheet(context, ref, books: selected),
               ),
               action(
                 'shelf-cover-selected',

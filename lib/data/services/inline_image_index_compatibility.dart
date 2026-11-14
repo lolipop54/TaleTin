@@ -67,6 +67,7 @@ ContentBlock _withWeight(ContentBlock block, int weight) => ContentBlock(
   resourceWidth: block.resourceWidth,
   resourceHeight: block.resourceHeight,
   alt: block.alt,
+  noteLink: block.noteLink,
   target: block.target,
   nest: block.nest,
   ordered: block.ordered,

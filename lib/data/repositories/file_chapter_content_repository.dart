@@ -8,6 +8,7 @@ import 'dart:convert';
 import 'dart:async';
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:typed_data';
 
 import 'package:path/path.dart' as p;
 
@@ -189,6 +190,20 @@ class FileChapterContentRepository implements ChapterContentRepository {
     Chapter chapter, {
     bool textOnly = false,
   }) => _requestChapter(bookId, chapter, textOnly: textOnly);
+
+  @override
+  Future<Uint8List> pdfThumbnail(
+    String bookId,
+    Chapter page,
+    int width,
+    Future<Uint8List> Function() render,
+  ) => _read(bookId, () async {
+    if (!await _indexed(bookId, page)) {
+      await _readChapterFile(bookId, page, textOnly: true);
+      return render();
+    }
+    return (await _contentWorker()).pdfThumbnail(bookId, page, width, render);
+  });
 
   @override
   Future<ChapterContent> chapterForProgressLayout(

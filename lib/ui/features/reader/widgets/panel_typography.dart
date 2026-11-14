@@ -2,6 +2,8 @@ import 'package:taletin/ui/core/widgets/gt_button.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../../app/di/reading_controls_providers.dart';
+
 import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/gt_tokens.dart';
 import '../../../../platform/channels/reading_fonts.dart';
@@ -173,7 +175,9 @@ class PanelTypography extends ConsumerWidget {
       Expanded(
         child: _optionButton(
           context,
-          settings.settings.pageTurnEffect.label,
+          settings
+              .pageTurnFor(fixedView: ref.watch(pdfFixedViewModeProvider))
+              .label,
           '翻页方式',
           () => showReaderLayoutOption(context, ref, bookId, turn: true),
         ),

@@ -443,6 +443,7 @@ Future<bool> openReaderLink(
   required bool footnote,
   required Offset anchor,
   required ReadingTheme theme,
+  bool allowBackLink = true,
 }) async {
   final hash = link.lastIndexOf('#');
   final entryPath = hash < 0 ? link : link.substring(0, hash);
@@ -473,6 +474,7 @@ Future<bool> openReaderLink(
         : footnoteContent(html, fragment);
     if (!context.mounted) return true;
     if (content.backLink) {
+      if (!allowBackLink) return false;
       // 点的是注释里的“返回正文”链接：按普通书内跳转回原位置，并保留返回原进度
       await ref
           .read(readerSessionProvider(bookId).notifier)
@@ -497,6 +499,31 @@ Future<bool> openReaderLink(
   } finally {
     subscription.close();
   }
+}
+
+/// 图片脚注优先查注释；找不到文字时交回图片查看流程。
+Future<bool> openReaderImageNote(
+  BuildContext context, {
+  required WidgetRef ref,
+  required String bookId,
+  required List<Chapter> chapters,
+  required String? link,
+  required Offset point,
+  required ReadingTheme theme,
+}) async {
+  if (link == null) return false;
+  final box = context.findRenderObject()! as RenderBox;
+  return openReaderLink(
+    context,
+    ref: ref,
+    bookId: bookId,
+    chapters: chapters,
+    link: link,
+    footnote: true,
+    anchor: box.localToGlobal(point),
+    theme: theme,
+    allowBackLink: false,
+  );
 }
 
 /// 打开脚注气泡：正文内容是脚注文字，右下角“跳转”去原书位置。

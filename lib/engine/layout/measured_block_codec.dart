@@ -74,6 +74,14 @@ abstract final class MeasuredBlockCodec {
                 s.letterSpacing,
                 s.top,
                 s.baseline,
+                if (s.ruby case final ruby?)
+                  [
+                    ruby.text,
+                    ruby.fontSize,
+                    ruby.fontFamily,
+                    ruby.width,
+                    ruby.height,
+                  ],
               ],
           ],
         ],
@@ -90,6 +98,7 @@ abstract final class MeasuredBlockCodec {
           image.resourcePath,
           image.alt,
           image.formula?.toJson(),
+          image.noteLink,
         ],
     ],
     'box': b.box == null ? null : _encodeBox(b.box!),
@@ -153,6 +162,7 @@ abstract final class MeasuredBlockCodec {
         ? null
         : [b.imageSize!.width, b.imageSize!.height],
     'resource': b.resourcePath,
+    if (b.noteLink != null) 'noteLink': b.noteLink,
     'alt': b.alt,
     'inset': b.inset,
     'decoration': b.isDecoration,
@@ -247,6 +257,9 @@ abstract final class MeasuredBlockCodec {
                   for (final rawSegment in row[8] as List)
                     () {
                       final segment = rawSegment as List;
+                      final ruby = segment.length > 7
+                          ? segment[7] as List
+                          : null;
                       return MeasuredSegment(
                         start: (segment[0] as num).toInt(),
                         end: (segment[1] as num).toInt(),
@@ -254,6 +267,15 @@ abstract final class MeasuredBlockCodec {
                         width: number(segment[3]),
                         top: segment.length > 5 ? number(segment[5]) : 0,
                         baseline: segment.length > 6 ? number(segment[6]) : 0,
+                        ruby: ruby == null
+                            ? null
+                            : RubyLabel(
+                                ruby[0] as String,
+                                number(ruby[1]),
+                                ruby[2] as String?,
+                                number(ruby[3]),
+                                number(ruby[4]),
+                              ),
                         letterSpacing: segment.length > 4
                             ? number(segment[4])
                             : 0,
@@ -276,6 +298,7 @@ abstract final class MeasuredBlockCodec {
             size: Size(number(row[4]), number(row[5])),
             resourcePath: row[6] as String,
             alt: row.length > 7 ? row[7] as String? : null,
+            noteLink: row.length > 9 ? row[9] as String? : null,
             formula: row.length > 8 && row[8] is Map
                 ? FormulaGeometry.fromJson(row[8] as Map)
                 : null,
@@ -360,6 +383,7 @@ abstract final class MeasuredBlockCodec {
           : Size(number(image[0]), number(image[1])),
       resourcePath: j['resource'] as String?,
       alt: j['alt'] as String?,
+      noteLink: j['noteLink'] as String?,
       inset: number(j['inset']),
       isDecoration: j['decoration'] as bool,
       isTitleDecoration: j['title'] as bool,

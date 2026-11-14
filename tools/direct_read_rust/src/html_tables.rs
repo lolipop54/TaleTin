@@ -13,6 +13,11 @@ impl Builder {
         if let Some(alt) = attr(n, "alt") {
             block["alt"] = json!(alt);
         }
+        if self.footnote {
+            if let Some(link) = &self.link {
+                block["noteLink"] = json!(link);
+            }
+        }
         // 图片尺寸只用于显示：书里写了 width／max-width（百分比、em、px）才生效
         let width = if self.engine.is_some() {
             props.width

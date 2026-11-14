@@ -22,6 +22,9 @@ class DriftReadingControlsRepository implements ReadingControlsRepository {
       swipeUpToExit: value['swipeUpToExit'] == true,
       statusBar: value['statusBar'] != false,
       navigationBar: value['navigationBar'] != false,
+      imageViewing: value['imageViewing'] != false,
+      pdfFixedViewMode:
+          (value['pdfFixedViewMode'] ?? value['pdfFixedViewMenu']) == true,
     );
   }
 
@@ -37,6 +40,8 @@ class DriftReadingControlsRepository implements ReadingControlsRepository {
         'swipeUpToExit': value.swipeUpToExit,
         'statusBar': value.statusBar,
         'navigationBar': value.navigationBar,
+        'imageViewing': value.imageViewing,
+        'pdfFixedViewMode': value.pdfFixedViewMode,
       }),
       DateTime.now().toUtc().toIso8601String(),
     ],

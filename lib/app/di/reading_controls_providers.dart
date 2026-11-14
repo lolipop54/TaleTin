@@ -11,6 +11,9 @@ final readingControlsProvider =
     AsyncNotifierProvider<ReadingControlsNotifier, ReadingControls>(
       ReadingControlsNotifier.new,
     );
+final pdfFixedViewModeProvider = readingControlsProvider.select(
+  (state) => state.value?.pdfFixedViewMode ?? false,
+);
 
 class ReadingControlsNotifier extends AsyncNotifier<ReadingControls> {
   Future<void> _writing = Future.value();
@@ -23,6 +26,8 @@ class ReadingControlsNotifier extends AsyncNotifier<ReadingControls> {
     bool? swipeUpToExit,
     bool? statusBar,
     bool? navigationBar,
+    bool? imageViewing,
+    bool? pdfFixedViewMode,
   }) {
     final next = _writing.then((_) async {
       final repo = ref.read(readingControlsRepositoryProvider);
@@ -33,6 +38,8 @@ class ReadingControlsNotifier extends AsyncNotifier<ReadingControls> {
         swipeUpToExit: swipeUpToExit ?? old.swipeUpToExit,
         statusBar: statusBar ?? old.statusBar,
         navigationBar: navigationBar ?? old.navigationBar,
+        imageViewing: imageViewing ?? old.imageViewing,
+        pdfFixedViewMode: pdfFixedViewMode ?? old.pdfFixedViewMode,
       );
       await repo.save(value);
       if (ref.mounted) state = AsyncData(value);

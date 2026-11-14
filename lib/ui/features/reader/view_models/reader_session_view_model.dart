@@ -245,10 +245,12 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
   Future<ReaderSession> build() => traceTurnStep('load session', () async {
     _confirmedPage = null;
     _confirmedVisualPosition = null;
+    listenSelf((_, next) => _retainDisplayLayout(next.value));
     ref.onDispose(() {
       cancelProgressNavigation();
       ++_tokenVersion;
       _token?.cancel();
+      _retainDisplayLayout(null);
       _observedLayout?.task?.pauseBackground();
       unawaited(_layoutUpdates?.cancel());
     });

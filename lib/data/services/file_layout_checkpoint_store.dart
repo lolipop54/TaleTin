@@ -62,7 +62,7 @@ class FileLayoutCheckpointStore implements LayoutCheckpointStore {
         .convert(
           utf8.encode(
             jsonEncode([
-              'measured-prefix-17',
+              'measured-prefix-18',
               bookId,
               title,
               digest,

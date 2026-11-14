@@ -6,6 +6,8 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../../app/di/reading_controls_providers.dart';
+
 import '../../../../app/di/app_providers.dart';
 import '../../../../core/diagnostics/bookmark_trace.dart';
 import '../../../../domain/models/bookmark.dart';
@@ -197,7 +199,10 @@ class _BookmarkLayerState extends ConsumerState<ReaderBookmarkLayer>
           ? bookEdgeWidth
           : 0);
   bool get _canPull =>
-      !ref.read(pdfModeProvider(widget.bookId)) || _pdfView.canTurn;
+      !ref.read(pdfModeProvider(widget.bookId)) ||
+      _pdfView.canUseReadingGestures(
+        fixedView: ref.read(pdfFixedViewModeProvider),
+      );
 
   @override
   void initState() {

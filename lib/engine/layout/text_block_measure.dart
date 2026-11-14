@@ -289,7 +289,16 @@ extension _TextBlockMeasurement on BlockMeasurer {
       width,
       math.max(1, options.contentHeight - bodyTop - bodyBottom),
     );
+    final tree = displayTree ?? formulaTree;
+    final ruby = RubySource.of(tree?.source, tree?.blockIndexById[block.id])
+        .where(
+          (r) =>
+              r.start >= sourceOffset &&
+              r.end <= sourceOffset + block.runLength,
+        )
+        .toList();
     if (formulas.isNotEmpty ||
+        ruby.isNotEmpty ||
         block.inlineImages.isNotEmpty ||
         block.inlineBoxes.isNotEmpty ||
         displayBoundaries.isNotEmpty ||
@@ -306,6 +315,7 @@ extension _TextBlockMeasurement on BlockMeasurer {
         textShadow: textShadow,
         prefixLength: prefix.length,
         formulas: formulas,
+        ruby: ruby,
         hiddenRanges: [
           for (final (a, b) in semantics.hidden)
             (a + prefix.length, b + prefix.length),

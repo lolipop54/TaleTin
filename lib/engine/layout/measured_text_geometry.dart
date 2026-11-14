@@ -13,6 +13,7 @@ class MeasuredSegment {
     this.letterSpacing = 0,
     this.top = 0,
     this.baseline = 0,
+    this.ruby,
   });
 
   /// 在块文字里的范围 [start, end)
@@ -26,6 +27,41 @@ class MeasuredSegment {
   final double width;
   final double letterSpacing;
   final double top, baseline;
+  final RubyLabel? ruby;
+}
+
+/// 注音与它所属的文字段共用行位置，宽度大于正文时由测量层留出空间。
+class RubyLabel {
+  const RubyLabel(
+    this.text,
+    this.fontSize,
+    this.fontFamily,
+    this.width,
+    this.height,
+  );
+
+  final String text;
+  final String? fontFamily;
+  final double fontSize, width, height;
+
+  static TextPainter painter(
+    String text,
+    double fontSize,
+    String? fontFamily,
+    TextScaler scaler, {
+    Color? color,
+  }) => TextPainter(
+    text: TextSpan(
+      text: text,
+      style: TextStyle(
+        fontSize: fontSize,
+        fontFamily: fontFamily,
+        color: color,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+    textScaler: scaler,
+  )..layout();
 }
 
 /// 行内图片在一行里的摆放位置（尺寸已按阅读设置换算成像素）。
@@ -39,6 +75,7 @@ class InlineImagePlacement {
     required this.resourcePath,
     this.alt,
     this.formula,
+    this.noteLink,
   });
 
   /// 在块文字里的字符位置（UTF-16）
@@ -57,6 +94,7 @@ class InlineImagePlacement {
   final String resourcePath;
   final String? alt;
   final FormulaGeometry? formula;
+  final String? noteLink;
 }
 
 /// 一行在块文本中的范围与高度。

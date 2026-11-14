@@ -253,6 +253,25 @@ class ChapterContentWorker {
   Future<Object?> pdf(String operation, Object? argument) =>
       _request('pdf', (operation, argument));
 
+  Future<Uint8List> pdfThumbnail(
+    String bookId,
+    Chapter page,
+    int width,
+    Future<Uint8List> Function() render,
+  ) async {
+    final epoch = _cacheEpoch;
+    final cached =
+        await pdf('thumbnail', (bookId, page, width, null)) as Uint8List?;
+    if (cached != null) return cached;
+
+    final bytes = await render();
+    // 清缓存或换源期间已经开始的渲染仍可收尾，旧结果不再写回磁盘。
+    if (epoch == _cacheEpoch) {
+      await pdf('thumbnail', (bookId, page, width, bytes));
+    }
+    return bytes;
+  }
+
   Future<void> invalidate([String? bookId]) async {
     _discardRecentTxt(bookId);
     await _request('invalidate', bookId);

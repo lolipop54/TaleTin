@@ -306,7 +306,13 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
                         canSwipe: () =>
                             !_swipeExiting &&
                             (!ref.read(pdfModeProvider(bookId)) ||
-                                ref.read(pdfViewportProvider(bookId)).canTurn),
+                                ref
+                                    .read(pdfViewportProvider(bookId))
+                                    .canUseReadingGestures(
+                                      fixedView: ref.read(
+                                        pdfFixedViewModeProvider,
+                                      ),
+                                    )),
                         onExit: _exitBySwipe,
                         child: ReaderBookmarkLayer(
                           bookId: bookId,

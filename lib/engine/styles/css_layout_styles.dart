@@ -205,6 +205,7 @@ abstract final class CssLayoutStyles {
           resourceWidth: block.resourceWidth,
           resourceHeight: block.resourceHeight,
           alt: block.alt,
+          noteLink: block.noteLink,
           target: block.target,
           nest: block.nest,
           ordered: listStart
@@ -221,14 +222,8 @@ abstract final class CssLayoutStyles {
           line: block.line,
           inlineImages: [
             for (final image in block.inlineImages)
-              InlineImage(
-                offset: image.offset,
-                resourcePath: image.resourcePath,
-                width: image.width,
-                height: image.height,
-                alt: image.alt,
-                imageWidth: image.imageWidth,
-                imageMaxWidth: image.imageMaxWidth,
+              image.positioned(
+                image.offset,
                 styleId:
                     elementIds[ranges
                         .where(

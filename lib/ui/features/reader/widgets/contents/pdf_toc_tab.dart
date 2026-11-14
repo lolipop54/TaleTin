@@ -1,6 +1,6 @@
-import 'dart:typed_data';
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -27,25 +27,34 @@ class PdfTocTab extends ConsumerStatefulWidget {
 class _PdfTocTabState extends ConsumerState<PdfTocTab> {
   bool _thumbnails = true, _descending = false;
   ScrollController? _scroll;
-  Object? _gridRevision;
-  final _images = <int, Future<Uint8List>>{};
+  (PdfBookController, int, bool)? _gridRevision;
+  var _images = <int, Uint8List>{};
   Future<void> _thumbnailChain = Future.value();
 
-  Future<Uint8List> _thumbnail(PdfBookController book, int index) {
-    final result = Completer<Uint8List>();
-    // 一次只准备一个缩略图；快速滚动时丢弃已离屏的请求，跳页不必排在整段目录后面。
-    _thumbnailChain = _thumbnailChain.then((_) async {
-      if (!mounted || !identical(_images[index], result.future)) {
-        result.completeError(StateError('缩略图请求已失效'));
-        return;
+  Future<Uint8List?> _thumbnail(
+    PdfBookController book,
+    int index,
+    bool Function() isInGrid,
+  ) {
+    final images = _images;
+    final cached = images[index];
+    if (cached != null) return SynchronousFuture(cached);
+
+    // 每次只渲染一页。格子离开网格预加载范围后直接跳过，避免抢占跳页所需的 PDF 渲染。
+    final request = _thumbnailChain.then<Uint8List?>((_) async {
+      if (!isInGrid()) return null;
+      final ready = images[index];
+      if (ready != null) return ready;
+      final bytes = await book.thumbnail(index, 240);
+      // 格子自己持有请求结果，这里只限制可供再次进入目录时复用的成品缓存。
+      images[index] = bytes;
+      if (images.length > 32) {
+        images.remove(images.keys.first);
       }
-      try {
-        result.complete(await book.render(index, 240));
-      } catch (error, stack) {
-        result.completeError(error, stack);
-      }
+      return bytes;
     });
-    return result.future;
+    _thumbnailChain = request.then<void>((_) {}, onError: (Object _) {});
+    return request;
   }
 
   @override
@@ -143,8 +152,9 @@ class _PdfTocTabState extends ConsumerState<PdfTocTab> {
                       (columns - 1) * 12) /
                   columns;
               final height = itemWidth / .7 + 28;
-              final revision = (columns, _descending, _thumbnails);
+              final revision = (book, columns, _descending);
               if (_gridRevision != revision) {
+                if (_gridRevision?.$1 != book) _images = {};
                 _gridRevision = revision;
                 final old = _scroll;
                 final position = _descending
@@ -171,6 +181,7 @@ class _PdfTocTabState extends ConsumerState<PdfTocTab> {
                 controller: _scroll!,
                 child: GridView.builder(
                   controller: _scroll,
+                  addAutomaticKeepAlives: false,
                   padding: const EdgeInsets.fromLTRB(
                     20,
                     8,
@@ -187,15 +198,8 @@ class _PdfTocTabState extends ConsumerState<PdfTocTab> {
                   itemBuilder: (context, position) {
                     final index = _descending ? count - 1 - position : position;
                     final selected = index == session.chapterIndex;
-                    final bytes = _images.putIfAbsent(
-                      index,
-                      () => _thumbnail(book, index),
-                    );
-                    // 有界保留近期请求，离屏缩略图的解码由Flutter图片缓存回收。
-                    while (_images.length > 32) {
-                      _images.remove(_images.keys.first);
-                    }
                     return GtButton.raw(
+                      key: ValueKey(index),
                       onPressed: () => _open(index),
                       child: Column(
                         children: [
@@ -211,24 +215,9 @@ class _PdfTocTabState extends ConsumerState<PdfTocTab> {
                                   width: selected ? 2 : 1,
                                 ),
                               ),
-                              child: FutureBuilder<Uint8List>(
-                                future: bytes,
-                                builder: (_, snapshot) => snapshot.hasData
-                                    ? Image.memory(
-                                        snapshot.data!,
-                                        fit: BoxFit.contain,
-                                        gaplessPlayback: true,
-                                      )
-                                    : snapshot.hasError
-                                    ? IconButton(
-                                        icon: const Icon(Icons.refresh),
-                                        onPressed: () => setState(
-                                          () => _images.remove(index),
-                                        ),
-                                      )
-                                    : const Center(
-                                        child: FittedBox(child: BookLoading()),
-                                      ),
+                              child: _PdfTocThumbnail(
+                                load: (isInGrid) =>
+                                    _thumbnail(book, index, isInGrid),
                               ),
                             ),
                           ),
@@ -253,4 +242,36 @@ class _PdfTocTabState extends ConsumerState<PdfTocTab> {
       ],
     );
   }
+}
+
+class _PdfTocThumbnail extends StatefulWidget {
+  const _PdfTocThumbnail({required this.load});
+
+  final Future<Uint8List?> Function(bool Function() isInGrid) load;
+
+  @override
+  State<_PdfTocThumbnail> createState() => _PdfTocThumbnailState();
+}
+
+class _PdfTocThumbnailState extends State<_PdfTocThumbnail> {
+  late var _image = _load();
+
+  Future<Uint8List?> _load() => widget.load(() => mounted);
+
+  @override
+  Widget build(BuildContext context) => FutureBuilder<Uint8List?>(
+    future: _image,
+    builder: (_, snapshot) {
+      final bytes = snapshot.data;
+      if (bytes != null) return Image.memory(bytes, fit: BoxFit.contain);
+      if (snapshot.connectionState == ConnectionState.done &&
+          snapshot.hasError) {
+        return IconButton(
+          icon: const Icon(Icons.refresh),
+          onPressed: () => setState(() => _image = _load()),
+        );
+      }
+      return const Center(child: FittedBox(child: BookLoading()));
+    },
+  );
 }

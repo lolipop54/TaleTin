@@ -3,6 +3,7 @@ import 'package:taletin/ui/core/widgets/gt_switch.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../../app/di/reading_controls_providers.dart';
 import '../../../../domain/models/reading_settings.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/gt_tokens.dart';
@@ -13,6 +14,7 @@ import 'reader_option_autosave.dart';
 import 'reader_option_route.dart';
 import 'reader_turn_choices.dart';
 import '../../settings/widgets/reading_controls_options.dart';
+import '../../settings/widgets/settings_action.dart';
 
 Future<void> showReaderLayoutOption(
   BuildContext context,
@@ -29,7 +31,15 @@ Future<void> showReaderLayoutOption(
     if (!context.mounted) return;
     // 卡片图片解码完成后才换层，不在新面板打开后逐张补图。
     if (turn) {
-      await ReaderTurnChoices.prepare(context);
+      final fixedView = (await container.read(readingControlsProvider.future))
+          .pdfFixedViewMode;
+      if (!context.mounted) return;
+      await ReaderTurnChoices.prepare(
+        context,
+        effects: settings.freePdfView(fixedView: fixedView)
+            ? PageTurnEffect.pdfFreeViewEffects
+            : PageTurnEffect.values,
+      );
     } else {
       await container.read(readingControlsReadyProvider.future);
     }
@@ -73,30 +83,34 @@ class _LayoutOptionState extends ConsumerState<ReaderLayoutOption> {
   bool _saving = false;
   Future<bool>? _pending;
 
+  PageTurnEffect _effective(PageTurnEffect effect, bool freePdf) =>
+      freePdf ? effect.forPdfFreeView() : effect;
+
   Future<bool> _save() async {
     if (!widget.turn) return await _pending ?? true;
-    if (ref
-            .read(readerSettingsProvider(widget.bookId))
-            .value
-            ?.settings
-            .spreadEnabled ==
-        true) {
+    final current = ref
+        .read(readerSettingsProvider(widget.bookId))
+        .requireValue;
+    if (current.settings.spreadEnabled) return true;
+    final freePdf = current.freePdfView(
+      fixedView: ref.read(pdfFixedViewModeProvider),
+    );
+    final chosen = _effective(_effect, freePdf);
+    // 只打开再收起面板时，保留其他阅读模式正在使用的翻页偏好。
+    if (_effect == current.settings.pageTurnEffect ||
+        chosen == current.settings.pageTurnEffect) {
       return true;
     }
     setState(() => _saving = true);
     try {
       final vm = ref.read(readerSettingsProvider(widget.bookId).notifier);
-      final previous = ref
-          .read(readerSettingsProvider(widget.bookId))
-          .value!
-          .settings;
-      if (_effect != previous.pageTurnEffect) vm.setPageTurnEffect(_effect);
+      vm.setPageTurnEffect(chosen);
       await vm.pendingWrites;
       final saved = ref
           .read(readerSettingsProvider(widget.bookId))
           .value!
           .settings;
-      return saved.pageTurnEffect == _effect;
+      return saved.pageTurnEffect == chosen;
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -109,32 +123,30 @@ class _LayoutOptionState extends ConsumerState<ReaderLayoutOption> {
       title: widget.turn ? '翻页方式' : '更多设置',
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-        child: widget.turn
-            ? ReaderTurnChoices(
-                selected:
-                    ref
-                            .watch(readerSettingsProvider(widget.bookId))
-                            .value
-                            ?.settings
-                            .spreadEnabled ==
-                        true
-                    ? PageTurnEffect.curl
-                    : _effect,
-                curlOnly:
-                    ref
-                        .watch(readerSettingsProvider(widget.bookId))
-                        .value
-                        ?.settings
-                        .spreadEnabled ==
-                    true,
-                onSelect: (effect) {
-                  if (!_saving) setState(() => _effect = effect);
-                },
-              )
-            : _otherOptions(),
+        child: widget.turn ? _turnOptions() : _otherOptions(),
       ),
     ),
   );
+
+  Widget _turnOptions() {
+    final current = ref
+        .watch(readerSettingsProvider(widget.bookId))
+        .requireValue;
+    final freePdf = current.freePdfView(
+      fixedView: ref.watch(pdfFixedViewModeProvider),
+    );
+    final spread = current.settings.spreadEnabled;
+    return ReaderTurnChoices(
+      selected: spread ? PageTurnEffect.curl : _effective(_effect, freePdf),
+      curlOnly: spread,
+      effects: freePdf
+          ? PageTurnEffect.pdfFreeViewEffects
+          : PageTurnEffect.values,
+      onSelect: (effect) {
+        if (!_saving) setState(() => _effect = effect);
+      },
+    );
+  }
 
   Widget _otherOptions() {
     final current = ref
@@ -160,6 +172,18 @@ class _LayoutOptionState extends ConsumerState<ReaderLayoutOption> {
         children: [
           if (!current.pdfMode)
             option('首行缩进', 'reader-indent-switch', saved.indent, vm.setIndent),
+          if (!current.layoutMode.isOriginal)
+            _toggle(
+              '图片查看',
+              'reader-image-viewing-switch',
+              ref.watch(readingControlsProvider).requireValue.imageViewing,
+              (value) => saveSetting(
+                context,
+                () => ref
+                    .read(readingControlsProvider.notifier)
+                    .change(imageViewing: value),
+              ),
+            ),
           if (!current.pdfMode)
             option(
               '书边效果',
@@ -180,7 +204,10 @@ class _LayoutOptionState extends ConsumerState<ReaderLayoutOption> {
               saved.landscapeSpread,
               vm.setLandscapeSpread,
             ),
-          const ReadingControlsOptions(includeKeepAwake: false),
+          ReadingControlsOptions(
+            includeKeepAwake: false,
+            includePdfFixedViewMode: current.pdfMode,
+          ),
         ],
       ),
     );

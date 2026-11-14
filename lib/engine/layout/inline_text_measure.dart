@@ -22,6 +22,7 @@ extension _InlineTextMeasurement on BlockMeasurer {
     required double marginTop,
     required double marginBottom,
     List<_InlineSpec> formulas = const [],
+    List<RubyRange> ruby = const [],
     Set<int> forcedBreaks = const {},
     List<(int, int)> hiddenRanges = const [],
     List<ContainerBoxFrame> containerBoxes = const [],
@@ -70,9 +71,14 @@ extension _InlineTextMeasurement on BlockMeasurer {
       for (final (index, image) in block.inlineImages.indexed)
         _InlineSpec(
           offset: (image.offset + prefixLength).clamp(0, text.length),
-          size: _inlineImageSize(image, width),
+          size: _inlineImageSize(
+            image,
+            width,
+            fallbackStyle: styles.firstOrNull,
+          ),
           resourcePath: image.resourcePath,
           alt: image.alt,
+          noteLink: image.noteLink,
           breakAfter: breakAfterImage(index),
           blockDisplay:
               image.styleId != null &&
@@ -160,7 +166,9 @@ extension _InlineTextMeasurement on BlockMeasurer {
             return result;
           }
 
-          gains.add(math.max(0, widthAt(1) - widthAt(0)));
+          gains.add(
+            segment.ruby == null ? math.max(0, widthAt(1) - widthAt(0)) : 0,
+          );
         }
         // 缩进独立成段时，其后也不能再补一份两端对齐字距。
         final gaps = [
@@ -180,6 +188,7 @@ extension _InlineTextMeasurement on BlockMeasurer {
               size: image.size,
               resourcePath: image.resourcePath,
               alt: image.alt,
+              noteLink: image.noteLink,
               formula: image.formula,
               blockDisplay: image.blockDisplay,
               breakAfter: image.breakAfter,
@@ -202,9 +211,10 @@ extension _InlineTextMeasurement on BlockMeasurer {
                 end: old.end,
                 left: old.left + shift,
                 width: old.width + gains[i] * spacing,
-                letterSpacing: spacing,
+                letterSpacing: old.ruby == null ? spacing : 0,
                 baseline: old.baseline,
                 top: old.top,
+                ruby: old.ruby,
               );
               shift += (gains[i] + gaps[i]) * spacing;
               return next;
@@ -219,6 +229,11 @@ extension _InlineTextMeasurement on BlockMeasurer {
           .where((s) => s.start < cursor && s.end > lineStart)
           .toList();
       var above = textAscent;
+      for (final segment in segments) {
+        if (segment.ruby case final label?) {
+          above = math.max(above, segment.baseline + label.height);
+        }
+      }
       var below = textHeight > 0 ? contentHeight - textAscent : 0.0;
       final rowBoxes = <InlineBoxSpan, Rect>{};
       for (final span in active.reversed) {
@@ -308,11 +323,16 @@ extension _InlineTextMeasurement on BlockMeasurer {
               MeasuredSegment(
                 start: s.start,
                 end: s.end,
-                left: s.left,
+                left:
+                    s.left +
+                    (s.ruby == null
+                        ? 0
+                        : math.max(0, s.ruby!.width - s.width) / 2),
                 width: s.width,
                 letterSpacing: s.letterSpacing,
                 baseline: s.baseline,
                 top: textAscent - s.baseline,
+                ruby: s.ruby,
               ),
           ],
         ),
@@ -348,6 +368,7 @@ extension _InlineTextMeasurement on BlockMeasurer {
             size: image.size,
             resourcePath: image.resourcePath,
             alt: image.alt,
+            noteLink: image.noteLink,
             formula: image.formula,
           ),
         );
@@ -363,6 +384,63 @@ extension _InlineTextMeasurement on BlockMeasurer {
       hasContent = false;
       segments = <MeasuredSegment>[];
       pending = <_InlineSpec>[];
+    }
+
+    void appendRuby(RubyRange range, int from) {
+      final end = range.baseEnd - sourceOffset + prefixLength;
+      final base = TextPainter(
+        text: TextSpan(children: BlockMeasurer._slice(runs, styles, from, end)),
+        textDirection: TextDirection.ltr,
+        textScaler: options.textScaler,
+      )..layout();
+      final metrics = base.computeLineMetrics().first;
+      final labelStart = range.labelStart - sourceOffset + prefixLength;
+      final labelEnd = range.labelEnd - sourceOffset + prefixLength;
+      final annotation =
+          BlockMeasurer._slice(runs, styles, labelStart, labelEnd).first
+              as TextSpan;
+      final baseStyle =
+          (BlockMeasurer._slice(runs, styles, from, end).first as TextSpan)
+              .style!;
+      final fontSize = math.min(
+        (baseStyle.fontSize ?? baseSize) * .55,
+        annotation.style?.fontSize ?? baseSize,
+      );
+      final family = annotation.style?.fontFamily;
+      final labelText = text.substring(labelStart, labelEnd);
+      final painter = RubyLabel.painter(
+        labelText,
+        fontSize,
+        family,
+        options.textScaler,
+      );
+      final label = RubyLabel(
+        labelText,
+        fontSize,
+        family,
+        painter.width,
+        painter.height,
+      );
+      final occupied = math.max(base.width, label.width);
+      if (hasContent && lineX + occupied > width + .1) finishLine();
+      segments.add(
+        MeasuredSegment(
+          start: from,
+          end: end,
+          left: lineX,
+          width: base.width,
+          baseline: metrics.baseline,
+          ruby: label,
+        ),
+      );
+      lineX += occupied;
+      textHeight = math.max(textHeight, metrics.height);
+      textAscent = math.max(textAscent, metrics.baseline);
+      textDescent = math.max(textDescent, metrics.height - metrics.baseline);
+      hasContent = true;
+      cursor = range.end - sourceOffset + prefixLength;
+      base.dispose();
+      painter.dispose();
     }
 
     void appendText(int from, int to) {
@@ -516,7 +594,12 @@ extension _InlineTextMeasurement on BlockMeasurer {
       for (var i = 0; i < text.length; i++)
         if (text[i] == '\n') i,
     ];
+    final rubyAt = {
+      for (final range in ruby)
+        range.start - sourceOffset + prefixLength: range,
+    };
     final events = <int>{
+      ...rubyAt.keys,
       for (final f in formulas) ...[f.offset, f.formula!.end],
       ...newlines,
       for (final (a, b) in hiddenRanges) ...[a, b],
@@ -525,6 +608,7 @@ extension _InlineTextMeasurement on BlockMeasurer {
       for (final span in spans) ...[span.start, span.end],
     }.toList()..sort();
     for (final offset in events) {
+      if (offset < cursor) continue;
       if (offset > cursor) {
         if (hiddenRanges.any((r) => r.$1 <= cursor && offset <= r.$2) ||
             formulas.any(
@@ -579,6 +663,7 @@ extension _InlineTextMeasurement on BlockMeasurer {
             size: image.size,
             resourcePath: image.resourcePath,
             alt: image.alt,
+            noteLink: image.noteLink,
             left: lineX,
             formula: image.formula,
           ),
@@ -599,6 +684,7 @@ extension _InlineTextMeasurement on BlockMeasurer {
           }
         }
       }
+      if (rubyAt[offset] case final range?) appendRuby(range, offset);
     }
     if (cursor < text.length) appendText(cursor, text.length);
     finishLine();
@@ -654,42 +740,6 @@ extension _InlineTextMeasurement on BlockMeasurer {
     );
   }
 
-  /// 行内图片的显示尺寸：优先实际像素，再应用书里的 width／max-width，
-  /// 最后保证不超过正文宽度和一页高度。
-  Size _inlineImageSize(InlineImage image, double maxWidth) {
-    final rawWidth = (image.width ?? 0).toDouble();
-    final rawHeight = (image.height ?? 0).toDouble();
-    final em = options.settings.fontSize.toDouble();
-    // 尺寸嗅探失败时按一个字大小兜底，至少能看见占位
-    var width = rawWidth > 0 ? rawWidth : em;
-    var height = rawHeight > 0 ? rawHeight : width;
-    final computed = image.styleId == null ? null : styleTable?[image.styleId!];
-    double? sizeOf(Length? value) => value == null || value.isAuto
-        ? null
-        : value.resolve(_lengthContext(computed!, maxWidth));
-    final explicit = computed == null
-        ? _imageLength(image.imageWidth, maxWidth)
-        : sizeOf(computed.size.width);
-    if (explicit != null && explicit > 0) {
-      final ratio = rawWidth > 0 ? explicit / rawWidth : 1.0;
-      width = explicit;
-      height = rawHeight > 0 ? rawHeight * ratio : explicit;
-    }
-    final cap = computed == null
-        ? _imageLength(image.imageMaxWidth, maxWidth)
-        : sizeOf(computed.size.maxWidth);
-    if (cap != null && cap > 0 && width > cap) {
-      final ratio = cap / width;
-      width = cap;
-      height *= ratio;
-    }
-    var scale = math.min(1.0, maxWidth / width);
-    if (height * scale > options.contentHeight) {
-      scale = math.min(scale, options.contentHeight / height);
-    }
-    return Size(width * scale, height * scale);
-  }
-
   /// 一行基准高度（图片单独占一行时用它作为最小行高）。
   double _lineHeightOf(TextStyle? style) {
     if (style == null) {
@@ -717,6 +767,7 @@ class _InlineSpec {
     this.blockDisplay = false,
     this.breakAfter = false,
     this.formula,
+    this.noteLink,
   });
 
   final int offset;
@@ -726,6 +777,7 @@ class _InlineSpec {
   final String resourcePath;
   final String? alt;
   final FormulaGeometry? formula;
+  final String? noteLink;
 
   /// 在这一行里的横向起点（测量过程中填入）。
   final double left;

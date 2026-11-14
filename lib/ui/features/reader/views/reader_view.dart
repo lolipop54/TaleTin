@@ -32,6 +32,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../app/di/app_providers.dart';
+import '../../../../app/di/completion_providers.dart';
 import '../../../../app/di/reading_controls_providers.dart';
 import '../../../../platform/channels/reading_window.dart';
 import '../widgets/reader_leave.dart';

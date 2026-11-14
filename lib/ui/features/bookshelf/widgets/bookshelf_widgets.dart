@@ -14,7 +14,9 @@ import '../../../core/widgets/decorations.dart';
 import '../view_models/bookshelf_view_model.dart';
 import '../../../core/widgets/gt_icon.dart';
 import '../../../../domain/models/book.dart';
+import '../../../../platform/channels/system_toast.dart';
 import 'invalid_book_dialog.dart';
+import 'book_group_sheet.dart';
 
 /// 书架网格条目：封面 + 角标 + 书名 + 作者。
 ///
@@ -263,6 +265,14 @@ class ShelfFilterBar extends ConsumerWidget {
     ];
 
     final groups = ref.watch(bookGroupsProvider).value ?? const [];
+    void editGroups() {
+      if (ref.read(bookshelfProvider).selectionMode) {
+        SystemToast.show('请先退出多选，再编辑分组').ignore();
+        return;
+      }
+      showBookGroupSheet(context, ref);
+    }
+
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: GtSize.shelfPagePadding),
       child: SingleChildScrollView(
@@ -276,6 +286,7 @@ class ShelfFilterBar extends ConsumerWidget {
                 label: tab.value,
                 selected: state.groupId == null && state.filter == tab.key,
                 onTap: () => vm.setFilter(tab.key),
+                onLongPress: editGroups,
               ),
               if (tab != tabs.last || groups.isNotEmpty) _tabDivider(colors),
             ],
@@ -285,6 +296,7 @@ class ShelfFilterBar extends ConsumerWidget {
                 label: group.name,
                 selected: state.groupId == group.id,
                 onTap: () => vm.setGroup(group.id),
+                onLongPress: editGroups,
               ),
               if (group != groups.last) _tabDivider(colors),
             ],
@@ -308,11 +320,13 @@ class _FilterTab extends StatelessWidget {
     required this.label,
     required this.selected,
     required this.onTap,
+    required this.onLongPress,
   });
 
   final String label;
   final bool selected;
   final VoidCallback onTap;
+  final VoidCallback onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -320,6 +334,7 @@ class _FilterTab extends StatelessWidget {
     final color = selected ? colors.actionPrimary : colors.textSecondary;
     return GtButton.raw(
       onPressed: onTap,
+      onLongPress: onLongPress,
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [

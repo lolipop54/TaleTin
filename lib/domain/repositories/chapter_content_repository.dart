@@ -6,6 +6,8 @@
 /// - 目录：`library/<bookId>/content/<版本>/manifest.json` 的嵌套 `toc`
 library;
 
+import 'dart:typed_data';
+
 import '../models/book_document.dart';
 import '../models/locator.dart';
 import '../services/toc_entry_index.dart';
@@ -53,6 +55,17 @@ abstract class ChapterContentRepository {
     Chapter chapter, {
     bool textOnly = false,
   });
+
+  /// 有磁盘缓存的仓库核验来源后优先读图，其他仓库沿用按页渲染。
+  Future<Uint8List> pdfThumbnail(
+    String bookId,
+    Chapter page,
+    int width,
+    Future<Uint8List> Function() render,
+  ) async {
+    await chapter(bookId, page, textOnly: true);
+    return render();
+  }
 
   /// 简化分页需要正文的精确排版摘要。文件仓库可复用写缓存的字节。
   Future<ChapterContent> chapterForProgressLayout(

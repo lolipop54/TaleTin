@@ -1,6 +1,6 @@
 part of '../views/reader_view.dart';
 
-/// 控制层顶部栏：返回、书名、书签、搜索和更多。
+/// 控制层顶部栏：返回、书名、书签、搜索和标记已读。
 class _TopBar extends ConsumerWidget {
   const _TopBar({
     required this.visible,
@@ -18,26 +18,16 @@ class _TopBar extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final session = ref.watch(readerSessionProvider(bookId)).value;
     final anchor = session?.currentAnchor;
-    final currentBookmark = ref.watch(currentBookmarkProvider(bookId));
-    // 黑色轮廓映射为主题文字，白底映射为阅读底色；透明像素仍保持透明。
-    // 用户替换成带白底的 PNG 时，不能用 srcIn 将整张图染成实心方块。
-    List<double> tint(double paper, double ink) => [
-      (paper - ink) * .2126,
-      (paper - ink) * .7152,
-      (paper - ink) * .0722,
-      0,
-      ink * 255,
-    ];
-    final iconTint = ColorFilter.matrix([
-      ...tint(theme.background.r, theme.primary.r),
-      ...tint(theme.background.g, theme.primary.g),
-      ...tint(theme.background.b, theme.primary.b),
-      0,
-      0,
-      0,
-      1,
-      0,
-    ]);
+    final hasBookmark = ref.watch(currentBookmarkProvider(bookId)) != null;
+    final bookFinished = ref.watch(
+      bookCompletionsProvider.select(
+        (records) =>
+            records.value?.any(
+              (record) => record.bookId == bookId && record.active,
+            ) ??
+            false,
+      ),
+    );
     // 每个开关只管自己那一侧：显示顶部状态栏时，状态栏所在的边留白；
     // 隐藏后那一边（含横屏同一侧的挖孔）一起归零，内容直接贴到屏幕边缘。
     final bars = ref.watch(readingControlsProvider).value;
@@ -168,18 +158,18 @@ class _TopBar extends ConsumerWidget {
                         ),
                       ),
                     ),
-                    // 书签、搜索、已读三颗统一 36×36 触摸范围，不再各占 48×48。
+                    // 三个操作共用紧凑触摸范围与 24dp 图标。
                     GtButton.icon(
                       style: GtButton.compactIconStyle,
                       onPressed: anchor == null
                           ? null
                           : () => toggleReaderBookmark(ref, bookId),
                       icon: GtIcon(
-                        GtIcons.bookmark,
+                        hasBookmark ? GtIcons.bookmarkFilled : GtIcons.bookmark,
                         size: 24,
-                        color: currentBookmark == null
-                            ? theme.primary
-                            : context.gtColors.actionPrimary,
+                        color: hasBookmark
+                            ? bookmarkRibbonColor
+                            : theme.primary,
                       ),
                     ),
                     if (!ref.watch(pdfModeProvider(bookId)))
@@ -204,17 +194,21 @@ class _TopBar extends ConsumerWidget {
                       tooltip: '标记或撤销已读',
                       onPressed: () =>
                           confirmBookCompletion(context, ref, bookId),
-                      icon: ColorFiltered(
-                        colorFilter: iconTint,
-                        child: Image.asset(
-                          'assets/icons_used/已读.webp',
-                          width: 36,
-                          height: 36,
-                          cacheWidth:
-                              (24 * MediaQuery.devicePixelRatioOf(context))
-                                  .ceil(),
-                        ),
-                      ),
+                      // SVG 的主题色只替换纸张和勾的绿色，保留勾周围的白边。
+                      icon: bookFinished
+                          ? SvgPicture.asset(
+                              'assets/icons/document-check-filled.svg',
+                              width: 24,
+                              height: 24,
+                              theme: const SvgTheme(
+                                currentColor: GtPalette.completed,
+                              ),
+                            )
+                          : GtIcon(
+                              GtIcons.documentCheck,
+                              size: 24,
+                              color: theme.primary,
+                            ),
                     ),
                   ],
                 ),

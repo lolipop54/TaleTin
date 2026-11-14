@@ -3,11 +3,15 @@ import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../engine/normalization/text_anchor.dart';
+import '../../../../app/di/reading_controls_providers.dart';
 import '../../../../core/diagnostics/reader_work_trace.dart';
 import '../../../../data/services/pdf_book_controller.dart';
+import '../../../../domain/models/reading_settings.dart';
+import '../../../core/theme/gt_tokens.dart';
 import '../../../core/widgets/book_loading.dart';
 import '../view_models/automatic_reading.dart';
 import '../view_models/pdf_book_provider.dart';
@@ -91,6 +95,17 @@ class PdfReaderAreaState extends ConsumerState<PdfReaderArea> {
     final pdf = ref.watch(pdfBookProvider(widget.bookId));
     final view = ref.watch(pdfViewportProvider(widget.bookId));
     final controls = ref.watch(readerProvider);
+    final fixedView = ref.watch(pdfFixedViewModeProvider);
+    ref.listen(pdfFixedViewModeProvider, (_, enabled) {
+      if (enabled || !view.editing) return;
+      if (_scroll.currentState case final scroll?) {
+        unawaited(scroll.confirmView(false, clampHorizontal: true));
+      } else {
+        view.confirm();
+      }
+    });
+    final showOverlay =
+        !controls.controlsVisible && controls.panel == ReaderPanel.none;
     return ListenableBuilder(
       listenable: view,
       builder: (_, _) => Stack(
@@ -98,14 +113,22 @@ class PdfReaderAreaState extends ConsumerState<PdfReaderArea> {
         children: [
           pdf.when(
             data: (book) => widget.session.scrolling
-                ? _PdfScroll(key: _scroll, parent: widget, book: book)
-                : _PdfPaged(key: _paged, parent: widget, book: book),
+                ? _PdfScroll(
+                    key: _scroll,
+                    parent: widget,
+                    book: book,
+                    fixedView: fixedView,
+                  )
+                : _PdfPaged(
+                    key: _paged,
+                    parent: widget,
+                    book: book,
+                    fixedView: fixedView,
+                  ),
             loading: () => const Center(child: BookLoading()),
             error: (e, s) => Center(child: Text('PDF无法读取：$e')),
           ),
-          if (view.menuVisible &&
-              !controls.controlsVisible &&
-              controls.panel == ReaderPanel.none)
+          if (view.menuVisible && showOverlay)
             PdfZoomMenu(
               view: view,
               colors: widget.settings.theme.controlsColors,
@@ -124,9 +147,15 @@ class PdfReaderAreaState extends ConsumerState<PdfReaderArea> {
 }
 
 class _PdfPaged extends ConsumerStatefulWidget {
-  const _PdfPaged({super.key, required this.parent, required this.book});
+  const _PdfPaged({
+    super.key,
+    required this.parent,
+    required this.book,
+    required this.fixedView,
+  });
   final PdfReaderArea parent;
   final PdfBookController book;
+  final bool fixedView;
   @override
   ConsumerState<_PdfPaged> createState() => _PdfPagedState();
 }
@@ -138,6 +167,8 @@ class _PdfPagedState extends ConsumerState<_PdfPaged> {
   final _pending = <int, Future<ui.Image>>{};
   final _information = <int, PageInformation>{};
   Size _size = Size.zero;
+  double _edgeTravel = 0;
+  bool _edgeDragging = false;
   int _index = -1, _version = 0, _width = 0;
   Object? _requested;
   bool _loading = true;
@@ -147,9 +178,138 @@ class _PdfPagedState extends ConsumerState<_PdfPaged> {
   ReaderSessionNotifier get session =>
       ref.read(readerSessionProvider(parent.bookId).notifier);
   PdfViewport get view => ref.read(pdfViewportProvider(parent.bookId));
+  PageTurnEffect get _effect => widget.fixedView
+      ? parent.settings.settings.pageTurnEffect
+      : parent.settings.settings.pageTurnEffect.forPdfFreeView();
 
   Future<void> volumeTurn(bool forward) async {
-    if (view.canTurn) await PageTurnArea.turn(_turn, forward);
+    if (ready && view.canTurn && (widget.fixedView || _atEdge(forward))) {
+      await PageTurnArea.turn(_turn, forward);
+    }
+  }
+
+  Rect _bounds(int index) {
+    final info = _info(index);
+    return Rect.fromLTWH(
+      0,
+      info.top,
+      _size.width,
+      math.max(1, _size.height - info.top - info.bottom),
+    );
+  }
+
+  Rect _pageRect(int index) {
+    final page = widget.book.file.document.pages[index];
+    final bounds = _bounds(index);
+    return Alignment.center.inscribe(
+      applyBoxFit(
+        BoxFit.contain,
+        Size(page.width, page.height),
+        bounds.size,
+      ).destination,
+      bounds,
+    );
+  }
+
+  Offset _limits(int index, double scale) {
+    final bounds = _bounds(index);
+    final page = _pageRect(index);
+    return Offset(
+      math.max(0, (page.width * scale - bounds.width) / 2),
+      math.max(0, (page.height * scale - bounds.height) / 2),
+    );
+  }
+
+  Offset _clampOffset(Offset offset, Offset limit) => Offset(
+    offset.dx.clamp(-limit.dx, limit.dx),
+    offset.dy.clamp(-limit.dy, limit.dy),
+  );
+
+  Offset get _currentOffset => widget.fixedView
+      ? view.offset
+      : _clampOffset(view.offset, _limits(_index, view.scale));
+
+  Offset _landingOffset(int index) {
+    if (widget.fixedView) return view.offset;
+    final limit = _limits(index, view.scale);
+    return _clampOffset(
+      Offset(index > _index ? limit.dx : -limit.dx, _currentOffset.dy),
+      limit,
+    );
+  }
+
+  bool _atEdge(bool forward) {
+    final limit = _limits(_index, view.scale).dx;
+    return (forward ? _currentOffset.dx + limit : limit - _currentOffset.dx) <=
+        .5;
+  }
+
+  void _zoom(double scale, Offset from, Offset to, bool singleFinger) {
+    if (!ready) return;
+    final center = _bounds(_index).center;
+    final offset =
+        to - center - (from - center - _currentOffset) * (scale / view.scale);
+    if (widget.fixedView) {
+      final limit = _size.center(Offset.zero) * scale;
+      final translation = singleFinger ? view.fixedDrag(to - from) : offset;
+      view.update(scale, _clampOffset(translation, limit));
+    } else {
+      view.update(scale, _clampOffset(offset, _limits(_index, scale)));
+    }
+  }
+
+  void _pan(Offset delta, Offset position) {
+    if (!ready) return;
+    if (_edgeDragging) {
+      final next = _edgeTravel + delta.dx;
+      final consumed = next.sign == _edgeTravel.sign ? delta.dx : -_edgeTravel;
+      _edgeTravel += consumed;
+      PageTurnArea.updateExternalDrag(_turn, position, consumed);
+      if (_edgeTravel != 0) return;
+      // 拖回到交接点时，剩余的位移重新用来在当前页内平移。
+      PageTurnArea.cancelGesture(_turn);
+      _edgeDragging = false;
+      delta = Offset(delta.dx - consumed, delta.dy);
+    }
+    final before = _currentOffset;
+    final wanted = before + delta;
+    final after = _clampOffset(wanted, _limits(_index, view.scale));
+    final overflow = wanted.dx - after.dx;
+    if (after != before) {
+      // 同一个触点可能同时拖完页内并越过边缘。先同步当前画面，
+      // 再让翻页控件使用越过边缘后的这段位移。
+      view.update(view.scale, after);
+    }
+    final target = _index + (overflow < 0 ? 1 : -1);
+    if (overflow.abs() <= delta.dy.abs() ||
+        target < 0 ||
+        target >= widget.book.chapters.length) {
+      return;
+    }
+    _edgeDragging = PageTurnArea.beginExternalDrag(
+      _turn,
+      position - Offset(overflow, 0),
+    );
+    if (_edgeDragging) {
+      _edgeTravel = overflow;
+      PageTurnArea.updateExternalDrag(
+        _turn,
+        position,
+        overflow,
+        neighbour: _images.containsKey(target) ? _frame(target) : null,
+      );
+    }
+  }
+
+  void _finishPan(bool cancelled, bool startingZoom) {
+    _edgeTravel = 0;
+    if (_edgeDragging) {
+      _edgeDragging = false;
+      // 第二指按下由 onBegin 立即取消，普通触摸取消走平移回弹。
+      if (!startingZoom) {
+        unawaited(PageTurnArea.endExternalDrag(_turn, cancelled: cancelled));
+      }
+    }
   }
 
   Future<ui.Image> _image(int index) {
@@ -283,26 +443,22 @@ class _PdfPagedState extends ConsumerState<_PdfPaged> {
     );
   }
 
-  Widget _frame(int index) => CustomPaint(
-    painter: _PdfPagePainter(
-      _images[index]!,
-      _info(index),
-      parent.settings.theme.background,
-      view.scale,
-      view.offset,
-    ),
+  _PdfPagePainter _painter(int index) => _PdfPagePainter(
+    _images[index]!,
+    _info(index),
+    parent.settings.theme.background,
+    _bounds(index),
+    _pageRect(index),
+    view.scale,
+    index == _index ? _currentOffset : _landingOffset(index),
   );
+
+  Widget _frame(int index) => CustomPaint(painter: _painter(index));
 
   ui.Image _raster(int index) {
     final ratio = MediaQuery.devicePixelRatioOf(context).clamp(1.0, 2.0);
     final recorder = ui.PictureRecorder();
-    _PdfPagePainter(
-      _images[index]!,
-      _info(index),
-      parent.settings.theme.background,
-      view.scale,
-      view.offset,
-    ).paint(Canvas(recorder)..scale(ratio), _size);
+    _painter(index).paint(Canvas(recorder)..scale(ratio), _size);
     final picture = recorder.endRecording();
     try {
       return picture.toImageSync(
@@ -315,16 +471,18 @@ class _PdfPagedState extends ConsumerState<_PdfPaged> {
   }
 
   Future<bool> _commit(int index) async {
-    if (!view.canTurn) return false;
+    if (!ready || !view.canTurn) return false;
     if (index < 0 || index >= widget.book.chapters.length) {
       ref
           .read(readerProvider.notifier)
           .showNotice(index < 0 ? '已到全书开头' : '已到全书末尾');
       return false;
     }
+    final version = _version;
     await _image(index);
-    if (!mounted || !view.canTurn) return false;
-    ++_version;
+    if (!mounted || version != _version || !view.canTurn) return false;
+    final landing = _landingOffset(index);
+    final commitVersion = ++_version;
     ref
         .read(readerProgressReturnProvider(parent.bookId).notifier)
         .pageChanged();
@@ -332,9 +490,11 @@ class _PdfPagedState extends ConsumerState<_PdfPaged> {
       _index = index;
       _loading = false;
     });
+    view.confirm(landing: landing);
     await WidgetsBinding.instance.endOfFrame;
-    if (!mounted) return false;
+    if (!mounted || commitVersion != _version) return false;
     await session.commitPdfPosition(index);
+    if (!mounted || commitVersion != _version) return true;
     // 自己提交引起的会话更新不是另一次外部跳转。
     final s = ref.read(readerSessionProvider(parent.bookId)).requireValue;
     _requested = (
@@ -374,6 +534,12 @@ class _PdfPagedState extends ConsumerState<_PdfPaged> {
       }
       return PdfZoomSurface(
         view: view,
+        fixedView: widget.fixedView,
+        canStart: () => ready && !PageTurnArea.settling(_turn),
+        onZoom: _zoom,
+        onPan: _pan,
+        onPanStart: () => unawaited(session.beginManualReading()),
+        onPanEnd: _finishPan,
         onBegin: () {
           PageTurnArea.cancelGesture(_turn);
           unawaited(session.beginManualReading());
@@ -422,9 +588,19 @@ class _PdfPagedState extends ConsumerState<_PdfPaged> {
                 ? _frame(_index + 1)
                 : null,
             turnId: _index,
-            effect: parent.settings.settings.pageTurnEffect,
-            inputRevision: (_requested, view.revision),
-            inputAllowed: () => view.canTurn,
+            effect: _effect,
+            inputRevision: (_requested, view.revision, widget.fixedView),
+            inputAllowed: () => ready && view.canTurn,
+            dragEnabled: widget.fixedView || view.scale <= 1,
+            requireDragDistance: !widget.fixedView,
+            onTapIntercept: widget.fixedView
+                ? null
+                : (position) async =>
+                      position.dx < _size.width * GtReadingTapZones.previousEdge
+                      ? !_atEdge(false)
+                      : position.dx >
+                                _size.width * GtReadingTapZones.nextEdge &&
+                            !_atEdge(true),
             traceLabel: 'pdf',
             onCenterTap: () => ref
                 .read(automaticReadingProvider(parent.bookId).notifier)
@@ -437,21 +613,27 @@ class _PdfPagedState extends ConsumerState<_PdfPaged> {
               final target =
                   _index + (direction == PageTurnDirection.forward ? 1 : -1);
               if (target < 0 || target > last) return null;
+              final alreadyReady = _images.containsKey(target);
               await _image(target);
+              if (!alreadyReady && mounted) setState(() {});
               return mounted ? _frame(target) : null;
             },
-            prepareFold: (direction) async {
-              final backward = direction == PageTurnDirection.backward;
-              final target = _index + (backward ? -1 : 1);
-              if (target < 0 || target > last) return null;
-              await _image(target);
-              return FoldFrames.images(
-                _raster(_index),
-                _raster(target),
-                _size,
-                backward: backward,
-                paper: parent.settings.theme.background,
-              );
+            // 平移直接绘制已解码位图。拖到边缘的同一帧就能更新两页的位置。
+            prepareFold: switch (_effect) {
+              PageTurnEffect.curl || PageTurnEffect.cover => (direction) async {
+                final backward = direction == PageTurnDirection.backward;
+                final target = _index + (backward ? -1 : 1);
+                if (target < 0 || target > last) return null;
+                await _image(target);
+                return FoldFrames.images(
+                  _raster(_index),
+                  _raster(target),
+                  _size,
+                  backward: backward,
+                  paper: parent.settings.theme.background,
+                );
+              },
+              _ => null,
             },
           ),
         ),
@@ -461,10 +643,19 @@ class _PdfPagedState extends ConsumerState<_PdfPaged> {
 }
 
 class _PdfPagePainter extends CustomPainter {
-  _PdfPagePainter(this.image, this.info, this.paper, this.scale, this.offset);
+  _PdfPagePainter(
+    this.image,
+    this.info,
+    this.paper,
+    this.bounds,
+    this.rect,
+    this.scale,
+    this.offset,
+  );
   final ui.Image image;
   final PageInformation info;
   final Color paper;
+  final Rect bounds, rect;
   final double scale;
   final Offset offset;
   @override
@@ -473,29 +664,16 @@ class _PdfPagePainter extends CustomPainter {
     canvas.save();
     canvas.clipRect(Offset.zero & size);
     canvas.drawColor(paper, BlendMode.src);
-    final available = Size(
-      size.width,
-      math.max(1, size.height - info.top - info.bottom),
-    );
-    final fit = applyBoxFit(
-      BoxFit.contain,
-      Size(image.width.toDouble(), image.height.toDouble()),
-      available,
-    );
-    final rect = Alignment.center.inscribe(
-      fit.destination,
-      Offset(0, info.top) & available,
-    );
     canvas.save();
-    canvas.clipRect(Offset(0, info.top) & available);
-    final center = size.center(Offset.zero);
-    canvas.translate(center.dx + offset.dx, center.dy + offset.dy);
-    canvas.scale(scale);
-    canvas.translate(-center.dx, -center.dy);
+    canvas.clipRect(bounds);
     canvas.drawImageRect(
       image,
       Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
-      rect,
+      Rect.fromCenter(
+        center: bounds.center + offset,
+        width: rect.width * scale,
+        height: rect.height * scale,
+      ),
       Paint()..filterQuality = FilterQuality.medium,
     );
     canvas.restore();
@@ -507,6 +685,8 @@ class _PdfPagePainter extends CustomPainter {
   bool shouldRepaint(_PdfPagePainter old) =>
       old.image != image ||
       old.info.paintingKey != info.paintingKey ||
+      old.bounds != bounds ||
+      old.rect != rect ||
       old.scale != scale ||
       old.offset != offset ||
       old.paper != paper;
