@@ -35,6 +35,7 @@ export 'reader_session_state.dart';
 
 import '../../../../app/di/app_providers.dart';
 import '../../../../core/diagnostics/reader_work_trace.dart';
+import '../../../../core/diagnostics/pdf_opening_diagnostics.dart';
 import '../../../../core/diagnostics/bookmark_trace.dart';
 import '../../../../app/di/source_book_providers.dart';
 import '../../../../app/di/app_font_providers.dart';
@@ -242,7 +243,14 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
   Locator? _pendingAnchor;
 
   @override
-  Future<ReaderSession> build() => traceTurnStep('load session', () async {
+  Future<ReaderSession> build() => traceReaderWork(
+    'reader.prepare_session',
+    _buildSession,
+    {'bookId': bookId},
+  );
+
+  Future<ReaderSession>
+  _buildSession() => traceTurnStep('load session', () async {
     _confirmedPage = null;
     _confirmedVisualPosition = null;
     listenSelf((_, next) => _retainDisplayLayout(next.value));
@@ -357,6 +365,15 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
     }
     // 只读当前章正文；整书按需读取，不整本进内存
     final currentChapter = chapters[chapterIndex];
+    if (book.format == BookFormat.pdf) {
+      PdfOpeningDiagnostics.readingPage(
+        bookId,
+        page: chapterIndex + 1,
+        pageCount: chapters.length,
+        mode: _mode.isOriginal ? 'pdf' : 'ebook',
+        scrolling: scrolling,
+      );
+    }
     final indexedTxt = book.format == BookFormat.txt
         ? await contents.txtChapterSource(bookId, currentChapter)
         : null;
@@ -767,19 +784,4 @@ final annotationsProvider = StreamProvider.family<List<Annotation>, String>((
   bookId,
 ) {
   return ref.watch(annotationRepositoryProvider).watchAnnotations(bookId);
-});
-
-/// 这本书的真实目录（导入时写进 `content/<版本>/manifest.json`）。
-///
-/// 不分卷的书是「一层叶子」，带卷的书是「卷 → 章」两层；读不出来时返回空表，
-/// 界面降级为按章节平铺（设计文档 6.2）。
-final bookTocProvider = FutureProvider.family<List<TocNode>, String>((
-  ref,
-  bookId,
-) async {
-  final book = await ref.watch(bookRepositoryProvider).findById(bookId);
-  if (book == null) return const [];
-  return ref
-      .read(chapterContentRepositoryProvider)
-      .toc(bookId, book.contentVersion);
 });

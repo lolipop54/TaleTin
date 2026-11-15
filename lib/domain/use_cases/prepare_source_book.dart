@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:path/path.dart' as p;
 
+import '../../core/diagnostics/pdf_opening_diagnostics.dart';
 import '../../core/diagnostics/reader_work_trace.dart';
 
 import '../models/book.dart';
@@ -36,6 +37,10 @@ class PrepareSourceBook {
 
   Future<Book> _prepare(String id) async {
     var book = await books.findById(id);
+    PdfOpeningDiagnostics.identify(
+      id,
+      book?.format == BookFormat.pdf ? book!.sizeBytes : null,
+    );
     if (book != null) {
       // 显式重新解析也可能正在发布文件；等同一任务完成后再看新索引和数据库。
       final pending = importer.pendingForBook(book);
@@ -62,19 +67,25 @@ class PrepareSourceBook {
       return book;
     }
     final file = File(await sourcePath(book));
-    final result = await importer.importOne(
-      PickedDocument(
-        uri: file.uri.toString(),
-        name: book.sourceFileName ?? p.basename(file.path),
-        sizeBytes: await file.length(),
+    final request = PickedDocument(
+      uri: file.uri.toString(),
+      name: book.sourceFileName ?? p.basename(file.path),
+      sizeBytes: await file.length(),
+    );
+    final choice = await txtChoice?.call(book);
+    final result = await traceReaderWork(
+      'source.reparse',
+      () => importer.importOne(
+        request,
+        onProgress: (_) {},
+        cancel: CancelToken(),
+        reparse: true,
+        replaceBookId: id,
+        onlyIfPresent: true,
+        priority: true,
+        txtChoice: choice,
       ),
-      onProgress: (_) {},
-      cancel: CancelToken(),
-      reparse: true,
-      replaceBookId: id,
-      onlyIfPresent: true,
-      priority: true,
-      txtChoice: await txtChoice?.call(book),
+      {'bookId': id},
     );
     if (result.stage != ImportStage.done) {
       throw result.failure ?? StateError('更新失败，请重试');

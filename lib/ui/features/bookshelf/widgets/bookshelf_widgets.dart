@@ -144,6 +144,7 @@ class BookTile extends ConsumerWidget {
                           BookCover(
                             bookId: book.id,
                             format: book.format,
+                            pinned: book.isPinned,
                             title: book.title,
                             author: book.author,
                             imagePath: coverFile,
@@ -195,7 +196,7 @@ class BookTile extends ConsumerWidget {
                     ),
                     const SizedBox(height: GtSpacing.s1),
                     Text(
-                      book.author.isEmpty ? '未知作者' : book.author,
+                      book.authorLabel,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: GtText.caption(colors.textMuted).copyWith(

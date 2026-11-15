@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:developer' show Timeline;
 import 'dart:isolate';
 
+import 'pdf_opening_diagnostics.dart';
 import 'reader_exit_diagnostics.dart';
 import 'reader_turn_diagnostics.dart';
 
@@ -18,6 +19,9 @@ abstract final class BookOpeningTrace {
     String entry = 'route',
     Map<String, Object?> details = const {},
   }) {
+    if (entry == 'route' || details['format'] == 'pdf') {
+      PdfOpeningDiagnostics.begin(bookId, bytes: details['bytes'] as int?);
+    }
     if (!readerWorkTraceEnabled) return;
     if (entry == 'route' && _active.containsKey(bookId)) return;
     _active.remove(bookId)?.finish(status: 'replaced');
@@ -29,10 +33,12 @@ abstract final class BookOpeningTrace {
   }
 
   static void mark(String bookId, String phase) {
+    PdfOpeningDiagnostics.mark(bookId, phase);
     if (readerWorkTraceEnabled) _active[bookId]?.mark(phase);
   }
 
   static void finish(String bookId, {String status = 'ok'}) {
+    PdfOpeningDiagnostics.finish(bookId, status);
     if (readerWorkTraceEnabled) _active.remove(bookId)?.finish(status: status);
   }
 }
@@ -41,8 +47,20 @@ Future<T> traceReaderWork<T>(
   String scope,
   Future<T> Function() action, [
   Map<String, Object?> details = const {},
-]) async {
-  if (!readerWorkTraceEnabled && !ReaderExitDiagnostics.covers(scope) &&
+]) {
+  final opening = PdfOpeningDiagnostics.forWork(scope, details['bookId']);
+  return opening == null
+      ? _traceReaderWork(scope, action, details)
+      : opening.measure(scope, () => _traceReaderWork(scope, action, details));
+}
+
+Future<T> _traceReaderWork<T>(
+  String scope,
+  Future<T> Function() action,
+  Map<String, Object?> details,
+) async {
+  if (!readerWorkTraceEnabled &&
+      !ReaderExitDiagnostics.covers(scope) &&
       ReaderTurnDiagnostics.active == null) {
     return action();
   }
@@ -72,8 +90,10 @@ class ReaderWorkTrace {
   static ReaderWorkTrace? start(
     String scope, [
     Map<String, Object?> details = const {},
-  ]) => readerWorkTraceEnabled || ReaderExitDiagnostics.covers(scope) ||
-        ReaderTurnDiagnostics.active != null
+  ]) =>
+      readerWorkTraceEnabled ||
+          ReaderExitDiagnostics.covers(scope) ||
+          ReaderTurnDiagnostics.active != null
       ? ReaderWorkTrace._(scope, {...details})
       : null;
 

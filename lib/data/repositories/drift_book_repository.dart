@@ -24,6 +24,10 @@ import '../services/book_source_integrity.dart';
 import '../services/source_position_preparation.dart';
 import 'drift_reading_statistics_repository.dart';
 
+const _sourceFileName = 'sourceFileName';
+const _shelfPin = 'shelfPinRank';
+const _editedBookInfo = 'editedBookInfo';
+
 // 独立函数限定闭包捕获范围，避免同方法的数据库事务闭包让 this 随任务发送。
 Future<Map<String, String>> _resolveLegacyTitlesInBackground(
   String source,
@@ -50,6 +54,113 @@ class DriftBookRepository implements BookRepository {
       found.addAll((await query.get()).map((r) => r.read(_db.books.id)!));
     }
     return found;
+  }
+
+  @override
+  Future<void> setShelfPins(
+    List<String> orderedIds, {
+    required bool pinned,
+  }) => _db.transaction(() async {
+    final ids = orderedIds.toSet().toList();
+    final preferences = _db.preferences;
+    if (!pinned) {
+      for (var start = 0; start < ids.length; start += 512) {
+        await (_db.delete(preferences)..where(
+              (t) =>
+                  t.scope.equals('book') &
+                  t.key.equals(_shelfPin) &
+                  t.scopeId.isIn(ids.skip(start).take(512)),
+            ))
+            .go();
+      }
+      return;
+    }
+
+    final activeIds = <String>{};
+    final books = _db.books;
+    for (var start = 0; start < ids.length; start += 512) {
+      final query = _db.selectOnly(books)
+        ..addColumns([books.id])
+        ..where(
+          books.id.isIn(ids.skip(start).take(512)) &
+              books.status.isNotValue(BookStatus.removed.code),
+        );
+      activeIds.addAll((await query.get()).map((row) => row.read(books.id)!));
+    }
+    if (activeIds.isEmpty) return;
+    final max = await _db
+        .customSelect(
+          "SELECT COALESCE(MAX(CAST(value_json AS INTEGER)), 0) AS pin_rank "
+          "FROM preferences WHERE scope = 'book' AND key = ?",
+          variables: [Variable.withString(_shelfPin)],
+        )
+        .getSingle();
+    final now = DateTime.now().toUtc();
+    var rank = max.read<int>('pin_rank') + activeIds.length;
+    // 越靠前的书分到越大的数字。忽略已置顶的行，混选或重复提交都不会移动它们。
+    await _db.batch((batch) {
+      batch.insertAll(preferences, [
+        for (final id in ids)
+          if (activeIds.contains(id))
+            PreferencesCompanion.insert(
+              scope: 'book',
+              scopeId: id,
+              key: _shelfPin,
+              valueJson: jsonEncode(rank--),
+              updatedAt: now,
+            ),
+      ], mode: InsertMode.insertOrIgnore);
+    });
+  });
+
+  @override
+  Future<void> updateDisplayInfo(
+    String id, {
+    required String title,
+    required String author,
+  }) => _db.transaction(() async {
+    if (title.isEmpty) throw ArgumentError.value(title, 'title');
+    final book = _db.select(_db.books)
+      ..where(
+        (t) => t.id.equals(id) & t.status.isNotValue(BookStatus.removed.code),
+      );
+    final row = await book.getSingleOrNull();
+    if (row == null) throw StateError('这本书已不在书架中');
+    if (row.title == title && row.author == author) return;
+    final edited = await _loadEditedInfo(id);
+    // 保存原显示书名供旧书按文件名排序；重新解析时只保留用户确实改过的字段。
+    if (row.title != title) {
+      edited.putIfAbsent('originalTitle', () => row.title);
+    }
+    if (row.author != author) edited['authorEdited'] = true;
+    await (_db.update(_db.books)..where((t) => t.id.equals(id))).write(
+      BooksCompanion(title: Value(title), author: Value(author)),
+    );
+    await _db
+        .into(_db.preferences)
+        .insertOnConflictUpdate(
+          PreferencesCompanion.insert(
+            scope: 'book',
+            scopeId: id,
+            key: _editedBookInfo,
+            valueJson: jsonEncode(edited),
+            updatedAt: DateTime.now().toUtc(),
+          ),
+        );
+  });
+
+  Future<Map<String, dynamic>> _loadEditedInfo(String id) async {
+    final row =
+        await (_db.select(_db.preferences)..where(
+              (t) =>
+                  t.scope.equals('book') &
+                  t.scopeId.equals(id) &
+                  t.key.equals(_editedBookInfo),
+            ))
+            .getSingleOrNull();
+    return row == null
+        ? <String, dynamic>{}
+        : jsonDecode(row.valueJson) as Map<String, dynamic>;
   }
 
   /// 书架观察流：旧版已删除记录不出现（设计文档 7.3），并带上阅读进度。
@@ -127,16 +238,17 @@ class DriftBookRepository implements BookRepository {
           updatedAt: row.read(positionTable.updatedAt)!,
         ),
     };
-    final names =
+    final shelfPreferences =
         await (_db.select(_db.preferences)..where(
               (t) =>
                   t.scope.equals('book') &
-                  t.key.equals('sourceFileName') &
+                  t.key.isIn([_sourceFileName, _shelfPin, _editedBookInfo]) &
                   t.scopeId.isIn(bookIds),
             ))
             .get();
-    final nameOf = {
-      for (final row in names) row.scopeId: jsonDecode(row.valueJson) as String,
+    final properties = {
+      for (final row in shelfPreferences)
+        (row.scopeId, row.key): jsonDecode(row.valueJson),
     };
     final completed = await _db
         .customSelect(
@@ -152,7 +264,11 @@ class DriftBookRepository implements BookRepository {
           finished: finishedIds.contains(row.id),
           lastReadAt: positionOf[row.id]?.updatedAt,
           readProgress: positionOf[row.id]?.progress,
-          sourceFileName: nameOf[row.id],
+          sourceFileName: properties[(row.id, _sourceFileName)] as String?,
+          originalTitle:
+              (properties[(row.id, _editedBookInfo)] as Map?)?['originalTitle']
+                  as String?,
+          shelfPinRank: properties[(row.id, _shelfPin)] as int?,
           coverChoice:
               covers[row.id] ?? defaults[BookFormat.fromCode(row.format)],
         ),
@@ -237,7 +353,7 @@ class DriftBookRepository implements BookRepository {
             PreferencesCompanion.insert(
               scope: 'book',
               scopeId: commit.book.id,
-              key: 'sourceFileName',
+              key: _sourceFileName,
               valueJson: jsonEncode(commit.book.sourceFileName),
               updatedAt: DateTime.now().toUtc(),
             ),
@@ -249,32 +365,47 @@ class DriftBookRepository implements BookRepository {
 
   /// 复用已删除书籍的 bookId 重新激活：覆盖元数据并替换全部章节。
   @override
-  Future<void> reactivateImport(ImportCommit commit) =>
-      _db.transaction(() async {
-        await (_db.update(_db.books)..where((t) => t.id.equals(commit.book.id)))
-            .write(bookToCompanion(commit.book));
-        await (_db.delete(
-          _db.chapters,
-        )..where((t) => t.bookId.equals(commit.book.id))).go();
-        if (commit.book.sourceFileName != null) {
-          await _db
-              .into(_db.preferences)
-              .insertOnConflictUpdate(
-                PreferencesCompanion.insert(
-                  scope: 'book',
-                  scopeId: commit.book.id,
-                  key: 'sourceFileName',
-                  valueJson: jsonEncode(commit.book.sourceFileName),
-                  updatedAt: DateTime.now().toUtc(),
-                ),
-              );
-        }
-        await _insertChapters(commit);
-        if (commit.sourceChanged) {
-          await _markLocationsForRelocation(commit.book.id);
-        }
-        await _savePositionProof(commit);
-      });
+  Future<void> reactivateImport(
+    ImportCommit commit,
+  ) => _db.transaction(() async {
+    final id = commit.book.id;
+    final edited = await _loadEditedInfo(id);
+    var updated = bookToCompanion(commit.book);
+    // 在同一事务中取当前显示名：解析期间刚保存的编辑也不能被覆盖。
+    if (edited.isNotEmpty) {
+      final previous = await (_db.select(
+        _db.books,
+      )..where((t) => t.id.equals(id))).getSingle();
+      updated = updated.copyWith(
+        title: edited.containsKey('originalTitle')
+            ? Value(previous.title)
+            : null,
+        author: edited['authorEdited'] == true ? Value(previous.author) : null,
+      );
+    }
+    await (_db.update(_db.books)..where((t) => t.id.equals(id))).write(updated);
+    await (_db.delete(
+      _db.chapters,
+    )..where((t) => t.bookId.equals(commit.book.id))).go();
+    if (commit.book.sourceFileName != null) {
+      await _db
+          .into(_db.preferences)
+          .insertOnConflictUpdate(
+            PreferencesCompanion.insert(
+              scope: 'book',
+              scopeId: commit.book.id,
+              key: _sourceFileName,
+              valueJson: jsonEncode(commit.book.sourceFileName),
+              updatedAt: DateTime.now().toUtc(),
+            ),
+          );
+    }
+    await _insertChapters(commit);
+    if (commit.sourceChanged) {
+      await _markLocationsForRelocation(commit.book.id);
+    }
+    await _savePositionProof(commit);
+  });
 
   Future<void> _savePositionProof(ImportCommit commit) async {
     final proof = commit.positionProof;

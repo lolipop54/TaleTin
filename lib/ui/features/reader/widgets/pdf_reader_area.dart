@@ -31,7 +31,14 @@ import 'pdf_zoom_surface.dart';
 part 'pdf_scroll_area.dart';
 
 /// 原页像素直接交给Flutter，避免每次跳页先压缩PNG再解码。
-Future<ui.Image> _pdfBitmap(
+Future<ui.Image> _pdfBitmap(PdfBookController book, int index, int width) =>
+    traceReaderWork(
+      'pdf.prepare_bitmap',
+      () => _decodePdfBitmap(book, index, width),
+      {'bookId': book.book.id},
+    );
+
+Future<ui.Image> _decodePdfBitmap(
   PdfBookController book,
   int index,
   int width,

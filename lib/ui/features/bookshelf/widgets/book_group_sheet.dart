@@ -13,6 +13,7 @@ import '../../../core/widgets/gt_button.dart';
 import '../view_models/bookshelf_view_model.dart';
 import 'book_group_dialog.dart';
 import 'book_group_row.dart';
+import 'shelf_action_button.dart';
 
 Future<void> showBookGroupSheet(
   BuildContext context,
@@ -219,6 +220,7 @@ class _BookGroupSheetState extends State<BookGroupSheet> {
                     ),
                     GtButton(
                       key: const ValueKey('book-group-sort'),
+                      style: shelfSheetActionStyle(colors),
                       onPressed: groups.isEmpty || (busy && !sorting)
                           ? null
                           : toggleSorting,

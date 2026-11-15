@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.2.5+60
+version: 1.2.6+61
 
 environment:
   sdk: ^3.13.2
@@ -72,6 +72,8 @@ dependencies:
   image: 4.8.0
   ffi: ^2.2.0
   flutter_tex: 5.3.0
+  flutter_markdown_plus: 1.0.12
+  markdown: 7.3.1
   url_launcher: 6.3.3
 
 # Android 实现包打了一行 AGP 9 兼容补丁后放在 third_party/，
@@ -115,6 +117,8 @@ flutter:
   uses-material-design: true
  
   assets:
+    - assets/更新日志.md
+    - assets/changelog_images/
     - assets/dictionary/chinese-offline-20261111-v1.sqlite.gz
     - assets/dictionary/english-offline-20261111-v1.sqlite.gz
     - assets/licenses/Offline-dictionary-sources.txt

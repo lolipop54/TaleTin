@@ -27,11 +27,17 @@ Future<void> openShelfBook(
     },
   );
   final repository = ref.read(bookRepositoryProvider);
-  final current = await traceReaderWork(
-    'shelf.open.lookup',
-    () => repository.findById(book.id),
-    {'bookId': book.id},
-  );
+  final Book? current;
+  try {
+    current = await traceReaderWork(
+      'shelf.open.lookup',
+      () => repository.findById(book.id),
+      {'bookId': book.id},
+    );
+  } catch (_) {
+    BookOpeningTrace.finish(book.id, status: 'lookup_failed');
+    rethrow;
+  }
   BookOpeningTrace.mark(book.id, 'shelf_lookup');
   if (!context.mounted ||
       current == null ||

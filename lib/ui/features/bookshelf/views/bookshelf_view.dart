@@ -28,6 +28,7 @@ import '../view_models/bookshelf_view_model.dart';
 import '../view_models/visible_shelf_books.dart';
 import '../view_models/shelf_preferences_controller.dart';
 import '../widgets/bookshelf_widgets.dart';
+import '../widgets/shelf_action_button.dart';
 import '../widgets/shelf_header.dart';
 import '../widgets/shelf_scroll_area.dart';
 import '../../import/widgets/shelf_import_tile.dart';
@@ -35,13 +36,35 @@ import '../../import/widgets/shelf_import_tile.dart';
 /// 书架页（参考图 01）：
 /// 标题栏（品牌名 + 搜索／导入／更多）→ 可展开搜索 → 筛选 → 书籍。
 ///
-/// 长按书籍进入多选模式，可多选后一次删除（设计文档 2.1「书籍管理」）。
+/// 长按书籍进入多选模式，可在底部菜单操作选中的书籍。
 /// 书籍来自数据库流；数据未就绪时显示稳定加载态，不先闪一个空书架。
-class BookshelfView extends ConsumerWidget {
+class BookshelfView extends ConsumerStatefulWidget {
   const BookshelfView({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<BookshelfView> createState() => _BookshelfViewState();
+}
+
+class _BookshelfViewState extends ConsumerState<BookshelfView> {
+  bool _closingSelection = false;
+
+  void _closeSelection() {
+    if (_closingSelection) return;
+    if (MediaQuery.disableAnimationsOf(context)) {
+      ref.read(bookshelfProvider.notifier).clearSelection();
+      return;
+    }
+    setState(() => _closingSelection = true);
+  }
+
+  void _finishClosingSelection() {
+    setState(() => _closingSelection = false);
+    // 多选状态一直保留到面板滑出。此时退出才能让底部主导航开始滑入。
+    ref.read(bookshelfProvider.notifier).clearSelection();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final colors = context.gtColors;
     final shelf = ref.watch(bookshelfProvider);
     final library = ref.watch(libraryBooksProvider);
@@ -97,61 +120,66 @@ class BookshelfView extends ConsumerWidget {
       // 多选模式下按返回键先退出多选，不直接退出应用
       canPop: !shelf.selectionMode,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) ref.read(bookshelfProvider.notifier).clearSelection();
+        if (!didPop && shelf.selectionMode) _closeSelection();
       },
-      child: Scaffold(
-        bottomSheet: shelf.selectionMode ? const ShelfSelectionBar() : null,
-        body: SafeArea(
-          bottom: false,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              ShelfHeader(
-                height: headerHeight,
-                selectionHeader: shelf.selectionMode
-                    ? _buildSelectionHeader(context, ref, colors)
-                    : null,
-              ),
-              const SizedBox(height: GtSpacing.s2),
-              const ShelfFilterBar(),
-              Expanded(
-                child: FrameFade(
-                  revision: (
-                    shelf.filter,
-                    shelf.groupId,
-                    shelf.sort,
-                    shelf.gridView,
-                  ),
-                  child: visible.hasValue
-                      ? _buildBody(
-                          context,
-                          ref,
-                          visible.requireValue,
-                          hasBooks: library.value?.isNotEmpty ?? false,
-                          query: shelf.query.trim(),
-                        )
-                      : visible.hasError
-                      ? GtErrorView(
-                          title: '书架读取失败',
-                          message: '${visible.error}',
-                          onRetry: () => ref.invalidate(libraryBooksProvider),
-                        )
-                      : const GtLoadingView(label: '正在整理书架…'),
+      child: IgnorePointer(
+        ignoring: _closingSelection,
+        child: Scaffold(
+          // 内容仍滚动到操作栏背后；Scaffold 按两行菜单的实际高度预留滚动余量。
+          extendBody: true,
+          bottomNavigationBar: shelf.selectionMode
+              ? ShelfSelectionBar(
+                  closing: _closingSelection,
+                  onClosed: _finishClosingSelection,
+                )
+              : null,
+          body: SafeArea(
+            bottom: false,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                ShelfHeader(
+                  height: headerHeight,
+                  selectionHeader: shelf.selectionMode
+                      ? _buildSelectionHeader(shelf, colors)
+                      : null,
                 ),
-              ),
-            ],
+                const SizedBox(height: GtSpacing.s2),
+                const ShelfFilterBar(),
+                Expanded(
+                  child: FrameFade(
+                    revision: (
+                      shelf.filter,
+                      shelf.groupId,
+                      shelf.sort,
+                      shelf.gridView,
+                    ),
+                    child: visible.hasValue
+                        ? _buildBody(
+                            context,
+                            ref,
+                            visible.requireValue,
+                            hasBooks: library.value?.isNotEmpty ?? false,
+                            query: shelf.query.trim(),
+                          )
+                        : visible.hasError
+                        ? GtErrorView(
+                            title: '书架读取失败',
+                            message: '${visible.error}',
+                            onRetry: () => ref.invalidate(libraryBooksProvider),
+                          )
+                        : const GtLoadingView(label: '正在整理书架…'),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
     );
   }
 
-  Widget _buildSelectionHeader(
-    BuildContext context,
-    WidgetRef ref,
-    GtColors colors,
-  ) {
-    final shelf = ref.watch(bookshelfProvider);
+  Widget _buildSelectionHeader(BookshelfState shelf, GtColors colors) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 16, 16, 0),
       child: Row(
@@ -164,8 +192,9 @@ class BookshelfView extends ConsumerWidget {
           ),
           GtButton(
             key: const ValueKey('shelf-exit-selection'),
-            onPressed: ref.read(bookshelfProvider.notifier).clearSelection,
-            child: Text('完成', style: GtText.body(colors.actionPrimary)),
+            style: shelfSheetActionStyle(colors),
+            onPressed: _closeSelection,
+            child: const Text('完成'),
           ),
         ],
       ),
@@ -181,7 +210,7 @@ class BookshelfView extends ConsumerWidget {
     required String query,
   }) {
     if (books.isNotEmpty || ref.watch(shelfImportItemsProvider).isNotEmpty) {
-      return _buildGrid(context, ref, books);
+      return _buildGrid(ref, books);
     }
     // 书架本身为空与「搜索无结果」是两种不同状态
     if (!hasBooks && query.isEmpty) {
@@ -201,7 +230,7 @@ class BookshelfView extends ConsumerWidget {
   }
 
   /// 自适应网格：按封面最小宽度计算能放几列，再按窗口形状限制列数。
-  Widget _buildGrid(BuildContext context, WidgetRef ref, List<Book> books) {
+  Widget _buildGrid(WidgetRef ref, List<Book> books) {
     final imports = ref.watch(shelfImportItemsProvider);
     final ready = {
       for (final book in ref.watch(libraryBooksProvider).value ?? <Book>[])
@@ -235,12 +264,13 @@ class BookshelfView extends ConsumerWidget {
     }
 
     final gridView = ref.watch(bookshelfProvider.select((s) => s.gridView));
-    // extendBody 提供底栏加安全区的高度。只给滚动内容末尾留白，
-    // 不缩短可视区域，书籍经过曲线凹口时仍能透出来。
-    final bottomPadding = GtSpacing.s4 + MediaQuery.paddingOf(context).bottom;
     return ShelfScrollArea(
       child: LayoutBuilder(
         builder: (context, constraints) {
+          // 在 Scaffold 的 body 内读取 extendBody 提供的实际底栏高度。
+          // 多选时这里包含两行操作和手势区，普通模式则继承主导航占位。
+          final bottomPadding =
+              GtSpacing.s4 + MediaQuery.paddingOf(context).bottom;
           const gap = GtSize.shelfColumnGap;
           // 网格自身左右有页边距，列数与单元宽度都按内容宽度计算
           final contentWidth =
@@ -339,6 +369,7 @@ class _ListRow extends ConsumerWidget {
                 BookCover(
                   bookId: book.id,
                   format: book.format,
+                  pinned: book.isPinned,
                   title: book.title,
                   author: book.author,
                   imagePath: coverFile,
@@ -366,9 +397,7 @@ class _ListRow extends ConsumerWidget {
                 ),
                 const SizedBox(height: GtSpacing.s1),
                 Text(
-                  book.author.isEmpty
-                      ? '${book.format.label} · ${book.chapterCount} 章'
-                      : book.author,
+                  book.authorLabel,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: GtText.caption(colors.textMuted),

@@ -54,6 +54,9 @@ class AppErrorStore {
   Future<void> appendReaderRecovery(Map<String, Object?> event) =>
       _serial(() => _append(event, 'reader-recovery', 1048576));
 
+  Future<void> appendPdfOpening(Map<String, Object?> event) =>
+      _serial(() => _append(event, 'pdf-opening', exitMaxBytes));
+
   Future<void> _append(
     Map<String, Object?> event,
     String name,
@@ -105,6 +108,8 @@ class AppErrorStore {
       'reader-recovery.jsonl',
       'reader-turn-state.previous.jsonl',
       'reader-turn-state.jsonl',
+      'pdf-opening.previous.jsonl',
+      'pdf-opening.jsonl',
     ]) {
       final file = await _file(name);
       if (await file.exists()) {

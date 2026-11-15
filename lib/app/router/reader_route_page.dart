@@ -94,11 +94,9 @@ class _ReaderEntranceState extends State<_ReaderEntrance>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       if (!_shown.isCompleted) _shown.complete();
-      if (readerWorkTraceEnabled) {
-        if (widget.bookId case final String id) {
-          BookOpeningTrace.mark(id, 'loading_layer_removed');
-          BookOpeningTrace.finish(id);
-        }
+      if (widget.bookId case final String id) {
+        BookOpeningTrace.mark(id, 'loading_layer_removed');
+        BookOpeningTrace.finish(id);
       }
     });
   }

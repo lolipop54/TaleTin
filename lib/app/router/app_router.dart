@@ -245,17 +245,12 @@ class _MainShellState extends ConsumerState<MainShell> {
           revision: navigationShell.currentIndex,
           child: navigationShell,
         ),
-        bottomNavigationBar: Visibility(
-          visible:
-              navigationShell.currentIndex != 0 ||
-              !ref.watch(bookshelfProvider.select((s) => s.selectionMode)),
-          maintainSize: true,
-          maintainAnimation: true,
-          maintainState: true,
-          child: MainNavigationBar(
-            branchIndex: navigationShell.currentIndex,
-            onSelect: _goBranch,
-          ),
+        bottomNavigationBar: MainNavigationBar(
+          hidden:
+              navigationShell.currentIndex == 0 &&
+              ref.watch(bookshelfProvider.select((s) => s.selectionMode)),
+          branchIndex: navigationShell.currentIndex,
+          onSelect: _goBranch,
         ),
       ),
     );

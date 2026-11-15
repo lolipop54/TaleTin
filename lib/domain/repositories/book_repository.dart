@@ -48,6 +48,16 @@ abstract class BookRepository {
 
   Future<Book?> findById(String id);
 
+  /// 按传入次序将尚未置顶的书放到置顶区最前面，或取消所选书的置顶。
+  Future<void> setShelfPins(List<String> orderedIds, {required bool pinned});
+
+  /// 只更新应用中的显示信息，保留书籍来源与正文。
+  Future<void> updateDisplayInfo(
+    String id, {
+    required String title,
+    required String author,
+  });
+
   /// 只判断书籍行是否存在；删除准备不需要逐本加载进度、文件名和完成记录。
   Future<Set<String>> existingIds(Iterable<String> ids) async {
     final found = <String>{};

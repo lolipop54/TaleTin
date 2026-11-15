@@ -32,7 +32,7 @@ List<Book> applyShelfQuery(List<Book> books, ShelfQuery query) {
   final ids = <String>{}, namesInUse = <String>{};
   for (final book in books) {
     ids.add(book.id);
-    namesInUse.add(book.sourceFileName ?? book.title);
+    namesInUse.add(book.shelfFileName);
     final previous = _searchFields[book.id];
     if (previous == null ||
         previous.$1 != book.title ||
@@ -70,17 +70,29 @@ List<Book> applyShelfQuery(List<Book> books, ShelfQuery query) {
           _searchFields[b.id]!.$4.contains(q),
     );
   }
-  final list = result.toList();
+  return sortShelfBooks(result, query.sort);
+}
+
+List<Book> sortShelfBooks(Iterable<Book> books, ShelfSort sort) {
+  final list = books.toList();
   // 每个文件名在本轮只转换一次；同步完成排序后再交给界面显示。
   final names = _names;
   String nameKey(Book book) {
-    final name = book.sourceFileName ?? book.title;
+    final name = book.shelfFileName;
     return names.putIfAbsent(name, () => _fileNameSortKey(name));
   }
 
   int byName(Book a, Book b) => nameKey(a).compareTo(nameKey(b));
   list.sort((a, b) {
-    final order = switch (query.sort) {
+    final aPin = a.shelfPinRank;
+    final bPin = b.shelfPinRank;
+    if (aPin != null || bPin != null) {
+      if (aPin == null) return 1;
+      if (bPin == null) return -1;
+      final pinOrder = bPin.compareTo(aPin);
+      return pinOrder != 0 ? pinOrder : a.id.compareTo(b.id);
+    }
+    final order = switch (sort) {
       ShelfSort.title => byName(a, b),
       ShelfSort.imported => b.importedAt.compareTo(a.importedAt),
       ShelfSort.recent =>

@@ -29,6 +29,8 @@ abstract final class GtIcons {
   static const caretDown = 'caret-down';
   static const bookmark = 'bookmark';
   static const pencil = 'pencil';
+  static const pin = 'pin';
+  static const pinOff = 'pin-off';
   static const toc = 'toc';
   // 阅读控制
   static const bookmarkFilled = 'bookmark-filled';

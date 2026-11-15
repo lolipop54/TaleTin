@@ -76,6 +76,8 @@ class Book {
     this.readProgress,
     this.lastReadAt,
     this.sourceFileName,
+    this.originalTitle,
+    this.shelfPinRank,
     this.finished = false,
     this.warnings = const [],
   });
@@ -90,6 +92,7 @@ class Book {
       : null;
   final String title;
   final String author;
+  String get authorLabel => author.isEmpty ? '未知作者' : author;
   final BookFormat format;
 
   /// 手动分组 ID；null 表示「未分组」
@@ -126,6 +129,15 @@ class Book {
   /// 导入时的原文件名；早期未保存的书籍为null。
   final String? sourceFileName;
 
+  /// 编辑显示书名之前的标题，供缺少原文件名的旧书继续排序。
+  final String? originalTitle;
+
+  String get shelfFileName => sourceFileName ?? originalTitle ?? title;
+
+  /// 置顶位置，数值越大越靠前。null 表示未置顶。
+  final int? shelfPinRank;
+  bool get isPinned => shelfPinRank != null;
+
   /// 是否已读完（阶段 5 由完成记录填充）
   final bool finished;
 
@@ -161,6 +173,8 @@ class Book {
     double? readProgress,
     DateTime? lastReadAt,
     String? sourceFileName,
+    String? originalTitle,
+    int? shelfPinRank,
     bool? finished,
     List<String>? warnings,
   }) {
@@ -185,6 +199,8 @@ class Book {
       readProgress: readProgress ?? this.readProgress,
       lastReadAt: lastReadAt ?? this.lastReadAt,
       sourceFileName: sourceFileName ?? this.sourceFileName,
+      originalTitle: originalTitle ?? this.originalTitle,
+      shelfPinRank: shelfPinRank ?? this.shelfPinRank,
       finished: finished ?? this.finished,
       warnings: warnings ?? this.warnings,
     );

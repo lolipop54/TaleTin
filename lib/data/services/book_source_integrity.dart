@@ -4,6 +4,7 @@ import 'dart:isolate';
 
 import 'package:path/path.dart' as p;
 
+import '../../core/diagnostics/reader_work_trace.dart';
 import '../../core/io/source_digest.dart';
 
 import 'package:direct_read_rust/direct_read_rust.dart';
@@ -151,7 +152,11 @@ class BookSourceIntegrity {
         return book.copyWith(status: BookStatus.active);
       }
       // 大书的 SHA-256 不占 UI 线程，也不同时启动整书库的散列任务。
-      final task = _hashing.then((_) => _digestFile(path));
+      final task = traceReaderWork(
+        'source.verify_digest',
+        () => _hashing.then((_) => _digestFile(path)),
+        {'bookId': book.id},
+      );
       _hashing = task.then<void>((_) {}, onError: (Object _) {});
       try {
         final actual = await task;

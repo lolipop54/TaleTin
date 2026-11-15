@@ -25,6 +25,7 @@ import 'statistics_settings_view.dart';
 import 'storage_view.dart';
 import 'about_view.dart';
 import 'backup_view.dart';
+import 'changelog_view.dart';
 import 'restore_view.dart';
 import 'notes_export_view.dart';
 import '../widgets/settings_row.dart';
@@ -144,6 +145,14 @@ class SettingsView extends ConsumerWidget {
             const SettingsRow(
               label: '支持格式',
               value: 'EPUB · TXT · MOBI · AZW3 · PDF',
+            ),
+            SettingsRow(
+              label: '更新日志',
+              onTap: () => openSettingsPage(
+                context,
+                const ChangelogView(),
+                ready: changelogProvider.future,
+              ),
             ),
             SettingsRow(
               label: '版本、许可与隐私',

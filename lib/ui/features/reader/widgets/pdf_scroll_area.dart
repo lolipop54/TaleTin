@@ -348,14 +348,22 @@ class _PdfScrollState extends ConsumerState<_PdfScroll>
             ? s.chapterIndex
             : widget.book.chapters.indexWhere((c) => c.id == anchor.chapterId);
         final actual = math.max(0, index);
-        final content = await widget.book.content(actual);
+        final content = await traceReaderWork(
+          'pdf.read_page_content',
+          () => widget.book.content(actual),
+          {'bookId': parent.bookId},
+        );
         final y = anchor == null ? 0.0 : content.pdfPage!.yOf(anchor);
         final target =
             ((_offsets[actual] +
                         y * (_offsets[actual + 1] - _offsets[actual])) *
                     _listScale)
                 .clamp(0.0, _maxPixels(_listScale));
-        await _prepareViewport(target);
+        await traceReaderWork(
+          'pdf.initial_viewport',
+          () => _prepareViewport(target),
+          {'bookId': parent.bookId},
+        );
         if (!mounted || version != _version) return;
         await WidgetsBinding.instance.endOfFrame;
         if (!mounted || !_controller.hasClients || version != _version) return;

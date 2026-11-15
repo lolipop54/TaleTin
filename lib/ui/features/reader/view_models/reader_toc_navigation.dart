@@ -1,5 +1,20 @@
 part of 'reader_session_view_model.dart';
 
+/// 这本书的真实目录（导入时写进 `content/<版本>/manifest.json`）。
+///
+/// 不分卷的书是「一层叶子」，带卷的书是「卷 → 章」两层；读不出来时返回空表，
+/// 界面降级为按章节平铺（设计文档 6.2）。
+final bookTocProvider = FutureProvider.family<List<TocNode>, String>((
+  ref,
+  bookId,
+) async {
+  final book = await ref.watch(bookRepositoryProvider).findById(bookId);
+  if (book == null) return const [];
+  return ref
+      .read(chapterContentRepositoryProvider)
+      .toc(bookId, book.contentVersion);
+});
+
 mixin _ReaderTocNavigation
     on
         AsyncNotifier<ReaderSession>,

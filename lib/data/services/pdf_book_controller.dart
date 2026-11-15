@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import '../../core/diagnostics/reader_work_trace.dart';
 import '../../domain/models/book.dart';
 import '../../domain/models/book_document.dart';
 import '../../domain/repositories/chapter_content_repository.dart';
@@ -44,7 +45,8 @@ class PdfBookController {
 
   Future<(int, int, Uint8List)> raster(int index, int width) =>
       _track(() async {
-        await content(index); // 缓存/句柄不能绕过源文件内容核验。
+        // 缓存/句柄不能绕过源文件内容核验。
+        await traceReaderWork('pdf.read_page_content', () => content(index));
         return file.raster(index, width);
       });
 

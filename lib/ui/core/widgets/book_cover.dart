@@ -11,6 +11,7 @@ import 'cover_art.dart';
 import 'cover_art_spec.dart';
 import 'cover_label_metrics.dart';
 import 'decorations.dart';
+import 'gt_icon.dart';
 
 /// 书籍封面。
 ///
@@ -29,6 +30,7 @@ class BookCover extends StatelessWidget {
     this.imageBytes,
     this.showImageText = false,
     this.format,
+    this.pinned = false,
     this.radius = GtRadius.cover,
   });
 
@@ -58,6 +60,7 @@ class BookCover extends StatelessWidget {
 
   /// 书架传入格式；阅读记录等微型封面省略底部标识。
   final BookFormat? format;
+  final bool pinned;
   final double radius;
 
   @override
@@ -119,6 +122,12 @@ class BookCover extends StatelessWidget {
               fit: StackFit.expand,
               children: [
                 cover,
+                if (pinned)
+                  Positioned(
+                    top: GtSpacing.s1,
+                    left: GtSpacing.s1,
+                    child: _PinBadge(size: (w * .24).clamp(18.0, 24.0)),
+                  ),
                 if (format case final format?)
                   Positioned(
                     right: 0,
@@ -347,6 +356,33 @@ class BookCover extends StatelessWidget {
             ),
           ),
       ],
+    );
+  }
+}
+
+class _PinBadge extends StatelessWidget {
+  const _PinBadge({required this.size});
+
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.gtColors;
+    return IgnorePointer(
+      child: Semantics(
+        label: '已置顶',
+        child: Container(
+          width: size,
+          height: size,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: colors.actionPrimary,
+            shape: BoxShape.circle,
+            border: Border.all(color: colors.onPrimary.withValues(alpha: .6)),
+          ),
+          child: GtIcon(GtIcons.pin, size: size * .68, color: colors.onPrimary),
+        ),
+      ),
     );
   }
 }

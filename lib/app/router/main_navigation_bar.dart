@@ -12,9 +12,11 @@ class MainNavigationBar extends ConsumerWidget {
     super.key,
     required this.branchIndex,
     required this.onSelect,
+    this.hidden = false,
   });
   final int branchIndex;
   final ValueChanged<int> onSelect;
+  final bool hidden;
   static const branches = [1, 0, 2]; // 成就、书架、设置；启动书架居中。
   static const labels = ['成就', '书架', '设置'];
   static const icons = [
@@ -45,7 +47,7 @@ class MainNavigationBar extends ConsumerWidget {
         ? colors.surface
         : GtPalette.navigationBackground;
     final reduced = MediaQuery.disableAnimationsOf(context);
-    return AnnotatedRegion<SystemUiOverlayStyle>(
+    final bar = AnnotatedRegion<SystemUiOverlayStyle>(
       // 系统三键栏与TabBar共用底色；边到边模式只在下方安全区铺底。
       // 关闭系统额外的对比度蒙层，避免原底面被另加一层灰或白。
       value: SystemUiOverlayStyle(
@@ -111,6 +113,23 @@ class MainNavigationBar extends ConsumerWidget {
           ),
         ],
       ),
+    );
+    return TweenAnimationBuilder<double>(
+      tween: Tween(end: hidden ? 1 : 0),
+      duration: hidden || reduced ? Duration.zero : context.gtMotion.normal,
+      curve: context.gtMotion.curveEnter,
+      builder: (_, offset, child) => Visibility(
+        // 保留原底部留白与曲线按钮状态。完全在屏幕外时连凸出的圆钮也隐藏。
+        visible: !hidden && offset < 1,
+        maintainSize: true,
+        maintainAnimation: true,
+        maintainState: true,
+        child: FractionalTranslation(
+          translation: Offset(0, offset),
+          child: child,
+        ),
+      ),
+      child: bar,
     );
   }
 }
