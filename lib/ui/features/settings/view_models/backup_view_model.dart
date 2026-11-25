@@ -46,7 +46,7 @@ final backupViewProvider =
 class BackupViewModel extends Notifier<BackupViewState> {
   BackupOperation? _operation;
   BackupSnapshot? _snapshot;
-  final documents = BackupDocuments();
+  final documents = BackupDocuments.forCurrentPlatform();
   @override
   BackupViewState build() {
     ref.onDispose(() {

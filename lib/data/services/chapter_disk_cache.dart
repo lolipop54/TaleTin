@@ -14,7 +14,11 @@ class ChapterDiskCache {
 
   String _path(String key) => p.join(root!, key);
 
-  ChapterContent? read(String key, Chapter chapter) {
+  ChapterContent? read(
+    String key,
+    Chapter chapter, {
+    bool removeInvalid = true,
+  }) {
     if (root == null) return null;
     final file = File(_path(key));
     if (!file.existsSync()) return null;
@@ -28,9 +32,9 @@ class ChapterDiskCache {
       }
       return content;
     } on FormatException {
-      _remove(file.path);
+      if (removeInvalid) _remove(file.path);
     } on TypeError {
-      _remove(file.path);
+      if (removeInvalid) _remove(file.path);
     } on FileSystemException {
       // 可重建缓存被系统清掉或暂时不可读，改从原书准备，不影响正确正文。
     }

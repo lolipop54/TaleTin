@@ -1,5 +1,6 @@
 import '../../bookshelf/widgets/book_cover_sheet.dart';
 
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/material.dart';
 
 import '../../../../app/export_error_log.dart';
@@ -12,7 +13,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/gt_tokens.dart';
 import '../../../core/widgets/decorations.dart';
+import '../widgets/settings_heading.dart';
 import '../widgets/settings_page.dart';
+import '../widgets/windows_settings_layout.dart';
+import '../view_models/storage_view_model.dart';
 import '../view_models/global_reading_settings.dart';
 import '../view_models/backup_view_model.dart';
 import '../../achievements/view_models/notes_providers.dart';
@@ -37,7 +41,6 @@ class SettingsView extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final colors = context.gtColors;
     final settings = ref.watch(globalSettingsProvider);
     if (!settings.hasValue) {
       return Scaffold(
@@ -47,6 +50,13 @@ class SettingsView extends ConsumerWidget {
                 onRetry: () => ref.invalidate(globalSettingsProvider),
               )
             : const SizedBox.shrink(),
+      );
+    }
+
+    final theme = ref.watch(appThemeProvider);
+    if (defaultTargetPlatform == TargetPlatform.windows) {
+      return WindowsSettingsLayout(
+        entries: (context, category) => _entries(context, ref, category, theme),
       );
     }
 
@@ -62,189 +72,151 @@ class SettingsView extends ConsumerWidget {
             GtSpacing.s6 + MediaQuery.paddingOf(context).bottom,
           ),
           children: [
-            _buildHeader(context, colors),
-            const SizedBox(height: GtSpacing.s4),
-            _sectionHeader(context, '外观'),
-            SettingsRow(
-              label: '主题',
-              value: ref.watch(appThemeProvider).label,
-              onTap: () async {
-                await openSettingsPage(
-                  context,
-                  SettingsChoices<AppThemeMode>(
-                    title: '应用主题',
-                    options: AppThemeMode.values,
-                    label: (v) => v.label,
-                    selected: (ref) => ref.watch(appThemeProvider),
-                    save: (ref, v) =>
-                        ref.read(appThemeProvider.notifier).select(v),
-                  ),
-                );
-              },
-            ),
-            SettingsRow(
-              label: '自定义封面',
-              onTap: () =>
-                  showBookCoverSheet(context, ref, const [], global: true),
-            ),
-            const SizedBox(height: GtSpacing.s4),
-            _sectionHeader(context, '阅读'),
-            SettingsRow(
-              label: '字体与排版',
-              onTap: () => openSettingsPage(
-                context,
-                const GlobalTypographyView(),
-                ready: globalTypographyReadyProvider.future,
-              ),
-            ),
-            SettingsRow(
-              label: '更多设置',
-              onTap: () => openSettingsPage(
-                context,
-                const ReadingMoreSettingsView(),
-                ready: readingControlsReadyProvider.future,
-              ),
-            ),
-            const SizedBox(height: GtSpacing.s4),
-            _sectionHeader(context, '数据'),
-            SettingsRow(label: '导出错误日志', onTap: exportErrorLog),
-            SettingsRow(
-              label: '阅读统计设置',
-              onTap: () => openSettingsPage(
-                context,
-                const StatisticsSettingsView(),
-                ready: statisticsSettingsProvider.future,
-              ),
-            ),
-            SettingsRow(
-              label: '存储占用',
-              onTap: () => openSettingsPage(context, const StorageView()),
-            ),
-            SettingsRow(
-              label: '导出备份',
-              onTap: () => openSettingsPage(
-                context,
-                const BackupView(),
-                ready: savedBackupsProvider.future,
-              ),
-            ),
-            SettingsRow(
-              label: '恢复备份',
-              onTap: () => openSettingsPage(context, const RestoreView()),
-            ),
-            SettingsRow(
-              label: '导出阅读笔记',
-              onTap: () => openSettingsPage(
-                context,
-                const NotesExportView(),
-                ready: annotatedBooksProvider.future,
-              ),
-            ),
-            const SizedBox(height: GtSpacing.s4),
-            _sectionHeader(context, '关于'),
-            const SettingsRow(
-              label: '支持格式',
-              value: 'EPUB · TXT · MOBI · AZW3 · PDF',
-            ),
-            SettingsRow(
-              label: '更新日志',
-              onTap: () => openSettingsPage(
-                context,
-                const ChangelogView(),
-                ready: changelogProvider.future,
-              ),
-            ),
-            SettingsRow(
-              label: '版本、许可与隐私',
-              onTap: () => openSettingsPage(
-                context,
-                const AboutView(),
-                ready: appInformationProvider.future,
-              ),
-            ),
+            const SettingsHeader(titleSize: 25),
+            for (final category in SettingsCategory.values) ...[
+              const SizedBox(height: GtSpacing.s4),
+              _sectionHeader(context, category.label),
+              ..._entries(context, ref, category, theme),
+            ],
           ],
         ),
       ),
     );
   }
 
-  /// 页头：设置 + 蓝折角装饰 + 副标题 + 右侧竖排落款。
-  Widget _buildHeader(BuildContext context, GtColors colors) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                // 折角与标题顶部对齐，读起来是标题块右上角的折角
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    '设置',
-                    style: GtText.pageTitle(colors.textPrimary)
-                        .copyWith(fontSize: 25),
-                  ),
-                  const SizedBox(width: GtSpacing.s2),
-                  const Padding(
-                    padding: EdgeInsets.only(top: 3),
-                    child: FoldCorner(height: 21),
-                  ),
-                ],
-              ),
-              const SizedBox(height: GtSpacing.s1),
-              Text(
-                '阅读，让生活更柔软。',
-                style: GtText.body(colors.textSecondary)
-                    .copyWith(fontSize: 14, letterSpacing: 1),
-              ),
-            ],
+  List<Widget> _entries(
+    BuildContext context,
+    WidgetRef ref,
+    SettingsCategory category,
+    AppThemeMode theme,
+  ) => switch (category) {
+    SettingsCategory.appearance => [
+      SettingsRow(
+        label: '主题',
+        value: theme.label,
+        onTap: () => openSettingsPage(
+          context,
+          SettingsChoices<AppThemeMode>(
+            title: '应用主题',
+            options: AppThemeMode.values,
+            label: (mode) => mode.label,
+            selected: (ref) => ref.watch(appThemeProvider),
+            save: (ref, mode) =>
+                ref.read(appThemeProvider.notifier).select(mode),
           ),
         ),
-        const SizedBox(width: GtSpacing.s3),
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            // 右侧落款是横排两行、右对齐（参考图 05）
-            Text(
-              '书中自有',
-              style: GtText.caption(colors.textSecondary)
-                  .copyWith(fontSize: 11, height: 1.7),
-            ),
-            Text(
-              '向上的光',
-              style: GtText.caption(colors.textSecondary)
-                  .copyWith(fontSize: 11, height: 1.7),
-            ),
-            const SizedBox(height: GtSpacing.s2),
-            Container(width: 18, height: 1, color: colors.borderControl),
-          ],
+      ),
+      SettingsRow(
+        label: '自定义封面',
+        onTap: () => WindowsSettingsPane.contains(context)
+            ? openSettingsPage(
+                context,
+                prepareBookCoverSheet(
+                  context,
+                  ref,
+                  const [],
+                  global: true,
+                  width: WindowsSettingsPane.detailWidth(
+                    context,
+                    Navigator.of(context).context.size!.width,
+                  ),
+                ),
+              )
+            : showBookCoverSheet(context, ref, const [], global: true),
+      ),
+    ],
+    SettingsCategory.reading => [
+      SettingsRow(
+        label: '字体与排版',
+        onTap: () => openSettingsPage(
+          context,
+          const GlobalTypographyView(),
+          ready: globalTypographyReadyProvider.future,
         ),
-      ],
-    );
-  }
+      ),
+      SettingsRow(
+        label: '更多设置',
+        onTap: () => openSettingsPage(
+          context,
+          const ReadingMoreSettingsView(),
+          ready: readingControlsReadyProvider.future,
+        ),
+      ),
+    ],
+    SettingsCategory.data => [
+      SettingsRow(label: '导出错误日志', onTap: exportErrorLog),
+      SettingsRow(
+        label: '阅读统计设置',
+        onTap: () => openSettingsPage(
+          context,
+          const StatisticsSettingsView(),
+          ready: statisticsSettingsProvider.future,
+        ),
+      ),
+      SettingsRow(
+        label: '存储占用',
+        onTap: () => openSettingsPage(
+          context,
+          const StorageView(),
+          ready: WindowsSettingsPane.contains(context)
+              ? storageUsageProvider.future
+              : null,
+        ),
+      ),
+      SettingsRow(
+        label: '导出备份',
+        onTap: () => openSettingsPage(
+          context,
+          const BackupView(),
+          ready: savedBackupsProvider.future,
+        ),
+      ),
+      SettingsRow(
+        label: '恢复备份',
+        onTap: () => openSettingsPage(context, const RestoreView()),
+      ),
+      SettingsRow(
+        label: '导出阅读笔记',
+        onTap: () => openSettingsPage(
+          context,
+          const NotesExportView(),
+          ready: annotatedBooksProvider.future,
+        ),
+      ),
+    ],
+    SettingsCategory.about => [
+      SettingsRow(
+        label: '支持格式',
+        value: 'EPUB · TXT · MOBI · AZW3 · PDF',
+        wrapValue: WindowsSettingsPane.contains(context),
+      ),
+      SettingsRow(
+        label: '更新日志',
+        onTap: () => openSettingsPage(
+          context,
+          const ChangelogView(),
+          ready: changelogProvider.future,
+        ),
+      ),
+      SettingsRow(
+        label: '版本、许可与隐私',
+        onTap: () => openSettingsPage(
+          context,
+          const AboutView(),
+          ready: appInformationProvider.future,
+        ),
+      ),
+    ],
+  };
 
   /// 分区头只保留名称和原有小折角。
   Widget _sectionHeader(BuildContext context, String title) {
     final colors = context.gtColors;
     return Padding(
       padding: const EdgeInsets.only(bottom: GtSpacing.s1),
-      child: Row(
-        // 折角贴着分区标题的顶部
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            title,
-            style: GtText.sectionTitle(colors.textPrimary)
-                .copyWith(fontSize: 19),
-          ),
-          const SizedBox(width: GtSpacing.s2),
-          const Padding(
-            padding: EdgeInsets.only(top: 2),
-            child: FoldCorner(height: 19),
-          ),
-        ],
+      child: FoldCornerHeading(
+        title,
+        style: GtText.sectionTitle(colors.textPrimary).copyWith(fontSize: 19),
       ),
     );
   }

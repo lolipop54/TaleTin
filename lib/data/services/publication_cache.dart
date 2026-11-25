@@ -11,6 +11,7 @@ class PublicationCache {
     String bookId,
     String digest, {
     String? epoch,
+    this.epubStyleTree = false,
   }) : root = p.join(cacheRoot, 'reading'),
        directory = p.join(
          cacheRoot,
@@ -19,20 +20,7 @@ class PublicationCache {
          digest,
          _contentRevision,
        ),
-       epoch = epoch ?? processEpoch {
-    // 上一版的MOBI缓存可以直接沿用，避免升级后保留两份相同的读过内容。
-    final previous = Directory(
-      p.join(cacheRoot, 'mobi', bookId, digest, 'publication2'),
-    );
-    if (previous.existsSync() && !Directory(directory).existsSync()) {
-      try {
-        Directory(p.dirname(directory)).createSync(recursive: true);
-        previous.renameSync(directory);
-      } on FileSystemException {
-        // 两个后台会话可能同时打开；移动失败时仍可从原书按需重建。
-      }
-    }
-  }
+       epoch = epoch ?? processEpoch;
 
   // content30：四边定位进入样式表；正文归属排除已裁掉的标签间空白。
   // 正文写入和对外图片路径必须共用版本，避免升级后图片写在新目录、读旧目录。
@@ -48,11 +36,40 @@ class PublicationCache {
   // content44：列表内段落编号、旧式p对齐与空白段断点重新核对。
   // content45：hidden 空章题不再产生边距，旧章节原地补齐显示来源。
   // content46：保留解析后的字体族候选和章内 @font-face 资料。
-  // content47：保存图片脚注的目标地址，正文字符与位置不变。
-  static const _contentRevision = 'content47';
+  // content47：保存图片脚注的目标地址。
+  // content48：保存书内全角空格的显示宽度，正文字符与位置不变。
+  // content49：卷首页保留背景的固定定位声明，供简化排版完整绘制。
+  // content50：更新 EPUB 的 CSS 背景、字体路径以及 img 的 HTML 尺寸提示。
+  // content51：按归档路径展开带空格或 URL 编码的 CSS 导入。
+  // content52：重算旧 SVG 的自然尺寸，并保留只有比例的图片标记。
+  // content53：空 colgroup 的 span 与不换行空格的原文位置随章节保存。
+  // content54：按行组保存跨行范围，载入表格纵向样式。
+  // content55：表格方向和表题样式进入按需读取缓存。
+  // content56：保留 html 根元素的纸面样式，旧书按需重新读取当前章。
+  // content57：重新区分 thead 默认避断与作者显式重置为 auto 的旧章节。
+  // 旧章节未保存作者指定的跨页盒子装饰方式，需要从原书重新解析。
+  // content59：重新解析颜色透明度、椭圆圆角和视口相关尺寸。
+  // content60：从旧 HTML 图片属性重新生成浮动方向及四边留白。
+  // content61：重新读取章首出血声明和全书重复的章首插画模板。
+  // content62：已有书从原书补读独立封面资料。
+  // content63：已有书重新取得图片后旧式 HTML 图注的对齐提示。
+  // 重新读章时恢复旧表格列宽，并让段末的连续换行留在原段落。
+  // 旧章节缺少多看图片 alt 的脚注身份，读到时从 EPUB 重新生成。
+  static const _contentRevision = 'content67';
+  static String get contentRevision => _contentRevision;
   static final processEpoch = DateTime.now().microsecondsSinceEpoch.toString();
   static const budget = 64 * 1024 * 1024;
   final String root, directory, epoch;
+  final bool epubStyleTree;
+  // 图片与旧版共用。章节读取、写入和正在阅读的文件保护都使用同一子目录。
+  String get _chapterFolder =>
+      epubStyleTree ? p.join('chapters', 'css1') : 'chapters';
+  String get chapterDirectory => p.join(directory, _chapterFolder);
+
+  /// 相同书、摘要及转换版本在另一缓存根下的正文路径，只做路径换算。
+  String chapterDirectoryIn(String cacheRoot) =>
+      p.join(cacheRoot, 'reading', p.relative(chapterDirectory, from: root));
+  File chapterFile(String name) => file(p.join(_chapterFolder, name));
   final _id =
       '$pid-${DateTime.now().microsecondsSinceEpoch}-${identityHashCode(Object())}';
   final _chapters = <String, Set<String>>{};
@@ -203,21 +220,6 @@ class PublicationCache {
       _added += bytes.length;
     } finally {
       if (next.existsSync()) next.deleteSync();
-    }
-  }
-
-  /// 复用旧的可重建文件。仅在来源已核对后调用，不移动持久封面或业务数据。
-  bool adopt(File previous, File target) {
-    if (!previous.existsSync()) return target.existsSync();
-    preparing(target);
-    target.parent.createSync(recursive: true);
-    try {
-      previous.renameSync(target.path);
-      _added += target.lengthSync();
-      return true;
-    } on FileSystemException {
-      // 另一侧已经接走同一文件时使用新文件，不能让并发转换造成读章失败。
-      return target.existsSync();
     }
   }
 

@@ -3,7 +3,7 @@ name = "gt_reader_native"
 version = "0.1.0"
 edition = "2024"
 publish = false
-license = "MIT"
+license = "GPL-3.0-only"
 
 [lib]
 path = "src/lib.rs"
@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 html5ever = "=0.40.1"
 serde_json = "=1.0.151"
+serde = { version = "1", features = ["derive", "rc"] }
 rayon = "1.11"
 encoding_rs = "=0.8.41"
 sha2 = "=0.11.1"
@@ -21,6 +22,8 @@ cssparser = "=0.38.0"
 selectors = "=0.41.0"
 precomputed-hash = "=0.1.1"
 jieba-rs = "=0.11.0"
+unicode-bidi = "=0.3.18"
+unicode-linebreak = "=0.1.5"
 
 [profile.release]
 opt-level = 3

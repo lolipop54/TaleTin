@@ -65,7 +65,7 @@ class _TocTabState extends ConsumerState<TocTab> {
   @override
   Widget build(BuildContext context) {
     final colors = context.gtColors;
-    final tocAsync = ref.watch(bookTocProvider(widget.bookId));
+    final tocAsync = ref.watch(readerDisplayTocProvider(widget.bookId));
     final txtSections = ref.watch(readerTxtSectionsProvider(widget.bookId));
     final session = ref.watch(readerSessionProvider(widget.bookId)).value;
     final notifier = ref.read(readerSessionProvider(widget.bookId).notifier);
@@ -80,7 +80,7 @@ class _TocTabState extends ConsumerState<TocTab> {
         txtSections.value ?? const <String, List<TxtTocSection>>{},
       )),
     );
-    if (tree.hasValue) _shownVolumes = tree.requireValue;
+    if (tree.hasValue && tocAsync.hasValue) _shownVolumes = tree.requireValue;
     final volumes = _shownVolumes ?? const <TocVolume>[];
     final entries =
         ref.watch(progressTitlesProvider(widget.bookId)).value ?? [];

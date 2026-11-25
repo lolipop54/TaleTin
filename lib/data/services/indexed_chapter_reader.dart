@@ -5,6 +5,7 @@ import 'dart:math' as math;
 import 'package:crypto/crypto.dart';
 
 import '../../core/io/source_digest.dart';
+import '../../core/io/publication_cache_path.dart';
 
 import 'package:path/path.dart' as p;
 import 'package:direct_read_rust/direct_read_rust.dart';
@@ -15,6 +16,8 @@ import '../../domain/repositories/chapter_content_repository.dart';
 import '../../domain/services/txt_chapter_sections.dart';
 import '../../engine/normalization/text_normalizer.dart';
 import '../../engine/parsers/epub/epub_archive.dart';
+import '../../engine/parsers/epub/epub_package.dart';
+import '../../engine/parsers/epub/publication_style_tree.dart';
 import '../../engine/parsers/epub/xhtml_blocks.dart';
 import '../../engine/styles/chapter_styler.dart';
 import '../../engine/layout/book_background.dart';
@@ -48,6 +51,7 @@ class IndexedChapterReader {
       .map((entry) => entry.key)
       .toSet();
   EpubArchive? _archive;
+  List<String>? _legacyCoverEntries;
   Future<PdfFile>? _pdf;
   FileStat? _verified;
   final _txtSectionStarts = <String, List<TxtSectionStart>>{};
@@ -86,6 +90,7 @@ class IndexedChapterReader {
         p.basename(bookDirectory),
         index.sourceDigest,
         epoch: cacheEpoch,
+        epubStyleTree: index.format == 'epub' && publicationCssMode != 'legacy',
       ),
     );
   }
@@ -127,6 +132,60 @@ class IndexedChapterReader {
   }
 
   final _cssTexts = <String, String?>{};
+  bool _stylesBound = false;
+
+  /// 新书直接绑定导入产物。旧书、旧备份或中断写入留下的缺件从已验证源书补建。
+  Future<void> bindStyles() async {
+    if (_stylesBound ||
+        index.format != 'epub' ||
+        publicationCssMode == 'legacy') {
+      return;
+    }
+    final directory = verification.file.parent.path;
+    if (!PublicationStyleTree.bind(directory, index.sourceDigest)) {
+      await verifySource();
+      final archive = _archive ??= openIndexedPublication(
+        source.path,
+        directory,
+        index,
+      );
+      final tree = PublicationStyleTree((path) {
+        try {
+          return archive.contains(path) ? archive.readText(path) : null;
+        } on Object {
+          // 与新书导入一致，个别无法读取的外部 CSS 不妨碍其余样式和正文。
+          return null;
+        }
+      });
+      try {
+        for (final location in index.chapters.values) {
+          final path = location.single as String;
+          archive.resetTotalBudget();
+          final html = NativeHtml.bytes(archive.readBytes(path));
+          try {
+            final refs = html.references;
+            tree.chapter(
+              path,
+              refs['css'] as List? ?? const [],
+              refs['opening'] as List?,
+            );
+          } finally {
+            html.close();
+          }
+        }
+        await verifySource();
+        tree.save(directory, index.sourceDigest);
+      } finally {
+        tree.close();
+        archive.resetTotalBudget();
+        _cssTexts.clear();
+      }
+      if (!PublicationStyleTree.bind(directory, index.sourceDigest)) {
+        throw const FormatException('无法读取重新生成的 EPUB 样式树');
+      }
+    }
+    _stylesBound = true;
+  }
 
   /// 章节引用的样式文件：按归档条目读原始文本，解析交给 Rust 统一 CSS。
   String? _cssText(String path) {
@@ -177,10 +236,14 @@ class IndexedChapterReader {
       );
       archive.resetTotalBudget();
       final path = location.single as String;
+      await bindStyles();
       final parsed = XhtmlBlockBuilder(
+        legacyMobi: archive.legacyMobi,
         basePath: path,
         buildTextMap: false,
+        containsResource: archive.contains,
         styleTextResolver: _cssText,
+        styleBook: _stylesBound ? index.sourceDigest : null,
         resolveImage: (entry) {
           final size = index.images[entry];
           if (cache != null && size != null) {
@@ -189,6 +252,7 @@ class IndexedChapterReader {
               resourcePath: 'res/$entry',
               width: size[0] < 0 ? 0 : size[0],
               height: size[1] < 0 ? 0 : size[1],
+              svgRatioOnly: size.length > 2 ? size[2] == 1 : null,
             );
           }
           if (size != null && size[0] < 0) {
@@ -203,24 +267,20 @@ class IndexedChapterReader {
             final resolved = sniffImageSize(bytes);
             // 正文根目录在 open 时保存，外部源文件旁边不写任何产物。
             final resource = File(
-              p.join(verification.file.parent.path, 'res', entry),
+              p.join(
+                verification.file.parent.path,
+                'res',
+                publicationCachePath(entry),
+              ),
             );
             resource.parent.createSync(recursive: true);
             resource.writeAsBytesSync(bytes, flush: false);
-            index.images[entry] = [resolved.width, resolved.height];
-            return ResolvedImage(
-              resourcePath: 'res/$entry',
-              width: resolved.width,
-              height: resolved.height,
-            );
+            final size = index.images[entry] = resolved.toIndex();
+            return ResolvedImage.fromIndex('res/$entry', size);
           }
           return size == null
               ? null
-              : ResolvedImage(
-                  resourcePath: 'res/$entry',
-                  width: size[0],
-                  height: size[1],
-                );
+              : ResolvedImage.fromIndex('res/$entry', size);
         },
       ).convertBytes(archive.readBytes(path));
       content = ChapterContent(
@@ -230,7 +290,18 @@ class IndexedChapterReader {
         epubDetailsRevision: kEpubDetailsRevision,
         // Rust 转换时已经算好样式表与编号，直接带上；Dart 不用再补。
         stylesJson: parsed.stylesJson,
-        displaySourceJson: parsed.displaySourceJson,
+        displaySourceJson: index.format == 'epub' && !textOnly
+            ? parsed.displayWithCover(
+                index.coverEntries ??
+                    (_legacyCoverEntries ??= EpubPackage.parse(
+                      archive,
+                      EpubPackage.readOpfPath(archive),
+                    ).coverEntries),
+                path,
+                first: chapter.ordinal == 0,
+                title: chapter.title,
+              )
+            : parsed.displaySourceJson,
       );
     } else {
       return readTxt(chapter);
@@ -488,16 +559,14 @@ class IndexedChapterReader {
   ResolvedImage _prepareImage(String entry) {
     // Capture the persistent cover set before this worker updates dimensions.
     final persistent = _persistentImages.contains(entry);
+    final diskPath = publicationCachePath(entry);
+    final persistentFile = File(
+      p.join(verification.file.parent.path, 'res', diskPath),
+    );
     final file = persistent
-        ? File(p.join(verification.file.parent.path, 'res', entry))
-        : cache!.file(p.join('assets', entry));
+        ? persistentFile
+        : cache!.file(p.join('assets', diskPath));
     var size = index.images[entry]!;
-    if (!persistent && !file.existsSync()) {
-      cache!.adopt(
-        File(p.join(verification.file.parent.path, 'res', entry)),
-        file,
-      );
-    }
     if (!file.existsSync()) {
       final archive = _archive ??= openIndexedPublication(
         source.path,
@@ -512,16 +581,18 @@ class IndexedChapterReader {
         cache!.write(file, bytes);
       }
       final dimensions = sniffImageSize(bytes);
-      size = index.images[entry] = [dimensions.width, dimensions.height];
-    } else if (size[0] < 0) {
+      size = index.images[entry] = dimensions.toIndex();
+    } else if (size[0] < 0 ||
+        (size.length == 2 && entry.toLowerCase().endsWith('.svg'))) {
       final dimensions = sniffImageSize(file.readAsBytesSync());
-      size = index.images[entry] = [dimensions.width, dimensions.height];
+      size = index.images[entry] = [
+        ...dimensions.toIndex(),
+        if (dimensions.svgRatioOnly == null &&
+            entry.toLowerCase().endsWith('.svg'))
+          0,
+      ];
     }
-    return ResolvedImage(
-      resourcePath: 'res/$entry',
-      width: size[0],
-      height: size[1],
-    );
+    return ResolvedImage.fromIndex('res/$entry', size);
   }
 
   /// Cached body JSON does not prove that its images survived cache eviction.
@@ -549,7 +620,7 @@ class IndexedChapterReader {
       store.trim();
       return;
     }
-    final files = <File>[store.file('chapters/${content.chapterId}.json')];
+    final files = <File>[store.chapterFile('${content.chapterId}.json')];
     for (final path in chapterImageResources(content)) {
       if (!path.startsWith('res/')) continue;
       final entry = path.substring(4);
@@ -576,7 +647,7 @@ class IndexedChapterReader {
       }
       _prepareImage(entry);
       if (!_persistentImages.contains(entry)) {
-        files.add(store.file(p.join('assets', entry)));
+        files.add(store.file(p.join('assets', publicationCachePath(entry))));
       }
     }
     store.pin(content.chapterId, files);

@@ -33,7 +33,7 @@ const List<StyleProperty> kBlockProperties = [
     consumer: StyleConsumer.verticalGap,
     status: StyleStatus.rendered,
     phase: 'D1',
-    notes: '只有作者写的非零值才采用；0 或没写用读者段距。页首/页尾丢弃。',
+    notes: '章首及普通段落保留作者上外边距。非零负值参与相邻块间距；续页不重复加。',
   ),
 
   StyleProperty(
@@ -46,8 +46,8 @@ const List<StyleProperty> kBlockProperties = [
     affectsGeometry: true,
     primitive: StylePrimitive.edges,
     consumer: StyleConsumer.blockFlow,
-    status: StyleStatus.blockedByLayout,
-    notes: '需要水平块流（左右外边距参与行宽）才做；当前不消费。',
+    status: StyleStatus.rendered,
+    notes: '普通块参与盒宽和 auto 对齐，保留作者负值。分页在本页纸面裁剪。',
     phase: 'D1',
   ),
 

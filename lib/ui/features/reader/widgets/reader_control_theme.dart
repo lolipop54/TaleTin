@@ -20,7 +20,10 @@ class ReaderControlTheme extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     if (bookId == null) return child;
     final theme =
-        ref.watch(readerSettingsProvider(bookId!)).value?.theme ??
+        ref.watch(
+          readerSettingsProvider(bookId!)
+              .select((settings) => settings.value?.theme.base),
+        ) ??
         ReaderSettingsState.fromGlobal(
           ref.watch(globalReadingPreferencesProvider),
         ).theme;

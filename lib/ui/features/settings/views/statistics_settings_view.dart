@@ -27,7 +27,7 @@ class _StatisticsSettingsState extends ConsumerState<StatisticsSettingsView> {
     final settings = data.value;
     final vm = ref.read(statisticsSettingsProvider.notifier);
     return Scaffold(
-      appBar: GtAppBar(title: const Text('阅读统计设置')),
+      appBar: GtAppBar.settings(title: const Text('阅读统计设置')),
       body: SafeArea(
         child: settings == null
             ? Center(

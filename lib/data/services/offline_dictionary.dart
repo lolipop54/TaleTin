@@ -1,7 +1,13 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path/path.dart' as p;
+
+import '../../app/di/app_providers.dart' show cacheRootPathProvider;
+import '../../core/concurrency/background_compute.dart';
+import '../../platform/channels/windows_offline_dictionary.dart';
 
 const offlineDictionaryIncluded = bool.fromEnvironment(
   'GT_INCLUDE_OFFLINE_DICTIONARY',
@@ -66,7 +72,27 @@ class DictionaryEntry {
 
 typedef DictionaryLookup = Future<List<DictionaryEntry>> Function(String term);
 
-final offlineDictionaryProvider = Provider<DictionaryLookup>((ref) => _lookup);
+final offlineDictionaryProvider = Provider<DictionaryLookup>((ref) {
+  if (!Platform.isWindows) return _lookup;
+  final cache = p.join(ref.watch(cacheRootPathProvider), 'dictionary');
+  final assets = p.join(
+    p.dirname(Platform.resolvedExecutable),
+    'data',
+    'flutter_assets',
+    'assets',
+    'dictionary',
+  );
+  final worker = BackgroundExecutor('windows-dictionary');
+  ref.onDispose(worker.close);
+  return (term) async {
+    final records = await worker.run(lookupWindowsDictionary, (
+      term: term,
+      assets: assets,
+      cache: cache,
+    ));
+    return records.map(DictionaryEntry._decode).toList();
+  };
+});
 
 Future<List<DictionaryEntry>> _lookup(String term) async {
   final records = await _channel.invokeListMethod<String>('lookup', {

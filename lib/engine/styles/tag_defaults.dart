@@ -23,7 +23,7 @@ abstract final class TagDefaults {
   /// 3：`<code>` 明确写成行内。它的来源角色同时服务块级 `<pre>` 和行内
   ///    `<code>`，只按角色判断会把行内代码当成块级，白底和内边距都会丢。
   /// 4：hr 使用浏览器默认的凹边框与外边距。
-  static const int version = 4;
+  static const int version = 5;
 
   /// 标题行高。标题不跟随正文行高：2.2 倍行高放在标题上太散。
   ///
@@ -142,13 +142,13 @@ abstract final class TagDefaults {
       'overflow': 'hidden',
     },
 
-    'table': {'display': 'table'},
+    'table': {'display': 'table', 'box-sizing': 'border-box'},
     'caption': {
       'display': 'table-caption',
       'font-size': '0.9em',
       'text-align': 'center',
     },
-    'thead': {'display': 'table-header-group'},
+    'thead': {'display': 'table-header-group', 'break-inside': 'avoid'},
     'tbody': {'display': 'table-row-group'},
     'tfoot': {'display': 'table-footer-group'},
     'tr': {'display': 'table-row'},

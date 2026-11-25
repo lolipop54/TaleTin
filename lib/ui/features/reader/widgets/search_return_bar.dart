@@ -74,8 +74,11 @@ class SearchReturnBar extends ConsumerWidget {
     final progress = ref.read(readerProgressReturnProvider(bookId).notifier);
     final actions = <VoidCallback>[
       () => vm.step(-1),
-      () =>
-          menu.returnProgress ? progress.returnToOrigin() : vm.returnToOrigin(),
+      // 重新打开本次搜索，搜索前的阅读位置留给搜索页底部按钮。
+      menu.returnProgress
+          ? progress.returnToOrigin
+          : () =>
+                ref.read(readerProvider.notifier).openPanel(ReaderPanel.search),
       () => vm.step(1),
       menu.returnProgress ? progress.dismiss : vm.dismiss,
     ];
@@ -103,22 +106,19 @@ class SearchReturnBar extends ConsumerWidget {
                 for (final i in menu.buttons)
                   Positioned.fromRect(
                     rect: menu.button(i).shift(rect.topLeft),
-                    child: Tooltip(
-                      message: menu.label(i),
-                      child: Semantics(
-                        label: menu.label(i),
-                        button: true,
-                        enabled: menu.enabled(i),
-                        child: Material(
-                          color: Colors.transparent,
-                          child: GtButton.raw(
-                            key: ValueKey('search-navigation-$i'),
-                            borderRadius: BorderRadius.circular(
-                              GtRadius.control,
-                            ),
-                            onPressed: menu.enabled(i) ? actions[i] : null,
-                            child: const SizedBox.expand(),
-                          ),
+                    child: Semantics(
+                      label: menu.label(i),
+                      button: true,
+                      enabled: menu.enabled(i),
+                      child: Material(
+                        color: Colors.transparent,
+                        child: GtButton.raw(
+                          key: ValueKey('search-navigation-$i'),
+                          tooltip: menu.label(i),
+                          showTooltipOnWindows: !menu.returnProgress,
+                          borderRadius: BorderRadius.circular(GtRadius.control),
+                          onPressed: menu.enabled(i) ? actions[i] : null,
+                          child: const SizedBox.expand(),
                         ),
                       ),
                     ),

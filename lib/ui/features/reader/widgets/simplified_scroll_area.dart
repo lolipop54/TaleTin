@@ -1,3 +1,5 @@
+import 'reader_link_ink.dart';
+
 import 'dart:async';
 
 import 'package:taletin/core/diagnostics/app_errors.dart';
@@ -6,6 +8,7 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/scheduler.dart';
+import 'package:flutter/gestures.dart' show DragStartBehavior;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollCacheExtent;
@@ -16,6 +19,7 @@ import 'table_painter.dart';
 import 'reader_text_painter.dart';
 import 'block_background_paint.dart';
 import '../../../../engine/layout/chapter_paginator.dart';
+import '../../../../engine/layout/measured_block.dart' show BlockBox;
 import '../../../core/theme/reading_theme.dart';
 import 'footnote_popover.dart';
 
@@ -24,6 +28,7 @@ import '../../../../app/di/reading_controls_providers.dart';
 import '../../../../domain/models/locator.dart' show SelectionRange;
 import '../../../../domain/models/book.dart';
 import '../../../../engine/layout/layout_options.dart';
+import '../../../../engine/layout/measured_paragraphs.dart';
 import '../../../../engine/layout/scroll_chapter.dart';
 import '../../../../engine/selection/scroll_selection.dart';
 import '../../../../engine/selection/selection_range.dart';
@@ -39,10 +44,15 @@ import '../view_models/automatic_reading.dart';
 import 'page_information.dart';
 import 'reader_information.dart';
 import 'book_paper.dart';
+import 'book_shadow_paint.dart';
 import 'scroll_resources.dart';
+import 'scroll_cell_sliver.dart';
+import 'scroll_text_pictures.dart';
 import 'scroll_css_background.dart';
 import 'css_background_paint.dart';
 import '../../../../engine/layout/book_background.dart';
+import '../../../../core/diagnostics/reader_turn_diagnostics.dart';
+import '../../../../platform/reading_font_binding.dart';
 import 'scroll_selection_layer.dart';
 import 'reader_image_viewer.dart';
 import 'reader_image_gallery.dart';
@@ -50,6 +60,7 @@ import 'reader_image_gallery.dart';
 part 'simplified_automatic_motion.dart';
 part 'simplified_scroll_selection.dart';
 part 'simplified_scroll_tap.dart';
+part 'scroll_text_paint.dart';
 
 class SimplifiedScrollArea extends ConsumerStatefulWidget {
   const SimplifiedScrollArea({
@@ -76,6 +87,16 @@ class SimplifiedScrollAreaState extends ConsumerState<SimplifiedScrollArea>
   late final ScrollWindow _window;
   @override
   late final ScrollResources _resources;
+  final _textPictures = ScrollTextPictures();
+  Iterator<int>? _nearbyText;
+  bool _textTaskScheduled = false;
+  late final _paragraphs = MeasuredParagraphs(
+    (caption) => caption
+        ? widget.settings.theme.secondary
+        : widget.settings.theme.primary,
+  );
+  final _headerChapter = ValueNotifier<ScrollChapter?>(null);
+  BookShadowCache? _shadows;
   Timer? _reportTimer;
   bool _chapterFailed = false;
   bool _completionDrag = false;
@@ -89,7 +110,10 @@ class SimplifiedScrollAreaState extends ConsumerState<SimplifiedScrollArea>
   bool get isReady =>
       _window.isReady && _window.options?.layoutSignature == _signature;
 
-  Future<void> volumeTurn(bool forward) async {
+  Future<void> volumeTurn(bool forward) =>
+      scrollBy(forward ? 1 : -1, byPage: true);
+
+  Future<void> scrollBy(double delta, {bool byPage = false}) async {
     if (!isReady || !_window.controller.hasClients || _window.busy) return;
     await _automatic.discard();
     await _session.beginManualReading();
@@ -97,12 +121,10 @@ class SimplifiedScrollAreaState extends ConsumerState<SimplifiedScrollArea>
     await _warmNearby();
     if (!mounted || !isReady || !_window.controller.hasClients) return;
     final position = _window.controller.position;
-    final delta = position.viewportDimension * 0.85 * (forward ? 1 : -1);
     _window.controller.jumpTo(
-      (_window.controller.offset + delta).clamp(
-        position.minScrollExtent,
-        position.maxScrollExtent,
-      ),
+      (position.pixels +
+              (byPage ? position.viewportDimension * .85 * delta : delta))
+          .clamp(position.minScrollExtent, position.maxScrollExtent),
     );
     _window.report();
   }
@@ -122,8 +144,17 @@ class SimplifiedScrollAreaState extends ConsumerState<SimplifiedScrollArea>
       formulaColor: () => widget.settings.theme.primary,
       readingTheme: () => widget.settings.theme,
       pixelRatio: () => View.of(context).devicePixelRatio,
+      paperSize: () => MediaQuery.sizeOf(context),
+      onBackdropChanged: (chapter) {
+        // 尚未放入窗口的章节会在准备好后一起显示。已显示的纸色到达时立即更新文字。
+        if (mounted &&
+            _window.entries.any((entry) => identical(entry.layout, chapter))) {
+          setState(() {});
+        }
+      },
     );
     _window = ScrollWindow(
+      paragraphs: _paragraphs,
       bookId: widget.bookId,
       version: widget.session.book.contentVersion,
       chapters: widget.session.chapters,
@@ -156,16 +187,31 @@ class SimplifiedScrollAreaState extends ConsumerState<SimplifiedScrollArea>
         }
       },
       prepareResources: _resources.warm,
+      preparePaperHeight: _resources.fullWidthPaperHeight,
       onError: _loadingFailed,
     );
     _window.addListener(_changed);
     _window.controller.addListener(_scrolled);
     _initAutomatic();
-    _initSelection(_contentTap);
+    _initSelection(_contentTap, _contentLinkAt);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final ratio = MediaQuery.devicePixelRatioOf(context);
+    if (_shadows?.pixelRatio != ratio) {
+      _shadows?.dispose();
+      _textPictures.dispose();
+      _shadows = BookShadowCache(ratio);
+    }
   }
 
   void _changed() {
+    _nearbyText = null;
+    if (isReady) _prepareNearbyText();
     _retainNearby();
+    _headerChapter.value = _window.visible()?.entry.layout;
     if (mounted) setState(() {});
   }
 
@@ -187,6 +233,10 @@ class SimplifiedScrollAreaState extends ConsumerState<SimplifiedScrollArea>
   }
 
   void _scrolled() {
+    // 跳转中的位置通知只用于让正文按新坐标布局。落位后由窗口统一回报和补章。
+    if (_window.isLanding) return;
+    // 页眉墨色只取决于页首所在章的纸色。章内移动不需要逐帧重建信息栏。
+    _headerChapter.value = _window.visible()?.entry.layout;
     _reportTimer ??= Timer(const Duration(milliseconds: 250), () {
       _reportTimer = null;
       if (!mounted) return;
@@ -233,11 +283,19 @@ class SimplifiedScrollAreaState extends ConsumerState<SimplifiedScrollArea>
 
   @override
   void dispose() {
+    final binding = WidgetsBinding.instance;
+    if (binding is ReadingFontBinding) {
+      binding.setReaderMoving(this, false, closing: true);
+    }
     _disposeAutomatic();
     _reportTimer?.cancel();
     _window.removeListener(_changed);
     _window.dispose();
+    _paragraphs.dispose();
+    _headerChapter.dispose();
     _resources.dispose();
+    _textPictures.dispose();
+    _shadows?.dispose();
     super.dispose();
   }
 
@@ -281,6 +339,86 @@ class SimplifiedScrollAreaState extends ConsumerState<SimplifiedScrollArea>
     });
   }
 
+  ScrollCellSliver? _body;
+  (List<double>, double, ReadingTheme, BookShadowCache?, int)? _bodyInputs;
+
+  ScrollCellSliver _bodySliver(double paperWidth) {
+    // 阅读位置、时钟会触发外层重建。只有正文的尺寸、画法或章节窗口变化才更新段落。
+    final inputs = (
+      _window.cellOffsets,
+      paperWidth,
+      widget.settings.theme,
+      _shadows,
+      _resources.backdropRevision,
+    );
+    if (_bodyInputs == inputs) return _body!;
+    _bodyInputs = inputs;
+    WidgetsBinding.instance.addPostFrameCallback((_) => _prepareNearbyText());
+    return _body = ScrollCellSliver(
+      offsets: _window.cellOffsets,
+      delegate: _ScrollCellsDelegate(
+        (context, i) {
+          final entry = _window.cellAt(i);
+          final cell = entry.cell;
+          final painter = _textPainter(entry.entry.layout, cell);
+          final options = painter.options;
+          final theme = widget.settings.theme;
+          final text = CustomPaint(painter: painter);
+          final images = cell.positionedImages(options.contentWidth).toList();
+          final inline = cell.positionedInlineImages.toList();
+          if (images.isEmpty && inline.isEmpty) {
+            return KeyedSubtree(key: _window.keyAt(i), child: text);
+          }
+          return ClipRect(
+            key: _window.keyAt(i),
+            clipper: _PaperWidthClip((paperWidth - options.contentWidth) / 2),
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Positioned.fill(child: text),
+                for (final (:block, :rect) in images)
+                  Positioned.fromRect(
+                    rect: rect,
+                    child: CustomPaint(
+                      painter: block.box == null
+                          ? null
+                          : _ImageBoxPainter(
+                              block.box!,
+                              theme,
+                              _resources.backgroundInfo,
+                              _shadows!.paint,
+                            ),
+                      child: _resources.view(
+                        block.resourcePath!,
+                        rect.size,
+                        theme.secondary,
+                        block.alt,
+                        block.imageFit,
+                      ),
+                    ),
+                  ),
+                for (final visual in inline)
+                  Positioned.fromRect(
+                    rect: visual.rect,
+                    child: _resources.view(
+                      visual.image.resourcePath,
+                      visual.rect.size,
+                      cell.table.isEmpty ? theme.secondary : theme.primary,
+                      visual.image.alt,
+                      visual.image.imageFit,
+                    ),
+                  ),
+              ],
+            ),
+          );
+        },
+        count: _window.cellCount,
+        height: _window.height,
+        findIndex: _window.indexOfKey,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, box) {
@@ -305,6 +443,12 @@ class SimplifiedScrollAreaState extends ConsumerState<SimplifiedScrollArea>
       final options = LayoutOptions(
         cssDark: widget.settings.theme.isNight,
         settings: settings,
+        paperInset: Offset(
+          (box.maxWidth - width) / 2 +
+              settings.horizontalPadding +
+              (settings.bookEdges ? bookEdgeWidth : 0),
+          0,
+        ),
         contentSize: Size(
           width -
               2 *
@@ -318,6 +462,10 @@ class SimplifiedScrollAreaState extends ConsumerState<SimplifiedScrollArea>
       );
       _prepare(options);
       if (_window.options == null) return const Center(child: BookLoading());
+      final hasChapterPaper = _window.entries.any(
+        (entry) =>
+            chapterBackground(entry.layout.content, _window.options!) != null,
+      );
       return Stack(
         children: [
           Positioned.fill(
@@ -328,25 +476,42 @@ class SimplifiedScrollAreaState extends ConsumerState<SimplifiedScrollArea>
               ),
             ),
           ),
-          Positioned.fill(
-            child: IgnorePointer(
-              child: CustomPaint(
-                painter: ScrollCssBackgroundPainter(
-                  _window,
-                  _resources,
-                  widget.settings.theme,
-                  info.top + 24,
+          if (hasChapterPaper)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: RepaintBoundary(
+                  child: CustomPaint(
+                    painter: ScrollCssBackgroundPainter(
+                      _window,
+                      _resources,
+                      widget.settings.theme,
+                      info.top + 24,
+                    ),
+                  ),
                 ),
               ),
             ),
-          ),
           Positioned.fill(
+            // 前面会按章节插入或移除背景层。让正文列表在 Stack 中保持同一实例，
+            // 否则交接的一帧会有两个 ScrollPosition 同时挂在同一个控制器上。
+            key: const ValueKey('scroll-viewport'),
             top: info.top + 24,
             bottom: info.bottom + 24,
             left: (box.maxWidth - _window.options!.contentWidth) / 2,
             right: (box.maxWidth - _window.options!.contentWidth) / 2,
             child: NotificationListener<ScrollNotification>(
               onNotification: (event) {
+                final binding = WidgetsBinding.instance;
+                if (event.depth == 0 &&
+                    binding is ReadingFontBinding &&
+                    (event is ScrollStartNotification ||
+                        event is ScrollEndNotification)) {
+                  binding.setReaderMoving(
+                    this,
+                    event is ScrollStartNotification,
+                  );
+                }
+                if (event is ScrollStartNotification) _nearbyText = null;
                 if (event is ScrollStartNotification &&
                     event.dragDetails != null) {
                   _completionDrag = true;
@@ -358,178 +523,42 @@ class SimplifiedScrollAreaState extends ConsumerState<SimplifiedScrollArea>
                       event.metrics.extentAfter < 1) {
                     ref.read(readerProvider.notifier).showNotice('已到全书末尾');
                   }
+                  WidgetsBinding.instance.addPostFrameCallback(
+                    (_) => _prepareNearbyText(),
+                  );
                   _completionDrag = false;
                   _window.report();
                   unawaited(_session.persist());
                 }
                 return false;
               },
-              child: ScrollSelectionLayer(
-                bookId: widget.bookId,
-                backend: _selectionBackend,
-                theme: widget.settings.theme,
-                enableDictionary: true,
-                child: ListView.custom(
-                  key: const ValueKey('continuous-text'),
-                  controller: _window.controller,
-                  padding: EdgeInsets.zero,
-                  scrollCacheExtent: const ScrollCacheExtent.pixels(500),
-                  itemExtentBuilder: (i, _) => _window.cellAt(i).cell.height,
-                  childrenDelegate: _ScrollCellsDelegate(
-                    (context, i) {
-                      final entry = _window.cellAt(i);
-                      final cell = entry.cell;
-                      final areas = scrollBackgroundAreas(
-                        entry.entry.layout,
-                        cell,
-                      );
-                      if (cell.table.isNotEmpty) {
-                        return Stack(
-                          key: _window.keyAt(i),
-                          children: [
-                            Positioned.fill(
-                              child: CustomPaint(
-                                painter: ScrollTextPainter(
-                                  cell,
-                                  _window.options!,
-                                  widget.settings.theme.primary,
-                                  widget.settings.theme.secondary,
-                                  theme: widget.settings.theme,
-                                  images: _resources.backgroundInfo,
-                                  backgroundAreas: areas,
-                                  backdrop: _resources.backdropOf(
-                                    entry.entry.layout,
-                                    _window.options!,
-                                    widget.settings.theme,
-                                  ),
-                                ),
-                              ),
-                            ),
-                            for (final fragment in cell.table)
-                              if (!fragment.frameOnly &&
-                                  fragment.block.imageSize != null)
-                                Positioned(
-                                  left: fragment
-                                      .imageRectIn(
-                                        _window.options!.contentWidth,
-                                      )!
-                                      .left,
-                                  top: fragment
-                                      .imageRectIn(
-                                        _window.options!.contentWidth,
-                                      )!
-                                      .top,
-                                  child: _resources.view(
-                                    fragment.block.resourcePath!,
-                                    fragment.block.imageSize!,
-                                    widget.settings.theme.secondary,
-                                    fragment.block.alt,
-                                  ),
-                                ),
-                            for (final visual in cell.positionedInlineImages)
-                              Positioned(
-                                left: visual.rect.left,
-                                top: visual.rect.top,
-                                child: _resources.view(
-                                  visual.image.resourcePath,
-                                  visual.rect.size,
-                                  widget.settings.theme.primary,
-                                  visual.image.alt,
-                                ),
-                              ),
-                          ],
-                        );
-                      }
-                      final size = cell.measured.imageSize;
-                      if (size == null) {
-                        final text = CustomPaint(
-                          painter: ScrollTextPainter(
-                            cell,
-                            _window.options!,
-                            widget.settings.theme.primary,
-                            widget.settings.theme.secondary,
-                            theme: widget.settings.theme,
-                            images: _resources.backgroundInfo,
-                            backgroundAreas: areas,
-                            backdrop: _resources.backdropOf(
-                              entry.entry.layout,
-                              _window.options!,
-                              widget.settings.theme,
-                            ),
-                          ),
-                        );
-                        final inline = cell.positionedInlineImages.toList();
-                        if (inline.isEmpty) {
-                          return KeyedSubtree(
-                            key: _window.keyAt(i),
-                            child: text,
-                          );
-                        }
-                        return Stack(
-                          key: _window.keyAt(i),
-                          children: [
-                            Positioned.fill(child: text),
-                            for (final visual in inline)
-                              Positioned(
-                                left: visual.rect.left,
-                                top: visual.rect.top,
-                                child: _resources.view(
-                                  visual.image.resourcePath,
-                                  visual.rect.size,
-                                  widget.settings.theme.secondary,
-                                  visual.image.alt,
-                                ),
-                              ),
-                          ],
-                        );
-                      }
-                      return Stack(
-                        key: _window.keyAt(i),
-                        children: [
-                          Positioned.fill(
-                            child: CustomPaint(
-                              painter: ScrollTextPainter(
-                                cell,
-                                _window.options!,
-                                widget.settings.theme.primary,
-                                widget.settings.theme.secondary,
-                                theme: widget.settings.theme,
-                                images: _resources.backgroundInfo,
-                                backgroundAreas: areas,
-                                backdrop: _resources.backdropOf(
-                                  entry.entry.layout,
-                                  _window.options!,
-                                  widget.settings.theme,
-                                ),
-                              ),
-                            ),
-                          ),
-                          Positioned(
-                            left: cell.measured
-                                .imageRectIn(
-                                  _window.options!.contentWidth,
-                                  top: cell.gap,
-                                )!
-                                .left,
-                            top: cell.measured
-                                .imageRectIn(
-                                  _window.options!.contentWidth,
-                                  top: cell.gap,
-                                )!
-                                .top,
-                            child: _resources.view(
-                              cell.block.resourcePath!,
-                              size,
-                              widget.settings.theme.secondary,
-                              cell.block.alt,
-                            ),
-                          ),
-                        ],
-                      );
-                    },
-                    count: _window.cellCount,
-                    height: _window.height,
-                    findIndex: _window.indexOfKey,
+              child: ClipRect(
+                clipper: _PaperWidthClip(
+                  (box.maxWidth - _window.options!.contentWidth) / 2,
+                ),
+                child: ReaderLinkPress(
+                  bookId: widget.bookId,
+                  hit: (point) {
+                    final model = _selectionModel();
+                    return model == null
+                        ? null
+                        : readerLinkAtScrollPoint(model, point)?.link;
+                  },
+                  child: ScrollSelectionLayer(
+                    key: _scrollViewportKey,
+                    bookId: widget.bookId,
+                    backend: _selectionBackend,
+                    theme: widget.settings.theme,
+                    enableDictionary: true,
+                    child: CustomScrollView(
+                      key: const ValueKey('continuous-text'),
+                      // 仍由手势竞争区分点按、长按；确认纵向拖动时立即兑现已移动的距离。
+                      dragStartBehavior: DragStartBehavior.down,
+                      clipBehavior: Clip.none,
+                      controller: _window.controller,
+                      scrollCacheExtent: const ScrollCacheExtent.pixels(500),
+                      slivers: [_bodySliver(box.maxWidth)],
+                    ),
                   ),
                 ),
               ),
@@ -543,26 +572,34 @@ class SimplifiedScrollAreaState extends ConsumerState<SimplifiedScrollArea>
                     widget.settings.theme.background,
                     backgroundImage: widget.settings.theme.texture?.image,
                     decorationOnly: true,
-                    preserveBackground: _window.entries.any(
-                      (e) =>
-                          chapterBackground(
-                            e.layout.content,
-                            _window.options!,
-                          ) !=
-                          null,
-                    ),
+                    preserveBackground:
+                        hasChapterPaper ||
+                        _window.entries.any((entry) {
+                          final first =
+                              entry.layout.cells.firstOrNull?.measured;
+                          return first?.imageSize != null && first!.inset < 0;
+                        }),
                   ),
                 ),
               ),
             ),
           Positioned.fill(
             child: IgnorePointer(
-              child: CustomPaint(
-                painter: CssScrollInformationPainter(
-                  info,
-                  _window,
-                  _resources,
-                  widget.settings.theme,
+              child: RepaintBoundary(
+                child: ListenableBuilder(
+                  listenable: hasChapterPaper
+                      ? Listenable.merge([_headerChapter, _resources])
+                      : kAlwaysDismissedAnimation,
+                  builder: (_, _) => CustomPaint(
+                    painter: ScrollInformationPainter(
+                      scrollInformation(
+                        info,
+                        _window,
+                        _resources,
+                        widget.settings.theme,
+                      ),
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -591,81 +628,38 @@ class _ScrollCellsDelegate extends SliverChildBuilderDelegate {
   ) => height;
 }
 
-class ScrollTextPainter extends CustomPainter {
-  ScrollTextPainter(
-    this.cell,
-    this.options,
-    this.color,
-    this.ruleColor, {
-    this.theme,
-    this.images,
-    this.backgroundAreas = const {},
-    this.backdrop,
-  });
-  final ReadingTheme? theme;
-  final BookImageLookup? images;
-  final Map<int, Rect> backgroundAreas;
-  final Color? backdrop;
-  final ScrollCell cell;
-  final LayoutOptions options;
-  final Color color;
-  final Color ruleColor;
+/// 滚动仍按正文宽度断行，绘制可以进入左右纸边；纵向按视口或当前图片切片裁剪。
+class _PaperWidthClip extends CustomClipper<Rect> {
+  const _PaperWidthClip(this.margin);
+  final double margin;
   @override
-  void paint(Canvas canvas, Size size) {
-    if (cell.table.isNotEmpty) {
-      paintBlockBackgrounds(
-        canvas,
-        cell.table,
-        options,
-        theme ?? ReadingTheme.paper,
-        images: images,
-        backgroundAreas: backgroundAreas,
-      );
-      paintTableFragments(
-        canvas,
-        cell.table,
-        options,
-        color,
-        ruleColor,
-        theme: theme,
-        images: images,
-        backdrop: backdrop,
-      );
-      return;
-    }
-    final block = cell.measured;
-    final fragment = PageFragment(
-      block: block,
-      lineFrom: cell.from,
-      lineTo: cell.to,
-      y: cell.gap,
-      height: cell.height - cell.gap - cell.endGap,
-    );
-    // 所有正文统一交给分页共用的画法，不能因没有背景框就退回旧的整行绘制，
-    // 否则公式备用注释、分段位置、居中和字距会在滚动模式里失效。
-    final palette = theme ?? ReadingTheme.paper;
-    paintBlockBackgrounds(
-      canvas,
-      [fragment],
-      options,
-      palette,
-      images: images,
-      backgroundAreas: backgroundAreas,
-    );
-    ReaderTextPainter(
-      options,
-      palette,
-      images: images,
-      backgroundColor: backdrop,
-    ).paint(canvas, size, fragment);
-  }
+  Rect getClip(Size size) =>
+      Rect.fromLTRB(-margin, 0, size.width + margin, size.height);
+  @override
+  bool shouldReclip(_PaperWidthClip old) => old.margin != margin;
+}
 
+class _ImageBoxPainter extends CustomPainter {
+  const _ImageBoxPainter(this.box, this.theme, this.images, this.paintShadows);
+  final BlockBox box;
+  final ReadingTheme theme;
+  final BookImageLookup images;
+  final BookShadowPainter paintShadows;
   @override
-  bool shouldRepaint(ScrollTextPainter old) =>
-      old.cell != cell ||
-      old.color != color ||
-      old.ruleColor != ruleColor ||
-      old.theme != theme;
+  void paint(Canvas canvas, Size size) => paintImageBox(
+    canvas,
+    Offset.zero & size,
+    box,
+    theme,
+    images: images,
+    paintShadows: paintShadows,
+  );
+  @override
+  bool shouldRepaint(_ImageBoxPainter old) =>
+      old.box != box ||
+      old.theme != theme ||
+      old.images != images ||
+      old.paintShadows != paintShadows;
 }
 
 class ScrollInformationPainter extends CustomPainter {
@@ -674,5 +668,6 @@ class ScrollInformationPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) => info.paint(canvas, size);
   @override
-  bool shouldRepaint(ScrollInformationPainter old) => true;
+  bool shouldRepaint(ScrollInformationPainter old) =>
+      info.paintingKey != old.info.paintingKey;
 }

@@ -2,7 +2,12 @@ part of 'block_measure.dart';
 
 extension _BlockBoxMeasurement on BlockMeasurer {
   LengthContext _lengthContext(ComputedStyle style, double reference) {
-    return DisplayBoxLayout.context(style, options, reference);
+    return DisplayBoxLayout.context(
+      style,
+      options,
+      reference,
+      authorTableCell: authorTableCell,
+    );
   }
 
   BlockBox? _boxFromRaw(List<int>? raw, double fontSize) =>

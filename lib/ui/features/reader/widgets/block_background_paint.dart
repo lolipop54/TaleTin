@@ -7,8 +7,35 @@ import '../../../../engine/layout/chapter_paginator.dart';
 import '../../../../engine/layout/layout_options.dart';
 import '../../../../engine/layout/measured_block.dart';
 import '../../../core/theme/reading_theme.dart';
+export '../../../../engine/layout/chapter_paginator.dart'
+    show containerBackgroundPart;
 import 'book_box_paint.dart';
+import 'book_shadow_paint.dart';
 import 'css_background_paint.dart';
+
+/// 图片边框和阴影跟图片在同一层，后面的书封才能把阴影投到先画的书架上。
+void paintImageBox(
+  Canvas canvas,
+  Rect rect,
+  BlockBox box,
+  ReadingTheme theme, {
+  BookImageLookup? images,
+  BookShadowPainter paintShadows = paintBookShadows,
+}) {
+  paintBookBoxRect(
+    canvas,
+    Rect.fromLTRB(
+      rect.left - box.insetLeft,
+      rect.top - box.insetTop,
+      rect.right + box.insetRight,
+      rect.bottom + box.insetBottom,
+    ),
+    box,
+    theme,
+    images: images,
+    paintShadows: paintShadows,
+  );
+}
 
 /// 分页与滚动共用：先画显示树的外层容器，再画块自己的盒子，最后画容器内的代码框。
 void paintBlockBackgrounds(
@@ -17,18 +44,49 @@ void paintBlockBackgrounds(
   LayoutOptions options,
   ReadingTheme theme, {
   bool paginated = false,
+  bool paintImageBoxes = true,
+  BookShadowPainter paintShadows = paintBookShadows,
   BookImageLookup? images,
   Map<int, Rect> backgroundAreas = const {},
+  double? scrollCellHeight,
 }) {
   final pageHeight = paginated ? options.contentHeight : null;
-  _paintContainers(
-    canvas,
+  final geometry = containerPageGeometry(
     fragments,
-    theme,
     pageHeight,
-    images,
-    backgroundAreas,
+    includePlainBox: scrollCellHeight != null,
   );
+  final legends = <int, Rect>{};
+  for (final fragment in fragments) {
+    final block = fragment.block, id = block.legendFieldset;
+    if (id != null &&
+        fragment.lineFrom == 0 &&
+        !fragment.frameOnly &&
+        block.lines.isNotEmpty) {
+      legends[id] = Rect.fromLTWH(
+        block.inset - 2,
+        fragment.y + block.textTopOf(0),
+        (block.layoutWidth ?? block.lines.first.width) + 4,
+        block.lines.first.height,
+      );
+    }
+  }
+  void paintContainer(int id, ContainerPageGeometry piece) =>
+      _paintContainerPiece(
+        canvas,
+        piece,
+        theme,
+        images,
+        backgroundAreas[id],
+        paintShadows,
+        scrollCellHeight,
+        legends[id],
+      );
+  // 显示树的父容器先画，块自己的背景随后画，内框不会被外框遮住。
+  final ids = geometry.keys.where((id) => id >= 0).toList()..sort();
+  for (final id in ids) {
+    paintContainer(id, geometry[id]!);
+  }
   // 书内盒子与代码底色先画：高亮、选区和文字都压在它上面。
   // 同一个容器的连续片段合成一个整体矩形再画，逐块拼接会在块与块之间留下白缝。
   final boxRuns = <int, List<PageFragment>>{};
@@ -38,6 +96,21 @@ void paintBlockBackgrounds(
     // 其余 frameOnly（表格单元格边框、图片占位）照旧跳过。
     if (fragment.frameOnly && fragment.block.box == null) continue;
     final block = fragment.block;
+    if (block.imageSize != null) {
+      final image = fragment.imageRectIn(options.contentWidth);
+      final box = block.box;
+      if (paintImageBoxes && image != null && box != null) {
+        paintImageBox(
+          canvas,
+          image,
+          box,
+          theme,
+          images: images,
+          paintShadows: paintShadows,
+        );
+      }
+      continue;
+    }
     final boxId = block.boxId;
     if (block.box != null && boxId != null) {
       final run = boxRuns[boxId];
@@ -51,7 +124,21 @@ void paintBlockBackgrounds(
     }
   }
   for (final boxId in boxRunOrder) {
-    _paintBoxRun(canvas, boxRuns[boxId]!, options, theme, pageHeight, images);
+    final key = blockBackgroundKey(boxId);
+    final piece = geometry[key];
+    if (piece != null) {
+      paintContainer(key, piece);
+    } else {
+      _paintBoxRun(
+        canvas,
+        boxRuns[boxId]!,
+        options,
+        theme,
+        pageHeight,
+        images,
+        paintShadows,
+      );
+    }
   }
   // 内层代码框后画，外层引用底色才不会盖住它。
   for (final fragment in fragments) {
@@ -83,61 +170,75 @@ void paintBlockBackgrounds(
         topEdge: first,
         bottomEdge: last,
         images: images,
+        paintShadows: paintShadows,
       );
     }
   }
 }
 
-/// 把一页上属于同一个外层容器的片段合成一个矩形，从外到内依次画。
-///
-/// 外层先画、内层后画，背景不会盖住内层；首片带顶边框、末片带底边框。
-void _paintContainers(
+void _paintContainerPiece(
   Canvas canvas,
-  List<PageFragment> fragments,
+  ContainerPageGeometry piece,
   ReadingTheme theme,
-  double? pageHeight,
   BookImageLookup? images,
-  Map<int, Rect> backgroundAreas,
+  Rect? area,
+  BookShadowPainter paintShadows,
+  double? scrollCellHeight,
+  Rect? legend,
 ) {
-  final runs = <int, List<(Rect, ContainerBoxFrame, bool, bool)>>{};
-  for (final fragment in fragments) {
-    final block = fragment.block;
-    if (block.tableId != null && !block.isTableBox && !block.isParallelFlow) {
-      continue;
-    }
-    for (final frame in fragment.block.containerBoxes) {
-      final part = containerBackgroundPart(fragment, frame);
-      if (part != null) (runs[frame.elementId] ??= []).add(part);
+  var rect = piece.rect;
+  if (legend != null && piece.topEdge) {
+    final y = legend.center.dy.clamp(rect.top, rect.bottom);
+    rect = Rect.fromLTRB(rect.left, y, rect.right, rect.bottom);
+    if (area != null) {
+      area = Rect.fromLTRB(area.left, y, area.right, area.bottom);
     }
   }
-  // DOM 元素编号为前序：父框一定先于子框，空元素和块内范围也遵守它。
-  final ids = runs.keys.toList()..sort();
-  for (final id in ids) {
-    final run = runs[id]!;
-    final first = run.first, last = run.last;
-    final rect = _continuedRect(
-      Rect.fromLTRB(
-        first.$1.left,
-        first.$1.top,
-        first.$1.right,
-        last.$1.bottom,
-      ),
-      first.$3,
-      last.$4,
-      pageHeight,
-    );
-    if (rect.height <= 0) continue;
+  if (area != null && scrollCellHeight != null) {
+    // 父框包括子块之间的留白。按整框画，只在列表单元交界处硬裁切，
+    // 否则相邻两段各自抗锯齿，即使几何相接也会露出一行纸色。
+    final top = math.min(0.0, rect.top);
+    final bottom = math.max(scrollCellHeight, rect.bottom);
+    final cutTop = area.top < top - .001;
+    final cutBottom = area.bottom > bottom + .001;
+    if (cutTop || cutBottom) {
+      final clip = canvas.getLocalClipBounds();
+      canvas.save();
+      canvas.clipRect(
+        Rect.fromLTRB(
+          clip.left,
+          cutTop ? top : clip.top,
+          clip.right,
+          cutBottom ? bottom : clip.bottom,
+        ),
+        doAntiAlias: false,
+      );
+    }
     paintBookBoxRect(
       canvas,
-      rect,
-      first.$2.box,
+      area,
+      piece.box,
       theme,
-      topEdge: first.$3,
-      bottomEdge: last.$4,
       images: images,
-      backgroundArea: backgroundAreas[id],
+      backgroundArea: area,
+      topBorderGap: legend,
+      paintShadows: paintShadows,
     );
+    if (cutTop || cutBottom) canvas.restore();
+    return;
   }
+  paintBookBoxRect(
+    canvas,
+    rect,
+    piece.box,
+    theme,
+    topEdge: piece.topEdge,
+    bottomEdge: piece.bottomEdge,
+    images: images,
+    backgroundArea: area,
+    topBorderGap: legend,
+    paintShadows: paintShadows,
+  );
 }
 
 /// 分页时框的空白部分也属于原容器：续页从页顶接上，未结束的框延伸到
@@ -152,49 +253,6 @@ Rect _continuedRect(Rect rect, bool first, bool last, double? pageHeight) =>
         last ? rect.bottom : math.max(rect.bottom, pageHeight),
       );
 
-/// 显示框与本次页/滚动片段的交集。块内框按行范围裁剪；父层的上下
-/// 留白只在真实首尾扣除，中间续页不能重复加顶边或减底边。
-(Rect, ContainerBoxFrame, bool, bool)? containerBackgroundPart(
-  PageFragment fragment,
-  ContainerBoxFrame frame,
-) {
-  final block = fragment.block;
-  var top = fragment.y, bottom = fragment.y + fragment.height;
-  var first = frame.first, last = frame.last;
-  if (block.lines.isNotEmpty) {
-    final start = math.max(fragment.lineFrom, frame.lineFrom);
-    final end = math.min(fragment.lineTo, frame.lineTo ?? block.lines.length);
-    if (end <= start) return null;
-    if (start > fragment.lineFrom) {
-      top += block.textTopOf(fragment.lineFrom);
-      for (var i = fragment.lineFrom; i < start; i++) {
-        top += block.lines[i].height;
-      }
-    }
-    if (end < fragment.lineTo) {
-      bottom = fragment.y + block.textTopOf(fragment.lineFrom);
-      for (var i = fragment.lineFrom; i < end; i++) {
-        bottom += block.lines[i].height;
-      }
-    }
-    first = first && start == frame.lineFrom;
-    last = last && end == (frame.lineTo ?? block.lines.length);
-  }
-  if (first) top += frame.top;
-  if (frame.height != null) {
-    bottom = math.min(bottom, top + frame.height!);
-  } else if (last) {
-    bottom -= frame.bottom;
-  }
-  if (bottom <= top) return null;
-  return (
-    Rect.fromLTWH(frame.left, top, frame.width, bottom - top),
-    frame,
-    first,
-    last,
-  );
-}
-
 /// 把一页上属于同一个容器的连续片段合成一个矩形画盒子。
 ///
 /// 以前是逐块画背景，块高的取整差会在块与块之间漏出纸面白缝；整段只画一次
@@ -206,6 +264,7 @@ void _paintBoxRun(
   ReadingTheme theme,
   double? pageHeight,
   BookImageLookup? images,
+  BookShadowPainter paintShadows,
 ) {
   if (run.isEmpty) return;
   final first = run.first;
@@ -248,5 +307,6 @@ void _paintBoxRun(
     topEdge: firstEdge,
     bottomEdge: lastEdge,
     images: images,
+    paintShadows: paintShadows,
   );
 }

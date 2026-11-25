@@ -21,8 +21,7 @@ ChapterContent enrichEpubContent(
     final resource = block.resourcePath;
     if (block.kind != BlockKind.image ||
         resource == null ||
-        !resource.toLowerCase().endsWith('.svg') ||
-        (block.resourceWidth != 1 && block.resourceHeight != 1)) {
+        !resource.toLowerCase().endsWith('.svg')) {
       return block;
     }
     final file = File(p.join(contentDirectory, resource));
@@ -33,10 +32,14 @@ ChapterContent enrichEpubContent(
       ...block.toJson(),
       'width': size.width,
       'height': size.height,
+      'svgRatioOnly': size.svgRatioOnly == true,
     });
   }).toList();
   var tables = content.tables;
-  if (tables.isEmpty && chapter.href != null && File(sourcePath).existsSync()) {
+  if (content.epubDetailsRevision < 2 &&
+      tables.isEmpty &&
+      chapter.href != null &&
+      File(sourcePath).existsSync()) {
     final archive = EpubArchive.open(sourcePath);
     try {
       final package = EpubPackage.parse(
@@ -50,6 +53,7 @@ ChapterContent enrichEpubContent(
         final html = archive.readText(item.entryPath);
         if (html.contains('<table')) {
           final parsed = XhtmlBlockBuilder(
+            legacyMobi: archive.legacyMobi,
             basePath: item.entryPath,
             resolveImage: (path) => archive.contains(path)
                 ? ResolvedImage(resourcePath: 'res/$path', width: 1, height: 1)
@@ -96,5 +100,8 @@ ChapterContent enrichEpubContent(
     chapterId: content.chapterId,
     blocks: blocks,
     tables: tables,
+    epubDetailsRevision: kEpubDetailsRevision,
+    stylesJson: content.stylesJson,
+    displaySourceJson: content.displaySourceJson,
   );
 }

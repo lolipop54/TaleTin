@@ -9,6 +9,7 @@ library;
 import '../services/library_file_gate.dart';
 
 import '../repositories/book_repository.dart';
+import '../repositories/book_cover_repository.dart';
 import '../services/import_storage.dart';
 import '../services/book_content_change.dart';
 
@@ -40,9 +41,11 @@ class DeleteBooks {
     required this._storage,
     this.prepareContentChange,
     this.fileGate,
+    this.covers,
   });
   final PrepareBookContentChange? prepareContentChange;
   final LibraryFileGate? fileGate;
+  final BookCoverRepository? covers;
 
   final BookRepository _books;
   final ImportStorage _storage;
@@ -63,6 +66,8 @@ class DeleteBooks {
     Iterable<String> bookIds, {
     required DateTime now,
   }) async {
+    // 首次升级后直接删书时，也先保留旧书目录里的自定义封面。
+    await covers?.prepareGallery();
     final releaseFiles = await fileGate?.enter();
     try {
       return await _delete(bookIds, now: now);

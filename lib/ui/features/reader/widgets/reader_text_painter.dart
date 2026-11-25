@@ -1,3 +1,5 @@
+import 'reader_link_ink.dart';
+
 import 'dart:math' as math;
 
 import 'package:flutter/painting.dart';
@@ -6,6 +8,7 @@ import '../../../../domain/models/book_document.dart';
 import '../../../../engine/layout/chapter_paginator.dart';
 import '../../../../engine/layout/layout_options.dart';
 import '../../../../engine/layout/measured_block.dart';
+import '../../../../engine/layout/measured_paragraphs.dart';
 import '../../../core/theme/reading_theme.dart';
 import 'book_colors.dart';
 import 'book_box_paint.dart';
@@ -19,18 +22,24 @@ class ReaderTextPainter {
     this.theme, {
     this.backgroundColor,
     this.images,
+    this.paragraphs,
+    this.links,
   });
+  final LinkAppearance? links;
   final LayoutOptions options;
   final ReadingTheme theme;
   final Color? backgroundColor;
+  static bool usesBackdropForInk(ReadingTheme theme) =>
+      theme.background.computeLuminance() < .35;
   final BookImageLookup? images;
+  final MeasuredParagraphs? paragraphs;
   void paint(
     Canvas canvas,
     Size size,
     PageFragment fragment, {
     bool background = true,
   }) {
-    final block = fragment.block;
+    final block = links?.resolve(fragment.block) ?? fragment.block;
     if (block.kind == BlockKind.divider) {
       paintReaderDivider(canvas, size, fragment, theme);
       return;
@@ -47,11 +56,15 @@ class ReaderTextPainter {
     Color adaptLine(int line, Color ink, Color? inlineBackground) {
       // 浅色主题保留作者字色。金色标题、橙底白字本来就可能低于自动
       // 对比度阈值，不能因此改成黑字；夜间仍按实际底色保证可读。
-      if (theme.background.computeLuminance() >= .35) return ink;
+      if (!usesBackdropForInk(theme)) return ink;
       // 图片上的作者字色不能按纯色纸面翻转；透明 PNG 上的白字尤其如此。
       // 有明确行内底色时仍按该底色计算，不能让外层图片盖过内层颜色。
       final imageBehind =
           block.box?.backgroundImage != null ||
+          block.tableCellBox?.backgroundImage != null ||
+          block.tableBackdrops.any(
+            (layer) => layer.box.backgroundImage != null,
+          ) ||
           block.codeBox?.backgroundImage != null ||
           block.containerBoxes.any(
             (f) =>
@@ -94,7 +107,14 @@ class ReaderTextPainter {
 
     // 行内图片把文字隔成几段：按测量好的段位置逐段绘制，图片由 PreparedPage 补画。
     if (block.hasSegmentedText) {
-      _paintInlineLines(canvas, fragment, maxWidth, baseColor, adaptLine);
+      _paintInlineLines(
+        canvas,
+        block,
+        fragment,
+        maxWidth,
+        baseColor,
+        adaptLine,
+      );
     } else {
       var index = fragment.lineFrom;
       var top = fragment.y + block.textTopOf(fragment.lineFrom);
@@ -121,6 +141,7 @@ class ReaderTextPainter {
           }
         }
         final painter = block.createFragmentPainter(
+          paragraphs: paragraphs,
           lineFrom: index,
           lineTo: end,
           textScaler: options.textScaler,
@@ -149,6 +170,7 @@ class ReaderTextPainter {
               linePainter: painter,
               origin: origin,
               color: baseColor,
+              adaptColor: (ink) => adaptLine(index, ink, null),
               textScaler: options.textScaler,
             );
           }
@@ -200,6 +222,7 @@ class ReaderTextPainter {
                 linePainter: linePainter,
                 origin: origin,
                 color: baseColor,
+                adaptColor: (ink) => adaptLine(i, ink, null),
                 textScaler: options.textScaler,
               );
             }
@@ -321,6 +344,10 @@ class ReaderTextPainter {
       }
       apply(frame.box.background);
     }
+    for (final layer in block.tableBackdrops) {
+      apply(layer.box.background);
+    }
+    apply(block.tableCellBox?.background);
     apply(block.box?.background);
     apply(block.codeBox?.background);
     return surface;
@@ -329,12 +356,12 @@ class ReaderTextPainter {
   /// 行内图片块：每行的文字段按测量位置绘制，行内的图片留给图片层。
   void _paintInlineLines(
     Canvas canvas,
+    MeasuredBlock block,
     PageFragment fragment,
     double maxWidth,
     Color baseColor,
     Color Function(int, Color, Color?) adapt,
   ) {
-    final block = fragment.block;
     var top = fragment.y + block.textTopOf(fragment.lineFrom);
     for (var i = fragment.lineFrom; i < fragment.lineTo; i++) {
       final line = block.lines[i];
@@ -361,11 +388,17 @@ class ReaderTextPainter {
               ruby.fontSize,
               ruby.fontFamily,
               options.textScaler,
-              color: baseColor,
+              color: ruby.color == null
+                  ? baseColor
+                  : adapt(i, ruby.color!, null),
             );
             label.paint(
               canvas,
-              origin + Offset((segment.width - ruby.width) / 2, -ruby.height),
+              origin +
+                  Offset(
+                    (segment.width - ruby.width) / 2,
+                    ruby.below ? painter.height : -ruby.height,
+                  ),
             );
             label.dispose();
           }
@@ -377,6 +410,7 @@ class ReaderTextPainter {
               segmentPainter: painter,
               origin: origin,
               color: baseColor,
+              adaptColor: (ink) => adapt(i, ink, null),
               textScaler: options.textScaler,
             );
           }

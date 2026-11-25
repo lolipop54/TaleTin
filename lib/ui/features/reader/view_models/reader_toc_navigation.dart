@@ -15,6 +15,33 @@ final bookTocProvider = FutureProvider.family<List<TocNode>, String>((
       .toc(bookId, book.contentVersion);
 });
 
+/// 简化排版的目录面板、章名和上下章跳转共用补齐后的条目。
+final readerDisplayTocProvider = FutureProvider.autoDispose
+    .family<List<TocNode>, String>((ref, bookId) async {
+      final (format, chapters) = ref.watch(
+        readerSessionProvider(bookId)
+            .select((s) => (s.value?.book.format, s.value?.chapters)),
+      );
+      final original = ref.watch(
+        readerSettingsProvider(bookId)
+            .select((s) => s.value?.layoutMode.isOriginal),
+      );
+      final nodes = await ref.watch(bookTocProvider(bookId).future);
+      if (format?.usesOriginalWebView != true ||
+          original != false ||
+          chapters == null ||
+          nodes.length >= chapters.length) {
+        return nodes;
+      }
+      return backgroundCompute(_completeReaderToc, (
+        nodes,
+        chapters,
+      ), enabled: largeToc(nodes, chapters.length, backgroundListThreshold));
+    });
+
+List<TocNode> _completeReaderToc((List<TocNode>, List<Chapter>) input) =>
+    completeFlatToc(input.$1, input.$2);
+
 mixin _ReaderTocNavigation
     on
         AsyncNotifier<ReaderSession>,

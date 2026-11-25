@@ -8,7 +8,7 @@ class ReadingMoreSettingsView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: GtAppBar(title: const Text('更多设置')),
+    appBar: GtAppBar.settings(title: const Text('更多设置')),
     body: const SafeArea(
       child: SingleChildScrollView(
         padding: EdgeInsets.symmetric(horizontal: 20, vertical: 12),

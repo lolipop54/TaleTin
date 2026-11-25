@@ -3,6 +3,7 @@ import '../../ui/features/bookshelf/view_models/visible_shelf_books.dart';
 import '../di/book_group_providers.dart';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:go_router/go_router.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -21,6 +22,7 @@ import '../../ui/features/settings/view_models/settings_view_model.dart';
 import 'main_exit_scope.dart';
 import 'main_pages_ready.dart';
 import 'main_navigation_bar.dart';
+import 'windows_main_navigation.dart';
 import 'reader_route_page.dart';
 import '../../ui/core/widgets/frame_fade.dart';
 import '../../ui/core/widgets/book_loading.dart';
@@ -234,24 +236,44 @@ class _MainShellState extends ConsumerState<MainShell> {
     // 超过一秒仍保留订阅，让后台连接继续，完成或超时后照常更新界面。
     ref.listen(listeningVoicesProvider, (_, _) {});
     ref.listen(listeningViewStateProvider, (_, _) {});
+    final windows = defaultTargetPlatform == TargetPlatform.windows;
+    final selectingBooks =
+        navigationShell.currentIndex == 0 &&
+        ref.watch(bookshelfProvider.select((s) => s.selectionMode));
+    final content = FrameFade(
+      key: _fadeKey,
+      revision: navigationShell.currentIndex,
+      child: navigationShell,
+    );
     return MainPagesReady(
       ready: _ready,
       isCurrent: ModalRoute.isCurrentOf(context) ?? true,
+      shelfActive: navigationShell.currentIndex == 0,
       child: Scaffold(
         // 让页面内容画到曲线凹口背后；各页把底栏高度作为列表末尾留白。
-        extendBody: true,
-        body: FrameFade(
-          key: _fadeKey,
-          revision: navigationShell.currentIndex,
-          child: navigationShell,
-        ),
-        bottomNavigationBar: MainNavigationBar(
-          hidden:
-              navigationShell.currentIndex == 0 &&
-              ref.watch(bookshelfProvider.select((s) => s.selectionMode)),
-          branchIndex: navigationShell.currentIndex,
-          onSelect: _goBranch,
-        ),
+        extendBody: !windows,
+        body: windows
+            ? LayoutBuilder(
+                builder: (context, constraints) => Row(
+                  children: [
+                    WindowsMainNavigation(
+                      compact: constraints.maxWidth < 700,
+                      selectingBooks: selectingBooks,
+                      branchIndex: navigationShell.currentIndex,
+                      onSelect: _goBranch,
+                    ),
+                    Expanded(child: content),
+                  ],
+                ),
+              )
+            : content,
+        bottomNavigationBar: windows
+            ? null
+            : MainNavigationBar(
+                hidden: selectingBooks,
+                branchIndex: navigationShell.currentIndex,
+                onSelect: _goBranch,
+              ),
       ),
     );
   }

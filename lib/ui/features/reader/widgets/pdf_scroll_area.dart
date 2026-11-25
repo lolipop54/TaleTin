@@ -6,10 +6,12 @@ class _PdfScroll extends ConsumerStatefulWidget {
     required this.parent,
     required this.book,
     required this.fixedView,
+    required this.zoomSurface,
   });
   final PdfReaderArea parent;
   final PdfBookController book;
   final bool fixedView;
+  final GlobalKey<PdfZoomSurfaceState> zoomSurface;
   @override
   ConsumerState<_PdfScroll> createState() => _PdfScrollState();
 }
@@ -193,14 +195,20 @@ class _PdfScrollState extends ConsumerState<_PdfScroll>
     }
   }
 
-  Future<void> volumeTurn(bool forward) async {
+  Future<void> volumeTurn(bool forward) =>
+      scrollBy(forward ? 1 : -1, byPage: true);
+
+  Future<void> scrollBy(double delta, {bool byPage = false}) async {
     if (!_canScroll) return;
     await session.beginManualReading();
     if (!mounted || !_canScroll) return;
     final position = _controller.offset;
     final scale = view.scale;
-    final target = (_controller.offset + _height * .8 * (forward ? 1 : -1))
-        .clamp(0.0, _maxPixels(scale));
+    final target = (position + (byPage ? _height * .8 * delta : delta)).clamp(
+      0.0,
+      _maxPixels(scale),
+    );
+    if (position == target) return;
     await _prepareViewport(target);
     if (!mounted ||
         !_canScroll ||
@@ -452,6 +460,7 @@ class _PdfScrollState extends ConsumerState<_PdfScroll>
             left: 0,
             right: 0,
             child: PdfZoomSurface(
+              key: widget.zoomSurface,
               view: view,
               fixedView: widget.fixedView,
               canStart: () => ready && !_jumping && !_loadingZoom,

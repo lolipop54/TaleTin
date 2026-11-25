@@ -34,7 +34,7 @@ export 'style_property.dart';
 
 abstract final class StyleRegistry {
   /// 注册表自身的版本；属性增删或语义变化时递增，进缓存身份。
-  static const int version = 3;
+  static const int version = 8;
 
   /// 全部属性。顺序 = 文字 → 盒子 → 块级 → 尺寸/表格，Rust 常量表按同样顺序生成。
   static final List<StyleProperty> properties = [
@@ -48,6 +48,7 @@ abstract final class StyleRegistry {
   ///
   /// 覆盖报告按简写统计声明次数，但状态按长写算；解析器展开简写后再查长写。
   static const Map<String, List<String>> shorthands = {
+    'text-emphasis': ['text-emphasis-style', 'text-emphasis-color'],
     'border-radius': [
       'border-top-left-radius',
       'border-top-right-radius',
@@ -115,6 +116,7 @@ abstract final class StyleRegistry {
       'background-repeat',
       'background-position',
       'background-size',
+      'background-attachment',
     ],
     'font': [
       'font-style',
@@ -130,8 +132,11 @@ abstract final class StyleRegistry {
 
   /// 不属于 CSS 标准、但样书里真的在用的私有属性，以及它们等价的属性名。
   static const Map<String, String> aliases = {
+    'duokan-bleed': 'bleed',
+    'qrbleed': 'bleed',
     'duokan-text-indent': 'text-indent',
     'duokan-text-align': 'text-align',
+    '-webkit-box-decoration-break': 'box-decoration-break',
     '-webkit-text-indent': 'text-indent',
     '-webkit-text-size-adjust': 'text-size-adjust',
     '-ms-text-size-adjust': 'text-size-adjust',
@@ -145,6 +150,18 @@ abstract final class StyleRegistry {
     'overflow-y': 'overflow',
     // CSS 2.1 的翻页属性是 CSS 3 同名属性的旧写法。
     'page-break-before': 'break-before',
+    '-webkit-text-emphasis': 'text-emphasis',
+    '-moz-text-emphasis': 'text-emphasis',
+    '-ms-text-emphasis': 'text-emphasis',
+    '-webkit-text-emphasis-style': 'text-emphasis-style',
+    '-webkit-text-emphasis-position': 'text-emphasis-position',
+    '-webkit-text-emphasis-color': 'text-emphasis-color',
+    '-moz-text-emphasis-style': 'text-emphasis-style',
+    '-moz-text-emphasis-position': 'text-emphasis-position',
+    '-moz-text-emphasis-color': 'text-emphasis-color',
+    '-ms-text-emphasis-style': 'text-emphasis-style',
+    '-ms-text-emphasis-position': 'text-emphasis-position',
+    '-ms-text-emphasis-color': 'text-emphasis-color',
     'page-break-after': 'break-after',
     'page-break-inside': 'break-inside',
   };

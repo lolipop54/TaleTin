@@ -22,9 +22,8 @@ class FontWeightSpec {
   static const FontWeightSpec normal = FontWeightSpec(400);
   static const FontWeightSpec bold = FontWeightSpec(700);
 
-  bool get isBold => mode == FontWeightMode.absolute
-      ? value >= 600
-      : value > 400;
+  bool get isBold =>
+      mode == FontWeightMode.absolute ? value >= 600 : value > 400;
 
   bool get isRelative => mode != FontWeightMode.absolute;
 
@@ -35,11 +34,11 @@ class FontWeightSpec {
     FontWeightMode.lighter => parent._shift(-300),
   };
 
-  FontWeightSpec _shift(int delta) => FontWeightSpec((value + delta).clamp(100, 900));
+  FontWeightSpec _shift(int delta) =>
+      FontWeightSpec((value + delta).clamp(100, 900));
 
-  Object? toJson() => mode == FontWeightMode.absolute
-      ? value
-      : {'v': value, 'm': mode.name};
+  Object? toJson() =>
+      mode == FontWeightMode.absolute ? value : {'v': value, 'm': mode.name};
   static FontWeightSpec? fromJson(Object? json) {
     if (json is num) return FontWeightSpec(json.toInt());
     if (json is! Map) return null;
@@ -58,6 +57,8 @@ enum FontWeightMode { absolute, bolder, lighter }
 enum FontStyleSpecValue { normal, italic, oblique }
 
 enum TextAlignSpec {
+  char,
+
   /// 只用于 `text-align-last`：跟随 `text-align`（CSS 初始值就是 auto）。
   auto,
   start,
@@ -69,12 +70,7 @@ enum TextAlignSpec {
   justifyAll,
 }
 
-enum TextTransformSpec {
-  none,
-  capitalize,
-  uppercase,
-  lowercase,
-}
+enum TextTransformSpec { none, capitalize, uppercase, lowercase }
 
 /// `white-space`。我们只区分「空白怎么处理」和「能不能自动换行」两件事。
 enum WhiteSpaceSpec {
@@ -132,7 +128,7 @@ enum PositionSpec { static, relative, absolute, fixed, sticky }
 enum BoxSizingSpec { contentBox, borderBox }
 
 /// 边框线型。`none`／`hidden` 表示不画；`hidden` 在 border-collapse 里另有语义，
-/// 我们目前只按「不画」处理并记录原值。
+/// 它会同时压掉相邻格子在同一段声明的边线。
 enum BorderLineStyle {
   none,
   hidden,
@@ -241,23 +237,39 @@ class BorderSpec {
 }
 
 class CornerRadii {
-  const CornerRadii({this.topLeft, this.topRight, this.bottomRight, this.bottomLeft});
+  const CornerRadii({
+    this.topLeft,
+    this.topRight,
+    this.bottomRight,
+    this.bottomLeft,
+    this.vertical,
+  });
 
   const CornerRadii.all(Length value)
     : topLeft = value,
       topRight = value,
       bottomRight = value,
-      bottomLeft = value;
+      bottomLeft = value,
+      vertical = null;
 
   final Length? topLeft;
   final Length? topRight;
   final Length? bottomRight;
   final Length? bottomLeft;
 
+  final Edges? vertical; // 上、右、下、左依次对应左上、右上、右下、左下。
+
   bool get isEmpty =>
-      topLeft == null && topRight == null && bottomRight == null && bottomLeft == null;
+      topLeft == null &&
+      topRight == null &&
+      bottomRight == null &&
+      bottomLeft == null;
 
   Map<String, Object?> toJson() => {
+    if (vertical?.top != null) 'tlY': vertical!.top!.toJson(),
+    if (vertical?.right != null) 'trY': vertical!.right!.toJson(),
+    if (vertical?.bottom != null) 'brY': vertical!.bottom!.toJson(),
+    if (vertical?.left != null) 'blY': vertical!.left!.toJson(),
     if (topLeft != null) 'tl': topLeft!.toJson(),
     if (topRight != null) 'tr': topRight!.toJson(),
     if (bottomRight != null) 'br': bottomRight!.toJson(),
@@ -267,6 +279,12 @@ class CornerRadii {
   static CornerRadii? fromJson(Object? json) {
     if (json is! Map) return null;
     return CornerRadii(
+      vertical: Edges(
+        top: lengthFromJson(json['tlY']),
+        right: lengthFromJson(json['trY']),
+        bottom: lengthFromJson(json['brY']),
+        left: lengthFromJson(json['blY']),
+      ),
       topLeft: lengthFromJson(json['tl']),
       topRight: lengthFromJson(json['tr']),
       bottomRight: lengthFromJson(json['br']),
@@ -330,6 +348,7 @@ class BackgroundSpec {
     this.repeat,
     this.position,
     this.size,
+    this.attachment,
     this.clip,
     this.raw,
   });
@@ -346,10 +365,10 @@ class BackgroundSpec {
   final String? repeat;
   final String? position;
   final String? size;
+  final String? attachment;
   final String? clip;
 
-  /// 简写的原始值。尚未消费的写法（多层背景、非默认 `background-attachment`
-  /// 等）原样留在这里，只进覆盖报告，不参与绘制。
+  /// 简写中尚未消费的写法，例如多层背景，只进覆盖报告。
   final String? raw;
 
   bool get isEmpty =>
@@ -359,6 +378,7 @@ class BackgroundSpec {
       repeat == null &&
       position == null &&
       size == null &&
+      attachment == null &&
       clip == null;
 
   Map<String, Object?> toJson() => {
@@ -368,6 +388,7 @@ class BackgroundSpec {
     if (repeat != null) 'r': repeat,
     if (position != null) 'p': position,
     if (size != null) 's': size,
+    if (attachment != null) 'a': attachment,
     if (clip != null) 'k': clip,
     if (raw != null) 'raw': raw,
   };
@@ -381,6 +402,7 @@ class BackgroundSpec {
       repeat: json['r'] as String?,
       position: json['p'] as String?,
       size: json['s'] as String?,
+      attachment: json['a'] as String?,
       clip: json['k'] as String?,
       raw: json['raw'] as String?,
     );
@@ -458,7 +480,8 @@ class TextDecorationSpec {
 
   Map<String, Object?> toJson() => {
     if (lines.isNotEmpty)
-      'l': [for (final line in lines) line.name]..sort((a, b) => a.compareTo(b)),
+      'l': [for (final line in lines) line.name]
+        ..sort((a, b) => a.compareTo(b)),
     if (color != null) 'c': color!.toJson(),
     if (style != null) 's': style!.name,
     if (thickness != null) 't': thickness!.toJson(),

@@ -13,6 +13,7 @@ import 'dart:typed_data';
 import 'package:archive/archive.dart';
 import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
+import 'package:mobi_native/mobi_native.dart';
 import 'package:direct_read_rust/direct_read_rust.dart';
 
 import '../../../core/errors/import_error.dart';
@@ -32,21 +33,53 @@ abstract interface class BatchedPublicationEntries
   List<Uint8List> readBytesBatch(List<String> paths);
 }
 
+abstract interface class MobiRendition {
+  int get mobiVersion;
+}
+
 class EpubArchive {
+  // 直接读取采用 native 已选中的正文版本。目录是旧格式重建的私有目录。
+  late final bool legacyMobi = _legacyMobi();
+  bool _legacyMobi() {
+    if (_entries case MobiRendition source) return source.mobiVersion < 8;
+    if (_directory == null) return false;
+    final version = File(p.join(p.dirname(_directory), 'mobi-version'));
+    if (version.existsSync()) {
+      return (int.tryParse(version.readAsStringSync().trim()) ?? 8) < 8;
+    }
+    // 早期解包目录缺少版本记录。从原书头部取得解码器选择的正文，不扫描文字或重做索引。
+    final path = mobiSource;
+    if (path == null || !File(path).existsSync()) return false;
+    try {
+      final native = DirectMobi(path);
+      try {
+        return native.version < 8;
+      } finally {
+        native.close();
+      }
+    } on MobiReadFailure {
+      return false;
+    }
+  }
+
+  final String? mobiSource;
+
   EpubArchive._(this._archive, this._input)
-    : _directory = null,
+    : mobiSource = null,
+      _directory = null,
       _entries = null,
       digests = const {};
 
   /// MOBI 重建后的出版物直接从私有目录读取，共用 EPUB 的路径和输出限制。
-  EpubArchive.directory(String root, {this.digests = const {}})
+  EpubArchive.directory(String root, {this.digests = const {}, this.mobiSource})
     : _directory = p.normalize(p.absolute(root)),
       _entries = null,
       _archive = null,
       _input = null;
 
   EpubArchive.entries(PublicationEntries entries)
-    : _entries = entries,
+    : mobiSource = null,
+      _entries = entries,
       _directory = null,
       _archive = null,
       _input = null,
@@ -328,7 +361,13 @@ String? normalizeEntryPath(String path) {
 String? resolveEntryPath(String baseFile, String href) {
   // EPUB 常直接写中文路径或 #中文锚点；decodeFull 只接受 ASCII URI。
   // 先由 Uri 编码原始中文，再解码，兼容中文与已有 % 编码混写的链接。
-  final uri = Uri.parse(href.replaceAll('\\', '/'));
+  final reference = href.replaceAll('\\', '/');
+  // 某些 EPUB 的同目录文件名含冒号，且冒号前的字符不可能是 URI 协议。
+  // 加 ./ 后按相对路径解析；合法协议及 // 外部地址仍由下方判断拒绝。
+  final uri =
+      Uri.tryParse(reference) ??
+      (reference.startsWith('/') ? null : Uri.tryParse('./$reference'));
+  if (uri == null) return null;
   // 内嵌脚注图和外部 URL 不属于 ZIP 条目；导入与位置对照必须一起跳过。
   if (uri.hasScheme || uri.hasAuthority) return null;
   final decoded = Uri.decodeFull(uri.toString());

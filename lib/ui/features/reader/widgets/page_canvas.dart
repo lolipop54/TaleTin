@@ -7,6 +7,8 @@
 /// 图片先准备好，再和文字、选区一起绘制；页面准备期间保留旧画面。
 library;
 
+import 'reader_link_ink.dart';
+
 import 'package:flutter/material.dart';
 
 import '../../../../engine/layout/chapter_layout.dart';
@@ -21,9 +23,11 @@ import 'css_background_paint.dart';
 import '../../../../engine/layout/book_background.dart';
 import '../../../../engine/layout/measured_block.dart';
 import 'reader_text_painter.dart';
+import '../../../../engine/layout/measured_paragraphs.dart';
+import 'book_shadow_paint.dart';
 import 'reader_divider_paint.dart';
 import 'prepared_page_view.dart';
-import 'table_painter.dart' show paintTableFrame;
+import 'table_painter.dart' show paintTableFrames;
 import 'prepared_page.dart';
 import 'page_information.dart';
 import 'selection_handles.dart';
@@ -46,21 +50,27 @@ class PageCanvas extends StatelessWidget {
     this.thoughtMarkers = const [],
     this.information,
     this.textCache,
+    this.paperSize,
     this.onReady,
     this.onPrepared,
   });
 
   final ChapterLayout layout;
+  bool get hasBleedingArtwork =>
+      layout.page(pageIndex)?.hasPaperArtwork ?? false;
   final int pageIndex;
   final ReadingTheme theme;
   final PageInformation? information;
   final PageTextCache? textCache;
+  BookShadowPainter get paintShadows =>
+      textCache?.paintShadows ?? paintBookShadows;
+  final Size? paperSize;
 
   /// 公式 SVG 的 currentColor 在资源准备时解析，换主题后需要重新准备。
   Color? get formulaColor =>
       layout
               .page(pageIndex)
-              ?.fragments
+              ?.paintFragments
               .any(
                 (f) => f.block
                     .inlineImagesInLines(f.lineFrom, f.lineTo)
@@ -94,7 +104,8 @@ class PageCanvas extends StatelessWidget {
       chapterBackground(layout.content, layout.options);
   Set<String> get backgroundPaths => {
     if (cssBackground?.backgroundImage case final background?) background.path,
-    for (final f in layout.page(pageIndex)?.fragments ?? const <PageFragment>[])
+    for (final f
+        in layout.page(pageIndex)?.paintFragments ?? const <PageFragment>[])
       ...blockBackgroundPaths(f.block),
   };
 
@@ -103,7 +114,9 @@ class PageCanvas extends StatelessWidget {
     final slice = layout.page(pageIndex), cache = textCache;
     if (slice == null || cache == null) return;
     final painter = _PagePainter(
+      links: ReaderLinkInk.appearance(layout.bookId, layout.content),
       slice: slice,
+      paragraphs: layout.task?.paragraphs,
       options: layout.options,
       theme: theme,
       backdrop: backdrop,
@@ -118,19 +131,34 @@ class PageCanvas extends StatelessWidget {
   }
 
   /// 静态页和折页共用原有文字、装饰与选区画法；图片由准备好的页面补画。
-  void paintText(Canvas canvas, {BookImageLookup? images, Color? backdrop}) {
+  void paintText(
+    Canvas canvas, {
+    BookImageLookup? images,
+    Color? backdrop,
+    bool paintImageBoxes = true,
+  }) {
     final slice = layout.page(pageIndex);
     if (slice == null) return;
     paintBlockBackgrounds(
       canvas,
-      slice.fragments,
+      slice.paintFragments,
       layout.options,
       theme,
       paginated: true,
+      backgroundAreas: slice.backgroundAreas,
+      images: images,
+      paintImageBoxes: paintImageBoxes,
+      paintShadows: paintShadows,
+    );
+    paintTableFrames(
+      canvas,
+      slice.paintFragments,
+      theme.secondary,
+      theme,
       images: images,
     );
     // 行内底色也必须在选文、笔记和听书高亮之前画，不能放进后绘制的文字缓存。
-    for (final fragment in slice.fragments) {
+    for (final fragment in slice.paintFragments) {
       if (fragment.frameOnly) continue;
       final block = fragment.block;
       paintInlineBoxes(
@@ -142,6 +170,7 @@ class PageCanvas extends StatelessWidget {
         block.layoutWidth ?? layout.options.contentWidthFor(block.kind),
         theme,
         images: images,
+        paintShadows: paintShadows,
       );
     }
     for (final highlight in highlights) {
@@ -156,7 +185,9 @@ class PageCanvas extends StatelessWidget {
     }
     _SelectionPainter(rects: selectionRects).paint(canvas, layout.contentSize);
     final painter = _PagePainter(
+      links: ReaderLinkInk.appearance(layout.bookId, layout.content),
       slice: slice,
+      paragraphs: layout.task?.paragraphs,
       options: layout.options,
       theme: theme,
       backdrop: backdrop,
@@ -226,14 +257,18 @@ class _SelectionPainter extends CustomPainter {
 const Color kSelectionHighlight = Color(0x66B7D3F6);
 
 class _PagePainter extends CustomPainter {
+  final LinkAppearance? links;
   const _PagePainter({
+    this.links,
     required this.slice,
+    required this.paragraphs,
     required this.options,
     required this.theme,
     this.backdrop,
   });
 
   final PageSlice slice;
+  final MeasuredParagraphs? paragraphs;
 
   /// 排版时用的参数：绘制只能用它，不能另取一份
   final LayoutOptions options;
@@ -242,16 +277,7 @@ class _PagePainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    for (final fragment in slice.fragments) {
-      if (fragment.tableFrame case final frame?) {
-        if (fragment.block.tableHeader) {
-          canvas.drawRect(
-            frame,
-            Paint()..color = theme.secondary.withValues(alpha: .08),
-          );
-        }
-        paintTableFrame(canvas, fragment, theme.secondary);
-      }
+    for (final fragment in slice.paintFragments) {
       if (fragment.frameOnly) continue;
       switch (fragment.block.kind) {
         case BlockKind.image:
@@ -268,7 +294,9 @@ class _PagePainter extends CustomPainter {
           ReaderTextPainter(
             options,
             theme,
+            links: links,
             backgroundColor: backdrop,
+            paragraphs: paragraphs,
           ).paint(canvas, size, fragment, background: false);
       }
     }

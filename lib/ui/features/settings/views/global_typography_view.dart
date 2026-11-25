@@ -1,6 +1,7 @@
 import 'package:taletin/ui/core/widgets/gt_switch.dart';
 import 'package:taletin/ui/core/widgets/gt_app_bar.dart';
 import 'package:taletin/ui/core/widgets/gt_button.dart';
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -22,10 +23,11 @@ class GlobalTypographyView extends ConsumerWidget {
     final fonts = ref.watch(currentTypographyFontsProvider).value;
     final current = data.value;
     final vm = ref.read(globalSettingsProvider.notifier);
+    final canRotate = defaultTargetPlatform != TargetPlatform.windows;
     void change(ReadingSettings Function(ReadingSettings) update) =>
         saveSetting(context, () => vm.change(update));
     return Scaffold(
-      appBar: GtAppBar(title: const Text('全局字体与排版')),
+      appBar: GtAppBar.settings(title: const Text('全局字体与排版')),
       body: SafeArea(
         child: current == null || fonts == null
             ? Center(
@@ -41,7 +43,10 @@ class GlobalTypographyView extends ConsumerWidget {
             : ListView.separated(
                 padding: const EdgeInsets.all(20),
                 separatorBuilder: (context, index) => const SizedBox(height: 8),
-                itemCount: ReadingLayoutMode.originalIncluded ? 5 : 4,
+                itemCount:
+                    2 +
+                    (canRotate ? 2 : 0) +
+                    (ReadingLayoutMode.originalIncluded ? 1 : 0),
                 itemBuilder: (context, index) {
                   final s = current.typography;
                   return [
@@ -91,26 +96,28 @@ class GlobalTypographyView extends ConsumerWidget {
                             change((s) => s.copyWith(bookEdges: v)),
                       ),
                     ),
-                    SettingsRow(
-                      divider: false,
-                      label: '横屏',
-                      trailing: GtSwitch(
-                        key: const Key('global-landscape-switch'),
-                        value: s.landscape,
-                        onChanged: (v) =>
-                            change((s) => s.copyWith(landscape: v)),
+                    if (canRotate) ...[
+                      SettingsRow(
+                        divider: false,
+                        label: '横屏',
+                        trailing: GtSwitch(
+                          key: const Key('global-landscape-switch'),
+                          value: s.landscape,
+                          onChanged: (v) =>
+                              change((s) => s.copyWith(landscape: v)),
+                        ),
                       ),
-                    ),
-                    SettingsRow(
-                      divider: false,
-                      label: '横屏双翻页',
-                      trailing: GtSwitch(
-                        key: const Key('global-landscape-spread-switch'),
-                        value: s.landscapeSpread,
-                        onChanged: (v) =>
-                            change((s) => s.copyWith(landscapeSpread: v)),
+                      SettingsRow(
+                        divider: false,
+                        label: '横屏双列排版',
+                        trailing: GtSwitch(
+                          key: const Key('global-landscape-spread-switch'),
+                          value: s.landscapeSpread,
+                          onChanged: (v) =>
+                              change((s) => s.copyWith(landscapeSpread: v)),
+                        ),
                       ),
-                    ),
+                    ],
                   ][index];
                 },
               ),

@@ -87,7 +87,7 @@ class GlobalAutomaticDialog extends ConsumerWidget {
           );
     if (asPage) {
       return Scaffold(
-        appBar: GtAppBar(title: const Text('自动阅读默认值')),
+        appBar: GtAppBar.settings(title: const Text('自动阅读默认值')),
         body: SafeArea(
           child: Padding(padding: const EdgeInsets.all(20), child: content),
         ),

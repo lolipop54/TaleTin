@@ -11,6 +11,8 @@ import '../../domain/models/book_document.dart';
 import '../../domain/models/reading_settings.dart';
 import '../../core/diagnostics/reader_delivery_experiments.dart';
 import '../styles/tag_defaults.dart';
+import '../styles/style_box_value.dart'
+    show TextDecorationSpec, TextDecorationLine, TextDecorationLineStyle;
 import 'publication_font_set.dart';
 
 typedef PreparePublicationFonts = Future<LayoutOptions> Function(
@@ -83,20 +85,30 @@ class LayoutOptions {
     required this.settings,
     required this.contentSize,
     required this.textScaler,
+    this.paperInset = Offset.zero,
+    this.paperBottomInset,
     this.insertChapterTitle = false,
+    this.spreadDocumentChapters = false,
     this.cssDark = false,
+    this.pageInk,
     this.publicationFonts = PublicationFontSet.empty,
   });
 
+  // 只给首次绘字复用，不参与断行、分页或磁盘缓存身份。
+  final ({Color primary, Color secondary})? pageInk;
   final ReadingSettings settings;
   final PublicationFontSet publicationFonts;
 
   LayoutOptions withPublicationFonts(PublicationFontSet fonts) => LayoutOptions(
     settings: settings,
     contentSize: contentSize,
+    paperInset: paperInset,
+    paperBottomInset: paperBottomInset,
     textScaler: textScaler,
     insertChapterTitle: insertChapterTitle,
+    spreadDocumentChapters: spreadDocumentChapters,
     cssDark: cssDark,
+    pageInk: pageInk,
     publicationFonts: fonts,
   );
 
@@ -113,9 +125,16 @@ class LayoutOptions {
   /// 只有 TXT 打开：TXT 的章名被切去当目录，正文里没有标题，不补就看不到章名。
   /// EPUB／MOBI／AZW3 和 PDF 电子书都按原书内容与样式排，不额外加标题或横线。
   final bool insertChapterTitle;
+  final bool spreadDocumentChapters;
 
   /// 正文可用区域（已扣除页边距、顶部信息行、底部状态行与安全区）
   final Size contentSize;
+
+  /// 正文原点距当前这一页纸左边、上边的距离。连续滚动只使用横向留白。
+  final Offset paperInset;
+
+  /// 上、下信息栏可独立隐藏。未提供下边距时纸面按上下对称处理。
+  final double? paperBottomInset;
 
   /// 与界面渲染使用的同一个实例（来自 `MediaQuery.textScalerOf`）
   final TextScaler textScaler;
@@ -196,9 +215,47 @@ class LayoutOptions {
   /// 70：独立公式保留原来的行高和基线，作废中间测试包的测量结果。
   /// 71：拼音注音、图片高度与注释，以及浮动图文测量。
   /// 72：浮动图文继续保留块的边框和背景，旧测量会在读章时更新。
-  static const int engineVersion = 72;
+  /// 73：标题等正文块自己的边框只量一次，旧的行内装饰和分页重新计算。
+  /// 74：简化排版隐藏书内 display:none 的正文块。
+  /// 75：简化排版使用书内表格单元格的尺寸和边框。
+  /// 76：隐藏行内元素及表格行，保留正文位置。
+  /// 77：相对容器叠图、首字绕排、并排行内盒和空浮动装饰进入测量。
+  /// 80：绝对定位插图、书内留白，以及容器外边距和目录分组间距。
+  /// 81：EPUB 局部小字、图片尺寸、盒子外边距和封面叠图。
+  /// 82：相邻单图叠放时一起调整位置，保留负外边距算出的距离。
+  /// 89：按包含块和 box-sizing 换算作者的尺寸，旧测量与分页缓存重新生成。
+  /// 90：表格按列声明、跨格范围及内容断点计算最终列宽。
+  /// 91：按单元格内容、跨行和首行基线决定行高。
+  /// 92：表题占位、空格外观及表格各来源合并边线的几何。
+  /// 93：长表换页后逐格保留行高和原文字位。
+  /// 94：缓存行组避断位置，跨行格的边线随各行实际断点绘制。
+  /// 95：根背景图独占的章节也生成一页，旧版可能把它识别为空章。
+  /// 96：分页缓存包含续页表头占用的高度，阅读位置继续使用原文。
+  /// 98：按剩余正文宽度决定是否逐层使用引用边距，旧分页从原文位置重新生成。
+  /// 99：缓存图片缩放、横纵圆角和注音原书字色，重新按原文字位定位。
+  /// 101：派生分页重新计算；独立保存的滚动位置用实际图文几何及原文复核。
+  /// 102：有边框的列表按实际序号宽度留白，旧分页从原文字位重新排。
+  /// 103：浮动头像、跨容器的并排诗句和连续画廊图注按新的位置重新分页。
+  /// 104：图注与原图同页，文字负边距按实际字框避让。
+  /// 105：人物介绍跨页、章首插画纸边和题花外边距。
+  /// 106：段首显式换行、列表序号列、相邻图注和独立封面重新测量。
+  /// 108：旧 HTML、MOBI 缩进与分页、表格背景和双向文字按新几何重排。
+  /// 109：按可见 br 的个数恢复空行，旧页从原来的正文字位重新排。
+  /// 110：边框首尾角标按原书行高重排。
+  /// 111：分页按当前纸面的剩余高度排标题、插图和图注。
+  /// 112：普通插图与左右浮图按页尾余量最多缩小四成，浮图旁的文字重新断行。
+  /// 113：浮图的长说明可在完整图名和首行之后续页。
+  /// 114：分页按每一行的绕图宽度判断图注和旁栏正文的续行位置。
+  /// 115：居中定宽扉页在窄屏内排版，正文和表格保留相邻不换行词组的边界。
+  /// 116：表内代码按栏宽续行，表格居中和靠右使用最终列宽。
+  /// 117：定宽章题在窄栏内重排，文字与边框共用适配后的宽度。
+  /// 118：超宽表格按所在栏重新分配列宽，满版章题在正文区内断行。
+  /// 119：标题内的块级题花独占一行；显式贴边的章首横图可后接章号。
+  static const int engineVersion = 119;
 
   double get contentWidth => contentSize.width;
+
+  double get listMarkerGap => settings.fontSize * .35;
 
   double get contentHeight => contentSize.height;
 
@@ -231,8 +288,7 @@ class LayoutOptions {
 
   /// 列表项／引用块的左侧绘制偏移
   ///
-  /// 引用层级只保留第一层的缩进：原书 WebView 对第二层起的引用／列表不再
-  /// 增加左右缩进，避免多层引用把正文列宽算成 0。简化排版沿用同一规则。
+  /// 旧正文缺少来源容器时仅补一层缩进。有容器时引用宽度由 DisplayBoxLayout 计算。
   double insetFor(BlockKind kind, {int nest = 0}) {
     final em = settings.fontSize.toDouble();
     return switch (kind) {
@@ -267,6 +323,7 @@ class LayoutOptions {
     List<Shadow>? shadows,
     bool underline = false,
     bool strike = false,
+    TextDecorationSpec? bookDecoration,
 
     /// 字距／词距（相对字号：0.05 表示 0.05em）；null 表示书里没写。
     double? letterSpacing,
@@ -353,9 +410,22 @@ class LayoutOptions {
     if (shadows != null && shadows.isNotEmpty) {
       result = result.copyWith(shadows: shadows);
     }
-    if (underline || strike) {
+    final overline =
+        bookDecoration?.lines.contains(TextDecorationLine.overline) ?? false;
+    if (underline || strike || overline) {
+      final ink = bookDecoration?.color?.argb;
       result = result.copyWith(
+        decorationColor: ink == null ? null : Color(ink),
+        decorationStyle: switch (bookDecoration?.style) {
+          TextDecorationLineStyle.double => TextDecorationStyle.double,
+          TextDecorationLineStyle.dotted => TextDecorationStyle.dotted,
+          TextDecorationLineStyle.dashed => TextDecorationStyle.dashed,
+          TextDecorationLineStyle.wavy => TextDecorationStyle.wavy,
+          TextDecorationLineStyle.solid => TextDecorationStyle.solid,
+          null => null,
+        },
         decoration: TextDecoration.combine([
+          if (overline) TextDecoration.overline,
           if (underline) TextDecoration.underline,
           if (strike) TextDecoration.lineThrough,
         ]),
@@ -366,7 +436,7 @@ class LayoutOptions {
 
   /// 块后是否需要两端对齐：代码、图注和明确居中／右对齐的块不拉伸。
   bool justifies(BlockKind kind, String? align) {
-    if (align == 'center' || align == 'right') return false;
+    if (align == 'center' || align == 'right' || align == 'left') return false;
     return switch (kind) {
       BlockKind.paragraph ||
       BlockKind.listItem ||
@@ -387,7 +457,10 @@ class LayoutOptions {
 
   /// 分页缓存键：内容版本、章节、字体、字号/行高/段距/缩进/页边距、内容区尺寸、
   /// TextScaler 与引擎版本全部在内；颜色主题不在键内（换主题不重排）。
-  String get layoutSignature {
+  String get layoutSignature => 'v$engineVersion|$readingGeometrySignature';
+
+  /// 原文进度可以跨引擎升级保存；只用真正影响版面的阅读设置来核对视口。
+  String get readingGeometrySignature {
     final scaler = textScaler;
     // 采样几个字号点：既能区分线性倍数，也能区分非线性缩放曲线
     final exact = ReaderDeliveryExperiments.incremental;
@@ -404,8 +477,9 @@ class LayoutOptions {
                   ])
             .join(',');
     return [
-      'v$engineVersion',
       'cssDark$cssDark',
+      if (paperInset != Offset.zero) 'paper${paperInset.dx},${paperInset.dy}',
+      if (paperBottomInset != null) 'bottom$paperBottomInset',
       'f${settings.fontFamily ?? 'system'}',
       's${settings.fontSize}',
       'weight${settings.fontWeight}|originalFont${settings.useOriginalFont}',
@@ -415,6 +489,7 @@ class LayoutOptions {
       'p${settings.horizontalPadding}',
       'i${settings.indent ? 1 : 0}',
       'ct${insertChapterTitle ? 1 : 0}',
+      if (settings.spreadEnabled) 'spreadChapters1-$spreadDocumentChapters',
       'w${exact ? contentSize.width : contentSize.width.toStringAsFixed(1)}',
       'h${exact ? contentSize.height : contentSize.height.toStringAsFixed(1)}',
       'ts$scalerKey',

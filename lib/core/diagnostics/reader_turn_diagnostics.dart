@@ -242,6 +242,8 @@ class ReaderTurnTrace {
   int? endUs;
   int? pointer;
   bool released = false, operationActive = false, waitingSaved = false;
+  bool firstDragMoved = false;
+  int? firstDragFrame;
   String status = 'active';
   final browserSources = <String, Future<Object?> Function()>{};
   var _commandSequence = 0;
@@ -320,6 +322,14 @@ class ReaderTurnTrace {
 
   void frame(FrameTiming frame) {
     final vsync = frame.timestampInMicroseconds(FramePhase.vsyncStart);
+    if (firstDragFrame == frame.frameNumber) {
+      event('scroll.firstDragFrame', [
+        frame.frameNumber,
+        vsync,
+        frame.timestampInMicroseconds(FramePhase.rasterStart),
+        frame.timestampInMicroseconds(FramePhase.rasterFinish),
+      ]);
+    }
     if (vsync < beginUs || endUs != null && vsync > endUs! + 300000) return;
     _add('frames', frames, [
       vsync,

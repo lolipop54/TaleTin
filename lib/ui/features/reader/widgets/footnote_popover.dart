@@ -1,10 +1,10 @@
 /// 脚注气泡：点正文里的脚注标记（如 `[1]`）时不直接跳页，先展示脚注内容，
-/// 右下角再提供“跳转”去原书位置。
+/// 有书内目标时右下角提供“跳转”。
 ///
-/// 文字来源是原书章节 HTML 里锚点处的内容；只在点击时读取一次，不改正文。
+/// 注释取自链接目标或多看图标自身的 alt。
 library;
 
-import 'dart:math' as math;
+import 'reader_link_ink.dart';
 
 import 'package:flutter/material.dart';
 import 'package:html/dom.dart' as dom;
@@ -13,11 +13,6 @@ import 'package:html/parser.dart' as html_parser;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../domain/models/book_document.dart';
-import '../../../../domain/models/locator.dart';
-import '../../../../engine/layout/chapter_layout.dart';
-import '../../../../engine/layout/measured_block.dart';
-import '../../../../engine/layout/line_text_geometry.dart';
-import '../../../../engine/selection/scroll_selection.dart';
 import '../../../../engine/parsers/epub/html_anchor_index.dart';
 
 import '../../../core/theme/reading_theme.dart';
@@ -26,176 +21,7 @@ import '../view_models/reader_session_view_model.dart';
 import 'thought_popover.dart';
 import 'footnote_markers.dart';
 
-/// 在排版结果里找到某个文字位置对应的链接。
-///
-/// [locator] 的偏移是标准化正文坐标（不含首行缩进前缀），这里换算成显示坐标
-/// 后找所在的 run。返回 null 表示这个位置不是链接。
-({String link, bool footnote})? linkAtLocator(
-  ChapterLayout layout,
-  Locator locator,
-) {
-  final block = layout.blocks
-      .where((b) => b.blockId == locator.blockId)
-      .firstOrNull;
-  return block == null ? null : linkAtMeasured(block, locator.utf16Offset);
-}
-
-/// 同上，直接给测量块（连续滚动模式没有 ChapterLayout）。
-({String link, bool footnote})? linkAtMeasured(
-  MeasuredBlock block,
-  int normalizedOffset,
-) {
-  if (block.runs.isEmpty) return null;
-  final display = normalizedOffset + block.displayPrefixLength;
-  var cursor = 0;
-  for (final run in block.runs) {
-    final end = cursor + run.text.length;
-    if (display >= cursor && display < end) {
-      // 命中普通正文就直接结束，不能继续回退到段末的脚注链接。
-      return run.link == null
-          ? null
-          : (link: run.link!, footnote: run.footnote);
-    }
-    cursor = end;
-  }
-  // 光标恰好在块末时仍可查询最后一个片段；屏幕点击另按标记矩形判断。
-  final last = block.runs.last;
-  return display == cursor && last.link != null
-      ? (link: last.link!, footnote: last.footnote)
-      : null;
-}
-
-/// 点按命中链接的真实文字矩形，不使用会吸附到相邻字符的光标位置。
-/// 分页、双页与滚动共用；上／下标偏移与文字绘制保持一致。
-({String link, bool footnote})? readerLinkAtMeasuredPoint(
-  MeasuredBlock block,
-  int lineIndex,
-  Offset point, {
-  required TextScaler scaler,
-  required double width,
-  double tolerance = 0,
-  bool footnotesOnly = false,
-}) {
-  final line = block.lines[lineIndex];
-  var cursor = 0;
-  for (final run in block.runs) {
-    final start = cursor;
-    cursor += run.text.length;
-    if (run.link == null || (footnotesOnly && !run.footnote)) continue;
-    final from = math.max(start, line.start), to = math.min(cursor, line.end);
-    if (from >= to) continue;
-    final rects = run.isScript
-        ? block.scriptRectsInLine(
-            lineIndex,
-            from,
-            to,
-            scaler: scaler,
-            width: width,
-          )
-        : block.rangeRectsInLine(
-            lineIndex,
-            from,
-            to,
-            scaler: scaler,
-            width: width,
-            tight: true,
-          );
-    for (final rect in rects) {
-      if (rect.inflate(tolerance).contains(point)) {
-        return (link: run.link!, footnote: run.footnote);
-      }
-    }
-  }
-  return null;
-}
-
-/// 保留现有入口；默认不扩大到相邻正文或整行空白。
-({String link, bool footnote})? readerLinkNearPoint(
-  ChapterLayout layout,
-  int pageIndex,
-  Offset position, {
-  double tolerance = 0,
-  bool footnotesOnly = false,
-}) {
-  final page = layout.page(pageIndex);
-  if (page == null) return null;
-  for (final fragment in page.fragments) {
-    if (fragment.frameOnly) continue;
-    final block = fragment.block;
-    var y = fragment.y + block.textTopOf(fragment.lineFrom);
-    for (var i = fragment.lineFrom; i < fragment.lineTo; i++) {
-      final hit = readerLinkAtMeasuredPoint(
-        block,
-        i,
-        position - Offset(0, y),
-        scaler: layout.options.textScaler,
-        width: block.layoutWidth ?? layout.contentSize.width,
-        tolerance: tolerance,
-        footnotesOnly: footnotesOnly,
-      );
-      if (hit != null) return hit;
-      y += block.lines[i].height;
-    }
-  }
-  return null;
-}
-
-/// 连续滚动使用视口内各行的坐标，不把全段的原文偏移误当成本批显示偏移。
-({String link, bool footnote})? readerLinkAtScrollPoint(
-  ScrollSelection selection,
-  Offset position, {
-  bool footnotesOnly = false,
-}) {
-  for (final line in selection.lines) {
-    final block = line.cell.measured;
-    final hit = readerLinkAtMeasuredPoint(
-      block,
-      line.line,
-      position - Offset(0, line.y),
-      scaler: selection.options.textScaler,
-      width: block.layoutWidth ?? selection.options.contentWidth,
-      footnotesOnly: footnotesOnly,
-    );
-    if (hit != null) return hit;
-  }
-  return null;
-}
-
-/// 兼容脚注专用查询；普通链接与脚注共用精确矩形，调用者明确选择范围。
-({String link, bool footnote})? footnoteAtMeasuredPoint(
-  MeasuredBlock block,
-  int lineIndex,
-  Offset point, {
-  required TextScaler scaler,
-  required double width,
-  double tolerance = 0,
-}) => readerLinkAtMeasuredPoint(
-  block,
-  lineIndex,
-  point,
-  scaler: scaler,
-  width: width,
-  tolerance: tolerance,
-  footnotesOnly: true,
-);
-
-({String link, bool footnote})? footnoteNearPoint(
-  ChapterLayout layout,
-  int pageIndex,
-  Offset position, {
-  double tolerance = 0,
-}) => readerLinkNearPoint(
-  layout,
-  pageIndex,
-  position,
-  tolerance: tolerance,
-  footnotesOnly: true,
-);
-
-({String link, bool footnote})? footnoteAtScrollPoint(
-  ScrollSelection selection,
-  Offset position,
-) => readerLinkAtScrollPoint(selection, position, footnotesOnly: true);
+export 'reader_link_hit.dart';
 
 /// 从原书章节 HTML 里取出锚点处的脚注文字。
 ///
@@ -466,6 +292,7 @@ Future<bool> openReaderLink(
             chapters[ordinal].id,
             anchorId: fragment.isEmpty ? null : fragment,
           );
+      ReaderLinkInk.forBook(bookId).visit(link);
       return true;
     }
     final html = await controller.source.chapterDocument(ordinal);
@@ -479,9 +306,11 @@ Future<bool> openReaderLink(
       await ref
           .read(readerSessionProvider(bookId).notifier)
           .goToChapterFromToc(chapters[ordinal].id, anchorId: fragment);
+      ReaderLinkInk.forBook(bookId).visit(link);
       return true;
     }
     if (content.text == null) return false;
+    ReaderLinkInk.forBook(bookId).visit(link);
     await showFootnotePopover(
       context,
       anchor: Rect.fromCenter(center: anchor, width: 1, height: 1),
@@ -508,11 +337,26 @@ Future<bool> openReaderImageNote(
   required String bookId,
   required List<Chapter> chapters,
   required String? link,
+  String? noteText,
   required Offset point,
   required ReadingTheme theme,
 }) async {
-  if (link == null) return false;
+  if (link == null && noteText == null) return false;
   final box = context.findRenderObject()! as RenderBox;
+  if (link == null) {
+    // 这类注释全文就在图标上，打开气泡时无需读取目标章节。
+    await showFootnotePopover(
+      context,
+      anchor: Rect.fromCenter(
+        center: box.localToGlobal(point),
+        width: 1,
+        height: 1,
+      ),
+      theme: theme,
+      text: noteText!.trim(),
+    );
+    return true;
+  }
   return openReaderLink(
     context,
     ref: ref,
@@ -526,22 +370,24 @@ Future<bool> openReaderImageNote(
   );
 }
 
-/// 打开脚注气泡：正文内容是脚注文字，右下角“跳转”去原书位置。
+/// 有目标时提供“跳转”，只有注释文字时省去底部按钮行。
 Future<void> showFootnotePopover(
   BuildContext context, {
   required Rect anchor,
   required ReadingTheme theme,
   required String text,
-  required VoidCallback onJump,
+  VoidCallback? onJump,
 }) => showThoughtPopover(
   context,
   anchor: anchor,
   body: text,
   theme: theme,
   title: '脚注',
-  actionLabel: '跳转',
-  onAction: () {
-    Navigator.of(context).pop();
-    onJump();
-  },
+  actionLabel: onJump == null ? null : '跳转',
+  onAction: onJump == null
+      ? null
+      : () {
+          Navigator.of(context).pop();
+          onJump();
+        },
 );

@@ -11,13 +11,14 @@ mixin _SimplifiedScrollSelection on ConsumerState<SimplifiedScrollArea> {
       bookId: widget.bookId, version: widget.session.book.contentVersion,
       ordinals: chapterOrdinalsOf(widget.session.chapters));
   }
-  void _initSelection(Future<bool> Function(Offset) contentTap) {
+  void _initSelection(Future<bool> Function(Offset) contentTap, bool Function(Offset) contentLinkAt) {
     List<ScrollRangeGeometry> measure(List<SelectionRange> ranges) {
       final model = _selectionModel();
       return [for (final range in ranges) model?.geometry(range) ?? const ScrollRangeGeometry([])];
     }
     _selectionBackend = ScrollSelectionBackend(motion: Listenable.merge([_window, _window.controller]),
       contentTap: contentTap,
+      contentLinkAt: contentLinkAt,
       hit: (point) async => _selectionModel()?.hit(point),
       initialRange: (point) async => _selectionModel()?.initialRange(point),
       measure: (ranges) async => measure(ranges), measureSync: measure,

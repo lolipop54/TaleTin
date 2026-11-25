@@ -10,6 +10,7 @@ import '../../settings/widgets/settings_action.dart';
 import '../view_models/reader_settings_view_model.dart';
 import '../view_models/reader_view_model.dart';
 import 'reader_sheet.dart';
+import 'reader_desktop_layout.dart';
 import 'reader_theme_choices.dart';
 import '../../settings/widgets/reading_background_choices.dart';
 import '../view_models/pdf_book_provider.dart';
@@ -21,9 +22,14 @@ import '../../settings/widgets/settings_slider.dart';
 /// 亮度、主题和背景全局保存；跟随系统时保留上一次自定义值，
 /// 拖动滑块就保存全局亮度并立刻作用到窗口；离开阅读页窗口恢复原亮度（S14）。
 class PanelBrightness extends ConsumerWidget {
-  const PanelBrightness({super.key, required this.bookId});
+  const PanelBrightness({
+    super.key,
+    required this.bookId,
+    this.onBackgroundImportingChanged,
+  });
 
   final String bookId;
+  final ValueChanged<bool>? onBackgroundImportingChanged;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -40,7 +46,7 @@ class PanelBrightness extends ConsumerWidget {
     final vm = ref.read(readerSettingsProvider(bookId).notifier);
 
     return ReaderSheet(
-      title: '亮度',
+      title: readerUsesDesktopPanels ? '外观' : '亮度',
       onClose: () => ref.read(readerProvider.notifier).closePanel(),
       child: SingleChildScrollView(
         padding: const EdgeInsets.symmetric(horizontal: GtSpacing.s5),
@@ -49,70 +55,75 @@ class PanelBrightness extends ConsumerWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const SizedBox(height: GtSpacing.s2),
-            // 跟随系统亮度
-            Row(
-              children: [
-                Expanded(
-                  child: Text('跟随系统亮度', style: GtText.body(colors.textPrimary)),
-                ),
-                GtSwitch(
-                  value: followSystem,
-                  onChanged: (follow) =>
-                      vm.setBrightness(follow ? null : shown),
-                ),
-              ],
-            ),
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    '阅读时屏幕常亮',
-                    style: GtText.body(colors.textPrimary),
+            if (!readerUsesDesktopPanels) ...[
+              // 跟随系统亮度
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '跟随系统亮度',
+                      style: GtText.body(colors.textPrimary),
+                    ),
                   ),
-                ),
-                GtSwitch(
-                  value: controls.keepAwake,
-                  onChanged: (value) => saveSetting(
-                    context,
-                    () => ref
-                        .read(readingControlsProvider.notifier)
-                        .change(awake: value),
+                  GtSwitch(
+                    value: followSystem,
+                    onChanged: (follow) =>
+                        vm.setBrightness(follow ? null : shown),
                   ),
+                ],
+              ),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '阅读时屏幕常亮',
+                      style: GtText.body(colors.textPrimary),
+                    ),
+                  ),
+                  GtSwitch(
+                    value: controls.keepAwake,
+                    onChanged: (value) => saveSetting(
+                      context,
+                      () => ref
+                          .read(readingControlsProvider.notifier)
+                          .change(awake: value),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: GtSpacing.s3),
+              SettingsSlider(
+                trackThickness: GtSliderSize.trackThicknessLarge,
+                thumbRadius: GtSliderSize.thumbRadiusLarge,
+                compact: true,
+                backgroundColor: ReaderSheet.backgroundOf(context),
+                label: '',
+                value: shown,
+                min: 0,
+                max: 1,
+                divisions: 100,
+                format: (v) => '${(v * 100).round()}%',
+                save: vm.setBrightness,
+                onPreview: ref
+                    .read(brightnessPreviewProvider(bookId).notifier)
+                    .set,
+                leading: Image.asset(
+                  'assets/icons_used/亮度-.webp',
+                  width: 24,
+                  height: 24,
+                  color: colors.textSecondary,
                 ),
-              ],
-            ),
-            const SizedBox(height: GtSpacing.s3),
-            SettingsSlider(
-              trackThickness: GtSliderSize.trackThicknessLarge,
-              thumbRadius: GtSliderSize.thumbRadiusLarge,
-              compact: true,
-              backgroundColor: ReaderSheet.backgroundOf(context),
-              label: '',
-              value: shown,
-              min: 0,
-              max: 1,
-              divisions: 100,
-              format: (v) => '${(v * 100).round()}%',
-              save: vm.setBrightness,
-              onPreview: ref
-                  .read(brightnessPreviewProvider(bookId).notifier)
-                  .set,
-              leading: Image.asset(
-                'assets/icons_used/亮度-.webp',
-                width: 24,
-                height: 24,
-                color: colors.textSecondary,
+                trailing: Image.asset(
+                  'assets/icons_used/亮度+.webp',
+                  width: 24,
+                  height: 24,
+                  color: colors.textSecondary,
+                ),
               ),
-              trailing: Image.asset(
-                'assets/icons_used/亮度+.webp',
-                width: 24,
-                height: 24,
-                color: colors.textSecondary,
-              ),
-            ),
-            const SizedBox(height: GtSpacing.s4),
-            Container(height: 1, color: colors.borderSubtle),
-            const SizedBox(height: GtSpacing.s3),
+              const SizedBox(height: GtSpacing.s4),
+              Container(height: 1, color: colors.borderSubtle),
+              const SizedBox(height: GtSpacing.s3),
+            ],
             Text(
               '阅读主题',
               style: GtText.body(colors.textSecondary).copyWith(fontSize: 14),
@@ -126,7 +137,10 @@ class PanelBrightness extends ConsumerWidget {
                 style: GtText.body(colors.textSecondary).copyWith(fontSize: 14),
               ),
               const SizedBox(height: GtSpacing.s3),
-              ReadingBackgroundChoices(bookId: bookId),
+              ReadingBackgroundChoices(
+                bookId: bookId,
+                onImportingChanged: onBackgroundImportingChanged,
+              ),
             ],
             const SizedBox(height: GtSpacing.s4),
           ],

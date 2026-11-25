@@ -1,7 +1,16 @@
+import 'dart:io';
+
 import 'package:flutter/services.dart';
+
+import 'windows_backup_documents.dart';
 
 /// 用户主动选择的 SAF 文档；输入复用已有 AndroidDocumentPlatform 分块读取。
 class BackupDocuments {
+  BackupDocuments();
+
+  factory BackupDocuments.forCurrentPlatform() =>
+      Platform.isWindows ? WindowsBackupDocuments() : BackupDocuments();
+
   static const _channel = MethodChannel('gtreader/backup_documents');
 
   Future<String?> pick() => _channel.invokeMethod<String>('pick');
@@ -12,6 +21,7 @@ class BackupDocuments {
   Future<List<String>> pickImages(int limit) async =>
       await _channel.invokeListMethod<String>('pickImages', {'limit': limit}) ??
       [];
+  Future<List<String>> pickCoverImages(int limit) => pickImages(limit);
   Future<String?> create(String name, String mime) =>
       _channel.invokeMethod<String>('create', {'name': name, 'mime': mime});
   Future<void> open(String uri) => _channel.invokeMethod('open', {'uri': uri});

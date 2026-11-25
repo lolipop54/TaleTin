@@ -27,16 +27,32 @@ class AndroidLocalBookFiles implements LocalBookFiles {
       _channel.invokeMethod<void>('delete', {'path': path});
 
   @override
-  Future<LocalFileInspection> inspect(List<String> paths) async {
-    final result = await _channel.invokeMapMethod<String, Object?>('inspect', {
-      'paths': paths,
-    });
+  Future<LocalFileInspection> scanDirectories(
+    List<String> paths,
+    Set<String> extensions,
+  ) => _inspect('scanDirectories', {
+    'paths': paths,
+    'extensions': extensions.toList(),
+  });
+
+  @override
+  Future<LocalFileInspection> inspect(List<String> paths) =>
+      _inspect('inspect', {'paths': paths});
+
+  Future<LocalFileInspection> _inspect(
+    String method,
+    Map<String, Object> args,
+  ) async {
+    final result = await _channel.invokeMapMethod<String, Object?>(
+      method,
+      args,
+    );
     if (result == null) throw StateError('无法核验文件');
     return LocalFileInspection(
       entries: (result['entries']! as List)
           .map((e) => _entry(e as Map))
           .toList(),
-      missing: (result['missing']! as List).cast<String>().toSet(),
+      missing: (result['missing'] as List?)?.cast<String>().toSet() ?? {},
       unavailable: (result['unavailable']! as List).cast<String>().toSet(),
     );
   }

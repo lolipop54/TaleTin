@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/widgets.dart';
 
 import '../../../../core/diagnostics/reader_turn_state_diagnostics.dart';
@@ -49,6 +50,17 @@ class ReaderTurnStateBoundary extends StatelessWidget {
           ? HitTestBehavior.translucent
           : HitTestBehavior.deferToChild,
       onPointerDown: observing ? _onPointerDown : null,
+      onPointerSignal: readerTurnStateDiagnosticsEnabled
+          ? (event) {
+              if (event is PointerScrollEvent) {
+                ReaderTurnStateDiagnostics.wheelSignal(
+                  'reader',
+                  event,
+                  details,
+                );
+              }
+            }
+          : null,
       onPointerUp: observing
           ? (event) => ReaderTurnStateDiagnostics.record('reader.pointer.up', {
               'pointer': event.pointer,

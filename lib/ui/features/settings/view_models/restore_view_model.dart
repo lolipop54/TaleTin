@@ -26,7 +26,7 @@ class RestoreViewState {
 }
 
 final backupDocumentsProvider = Provider<BackupDocuments>(
-  (_) => BackupDocuments(),
+  (_) => BackupDocuments.forCurrentPlatform(),
 );
 final restoreViewProvider =
     NotifierProvider.autoDispose<RestoreViewModel, RestoreViewState>(

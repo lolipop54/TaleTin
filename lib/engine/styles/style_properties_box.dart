@@ -360,7 +360,7 @@ const List<StyleProperty> kBoxProperties = [
     consumer: StyleConsumer.painter,
     status: StyleStatus.parsed,
     phase: 'E',
-    notes: '背景按默认 scroll 绘制；fixed/local 尚未实现，不声明支持。',
+    notes: '简化排版使用 fixed 识别固定在纸面上的整页背景；其它用法暂不调整。',
   ),
 
   StyleProperty(
@@ -414,5 +414,19 @@ const List<StyleProperty> kBoxProperties = [
     consumer: StyleConsumer.painter,
     status: StyleStatus.rendered,
     phase: 'P3',
+  ),
+  StyleProperty(
+    id: 2030,
+    cssName: 'box-decoration-break',
+    valueType: StyleValueType.keyword,
+    inherited: false,
+    initial: 'slice',
+    appliesTo: kBlockTargets,
+    affectsGeometry: true,
+    primitive: StylePrimitive.decoration,
+    consumer: StyleConsumer.blockFlow,
+    status: StyleStatus.rendered,
+    phase: '4B',
+    notes: '普通块的分页片段。clone 在每页重复边框和内边距。',
   ),
 ];

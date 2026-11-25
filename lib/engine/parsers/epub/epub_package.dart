@@ -58,6 +58,7 @@ class EpubPackage {
     this.navItem,
     this.ncxItem,
     this.coverItem,
+    this.guideCoverPath,
     this.fixedLayout = false,
   });
 
@@ -72,7 +73,7 @@ class EpubPackage {
   /// 不能顺手 trim 掉内部空白以外的内容——key 算错字体就是一堆乱码。
   final String uniqueIdentifier;
 
-  /// 按 id 索引的 manifest
+  /// 按 id 索引的 manifest，只收录归档内存在的文件。
   final Map<String, EpubManifestItem> manifest;
 
   /// 阅读顺序（已过滤 linear="no"）
@@ -83,6 +84,9 @@ class EpubPackage {
   final EpubManifestItem? navItem;
   final EpubManifestItem? ncxItem;
   final EpubManifestItem? coverItem;
+  final String? guideCoverPath;
+  List<String> get coverEntries =>
+      {if (coverItem != null) coverItem!.entryPath, ?guideCoverPath}.toList();
 
   /// 固定版式书籍（`meta[name=fixed-layout]`，漫画类多见）。
   ///
@@ -140,7 +144,9 @@ class EpubPackage {
           final href = element.getAttribute('href');
           if (id == null || href == null) break;
           final entryPath = resolveEntryPath(opfPath, href);
-          if (entryPath == null) break;
+          // 有些 OPF 仍登记了已经删掉的文件。统一在这里核对，让目录、封面和
+          // 正文顺序从同一份可用清单取条目，也能选到后面存在的候选文件。
+          if (entryPath == null || !archive.contains(entryPath)) break;
           manifest[id] = EpubManifestItem(
             id: id,
             href: href,
@@ -181,7 +187,10 @@ class EpubPackage {
       }
     }
     if (spine.isEmpty) {
-      throw const ImportFailure(ImportErrorCode.invalidContainer, '缺少正文 spine');
+      throw const ImportFailure(
+        ImportErrorCode.invalidContainer,
+        '阅读顺序中没有可读取的正文文件',
+      );
     }
 
     return EpubPackage(
@@ -196,6 +205,9 @@ class EpubPackage {
       navItem: _firstWhere(manifest.values, (i) => i.isNav),
       ncxItem: _resolveNcx(manifest, tocId),
       coverItem: _resolveCover(manifest, metaCoverId, guideCoverHref, opfPath),
+      guideCoverPath: guideCoverHref == null
+          ? null
+          : resolveEntryPath(opfPath, guideCoverHref.split('#').first),
       fixedLayout: fixedLayout,
     );
   }
@@ -286,6 +298,35 @@ class RawTocEntry {
   final List<RawTocEntry> children;
 
   bool get isLeaf => children.isEmpty;
+}
+
+/// 保留无链接的分组。父条目所指文件缺失时，其仍可阅读的子项留在原来的位置。
+List<RawTocEntry> availableTocEntries(
+  List<RawTocEntry> entries,
+  bool Function(String) contains,
+) {
+  final result = <RawTocEntry>[];
+  for (final entry in entries) {
+    final href = entry.href;
+    if (entry.children.isEmpty) {
+      if (href != null && contains(href)) result.add(entry);
+      continue;
+    }
+    final children = availableTocEntries(entry.children, contains);
+    if (href != null && !contains(href)) {
+      result.addAll(children);
+    } else if (href != null || children.isNotEmpty) {
+      result.add(
+        RawTocEntry(
+          title: entry.title,
+          href: href,
+          fragment: entry.fragment,
+          children: children,
+        ),
+      );
+    }
+  }
+  return result;
 }
 
 /// 解析 EPUB3 nav 文档（XHTML）。

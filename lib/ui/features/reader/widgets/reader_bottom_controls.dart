@@ -33,7 +33,10 @@ class _BottomControlsState extends ConsumerState<_BottomControls> {
   @override
   void didUpdateWidget(_BottomControls oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.state.panel == widget.state.panel) return;
+    if (readerUsesDesktopPanels ||
+        oldWidget.state.panel == widget.state.panel) {
+      return;
+    }
     _progressTimer?.cancel();
     if (widget.state.panel != ReaderPanel.none) {
       _showProgress = false;
@@ -291,6 +294,34 @@ class _BottomControlsState extends ConsumerState<_BottomControls> {
     }
   }
 
+  Widget _progressSlider(double progress, {required bool ready}) =>
+      SettingsSlider(
+        trackThickness: GtSliderSize.trackThicknessSmall,
+        thumbRadius: GtSliderSize.thumbRadiusSmall,
+        label: '',
+        compact: true,
+        showNumber: false,
+        disableWhileSaving: false,
+        backgroundColor: widget.theme.background,
+        value: progress.clamp(0.0, 1.0),
+        min: 0,
+        max: 1,
+        divisions: 10000,
+        format: (v) => '${(v * 100).toStringAsFixed(2)}%',
+        onPreview: (v) {
+          if (v != null) {
+            ref
+                .read(readerProgressReturnProvider(widget.bookId).notifier)
+                .beginSlider();
+            setState(() {
+              _seekVersion++;
+              _dragProgress = v;
+            });
+          }
+        },
+        save: ready ? _seek : null,
+      );
+
   @override
   Widget build(BuildContext context) {
     final theme = widget.theme;
@@ -328,6 +359,53 @@ class _BottomControlsState extends ConsumerState<_BottomControls> {
                 chapterId: _dragProgress == null ? session?.chapter.id : null,
               )]
               .title;
+    final progressReady = session != null && !titles.isLoading;
+    final showReturn = returnState.fromSlider && returnState.origin != null;
+    final returnButton = showReturn
+        ? ProgressReturnButton(
+            colors: theme.controlsColors,
+            busy: returnState.busy,
+            onPressed: () => ref
+                .read(readerProgressReturnProvider(bookId).notifier)
+                .returnToOrigin(),
+          )
+        : null;
+    if (readerUsesDesktopPanels) {
+      return Positioned(
+        left: 0,
+        right: 0,
+        bottom: 0,
+        child: ReaderControlsEntrance(
+          visible: widget.visible,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (widget.state.notice case final notice? when widget.visible)
+                IgnorePointer(
+                  child: _ReaderNotice(
+                    key: ValueKey(widget.state.noticeToken),
+                    text: notice,
+                  ),
+                ),
+              if (returnButton != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: returnButton,
+                ),
+              DesktopReaderProgress(
+                key: const ValueKey('windows-reader-progress'),
+                theme: theme,
+                chapter: title,
+                progress: progress,
+                slider: _progressSlider(progress, ready: progressReady),
+                onPrevious: () => unawaited(_goToAdjacentChapter(-1)),
+                onNext: () => unawaited(_goToAdjacentChapter(1)),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
     // 每个开关只管自己那一侧：显示底部导航栏时，导航栏所在的边留白；
     // 隐藏后那一边归零，面板底色和内容直接贴到屏幕边缘。
     final bars = ref.watch(readingControlsProvider).value;
@@ -369,18 +447,10 @@ class _BottomControlsState extends ConsumerState<_BottomControls> {
                       ),
                     ),
                   ),
-                if (_showProgress &&
-                    returnState.fromSlider &&
-                    returnState.origin != null)
+                if (_showProgress && returnButton != null)
                   Padding(
                     padding: horizontal.copyWith(bottom: 12),
-                    child: ProgressReturnButton(
-                      colors: theme.controlsColors,
-                      busy: returnState.busy,
-                      onPressed: () => ref
-                          .read(readerProgressReturnProvider(bookId).notifier)
-                          .returnToOrigin(),
-                    ),
+                    child: returnButton,
                   ),
                 Container(
                   // 安全区只给按钮让位，面板底色仍需遮住边缘的阅读信息。
@@ -434,40 +504,9 @@ class _BottomControlsState extends ConsumerState<_BottomControls> {
                                     padding: const EdgeInsets.symmetric(
                                       horizontal: 16,
                                     ),
-                                    child: SettingsSlider(
-                                      trackThickness:
-                                          GtSliderSize.trackThicknessSmall,
-                                      thumbRadius:
-                                          GtSliderSize.thumbRadiusSmall,
-                                      label: '',
-                                      compact: true,
-                                      showNumber: false,
-                                      disableWhileSaving: false,
-                                      backgroundColor: theme.background,
-                                      value: progress.clamp(0.0, 1.0),
-                                      min: 0,
-                                      max: 1,
-                                      divisions: 10000,
-                                      format: (v) =>
-                                          '${(v * 100).toStringAsFixed(2)}%',
-                                      onPreview: (v) {
-                                        if (v != null) {
-                                          ref
-                                              .read(
-                                                readerProgressReturnProvider(
-                                                  bookId,
-                                                ).notifier,
-                                              )
-                                              .beginSlider();
-                                          setState(() {
-                                            _seekVersion++;
-                                            _dragProgress = v;
-                                          });
-                                        }
-                                      },
-                                      save: session == null || titles.isLoading
-                                          ? null
-                                          : _seek,
+                                    child: _progressSlider(
+                                      progress,
+                                      ready: progressReady,
                                     ),
                                   ),
                                   Padding(

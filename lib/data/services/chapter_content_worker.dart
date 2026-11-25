@@ -52,6 +52,7 @@ class ChapterContentWorker {
   static Future<ChapterContentWorker> open({
     required String libraryRoot,
     String? cacheRoot,
+    String? pageCountReadCache,
     TextPreparationService? preparation,
   }) async {
     final worker = ChapterContentWorker._(preparation, libraryRoot, cacheRoot);
@@ -67,6 +68,7 @@ class ChapterContentWorker {
           cacheRoot,
           ProcessingFeatures.mask,
           PublicationCache.processEpoch,
+          pageCountReadCache,
         ),
         onError: worker._responses.sendPort,
         onExit: worker._responses.sendPort,
@@ -363,8 +365,17 @@ Future<ChapterContent> _readLongTxt(
   }, {'chapter': chapter.ordinal}),
 );
 
-Future<void> _run((SendPort, String, String?, int, String) start) async {
-  final (reply, libraryRoot, cacheRoot, features, cacheEpoch) = start;
+Future<void> _run(
+  (SendPort, String, String?, int, String, String?) start,
+) async {
+  final (
+    reply,
+    libraryRoot,
+    cacheRoot,
+    features,
+    cacheEpoch,
+    pageCountReadCache,
+  ) = start;
   ProcessingFeatures.configureExperiment(features);
   final commands = ReceivePort();
   final readers = <String, IndexedChapterReader>{};
@@ -471,8 +482,7 @@ Future<void> _run((SendPort, String, String?, int, String) start) async {
           if (manifest != null) {
             // 当前目录无需旧书修复：章信息已从数据库读好，不能再复制和构造一遍。
             // 索引单独传已解析对象，避免原始JSON结构与转换结果同时跨isolate复制。
-            if (((manifest['tocRevision'] as num?)?.toInt() ?? 0) >=
-                kTocRevision) {
+            if (!needsTocRecovery(manifest)) {
               manifest.remove('chapters');
               manifest.remove('sourceIndex');
             }
@@ -490,13 +500,20 @@ Future<void> _run((SendPort, String, String?, int, String) start) async {
                 cacheEpoch: cacheEpoch,
               );
           final key = '$bookId/${reader.signature}/${chapter.id}.json';
+          final store = reader.cache;
+          final name = '${chapter.id}.json';
+          // 更新源书前只取旧正文补充定位证据。这时原文件可能已经换掉；
+          // 同时尝试升级前的缓存目录，且无需加载或补建任何条件样式。
           result =
               memory[key] ??
-              (reader.cache == null
-                  ? cache.read(key, chapter)
-                  : ChapterDiskCache(
-                      p.join(reader.cache!.directory, 'chapters'),
-                    ).read('${chapter.id}.json', chapter)) ??
+              (store == null
+                  ? null
+                  : ChapterDiskCache(store.chapterDirectory)
+                        .read(name, chapter)) ??
+              (store?.epubStyleTree == true
+                  ? ChapterDiskCache(p.join(store!.directory, 'chapters'))
+                        .read(name, chapter)
+                  : null) ??
               cache.read(key, chapter);
           if (!readers.containsValue(reader)) await reader.close();
         case 'txt-plan':
@@ -548,33 +565,36 @@ Future<void> _run((SendPort, String, String?, int, String) start) async {
           final store = reader.cache;
           if (!textOnly) await store?.beginPreparation();
           try {
+            // 这里只借用相同源摘要、转换版本和 CSS 模式的正文；公开目录的
+            // 资源保护和回收仍完全由阅读器管理。
             final disk = store == null
                 ? cache
-                : ChapterDiskCache(p.join(store.directory, 'chapters'));
+                : ChapterDiskCache(
+                    pageCountReadCache == null
+                        ? store.chapterDirectory
+                        : store.chapterDirectoryIn(pageCountReadCache),
+                  );
             final diskKey = store == null ? cacheKey : '${chapter.id}.json';
             var content = textOnly ? memory[cacheKey] : memory.remove(cacheKey);
             var hit = content == null ? 'miss' : 'memory';
             Uint8List? encoded;
             if (content == null) {
-              content = disk.read(diskKey, chapter);
+              content = disk.read(
+                diskKey,
+                chapter,
+                removeInvalid: pageCountReadCache == null,
+              );
               if (content != null) hit = 'disk';
-            }
-            if (content == null && store != null && cacheRoot != null) {
-              content = cache.read(cacheKey, chapter);
-              if (content != null) {
-                hit = 'previous-disk';
-                store.adopt(
-                  File(p.join(cacheRoot, 'chapters', cacheKey)),
-                  store.file('chapters/$diskKey'),
-                );
-              }
             }
             trace?.mark('cache_read');
             trace?.details['hit'] = hit;
+            if (content?.displaySourceJson?['css'] case {'cssBook': String()}) {
+              await reader.bindStyles();
+            }
             if (content == null) {
               content = await reader.read(chapter, decode, textOnly: textOnly);
               trace?.mark('read_decode_convert');
-              if (!textOnly) {
+              if (!textOnly && pageCountReadCache == null) {
                 // 缓存写失败不影响已正确解析的正文，磁盘紧张时仍能阅读。
                 encoded =
                     store != null || cacheRoot != null || prepareLayoutDigest
@@ -583,7 +603,7 @@ Future<void> _run((SendPort, String, String?, int, String) start) async {
                 trace?.mark('cache_encode');
                 try {
                   if (store != null) {
-                    store.write(store.file('chapters/$diskKey'), encoded!);
+                    store.write(store.chapterFile(diskKey), encoded!);
                   } else if (encoded != null) {
                     cache.writeBytes(cacheKey, encoded);
                   }
@@ -602,7 +622,9 @@ Future<void> _run((SendPort, String, String?, int, String) start) async {
               trace?.mark('layout_digest');
             }
             if (!textOnly) await reader.prepareResources(content);
-            if (!textOnly && content.textLength <= 500000) {
+            if (!textOnly &&
+                pageCountReadCache == null &&
+                content.textLength <= 500000) {
               memory[cacheKey] = content;
               while (memory.length > 4 ||
                   memory.values.fold<int>(0, (n, c) => n + c.textLength) >

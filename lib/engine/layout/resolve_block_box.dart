@@ -10,13 +10,22 @@ import 'measured_text_geometry.dart';
 import 'background_image_style.dart';
 
 /// 长度直到这里才结合字号、容器宽度解析；不得经过旧的百分之一 em 数组。
-BlockBox? resolveBlockBox(BoxStyleSpec style, LengthContext context) {
+BlockBox? resolveBlockBox(
+  BoxStyleSpec style,
+  LengthContext context, {
+  bool collapsedCell = false,
+  int? tableColor,
+}) {
   if (style.isEmpty) return null;
   double px(Length? value) =>
       value == null || value.isAuto ? 0 : value.resolve(context);
   double border(BorderSideSpec? side) {
-    if (side == null || !side.isVisible) return 0;
-    final width = px(side.width);
+    if (side == null ||
+        !side.isVisible ||
+        (collapsedCell && side.style == null)) {
+      return 0;
+    }
+    final width = collapsedCell && side.width == null ? 3.0 : px(side.width);
     // Chromium 的实际边框宽度取整，不足1px的非零边框仍占1px。
     // 测量和绘制一起使用该宽度，避免细点线因多次亚像素混色几乎消失。
     return width <= 0 ? 0 : math.max(1, width.floorToDouble());
@@ -38,11 +47,33 @@ BlockBox? resolveBlockBox(BoxStyleSpec style, LengthContext context) {
   // 借颜色；完全没写边框的边保持透明。
   Color colorOf(BorderSideSpec? side) {
     if (side == null || border(side) <= 0) return const Color(0x00000000);
-    return Color(side.color?.argb ?? kDefaultBorderColor.argb);
+    return Color(
+      side.color?.argb ??
+          tableColor ??
+          (collapsedCell ? 0xff000000 : kDefaultBorderColor.argb),
+    );
   }
 
+  final horizontal = [r?.topLeft, r?.topRight, r?.bottomRight, r?.bottomLeft];
+  final vertical = [
+    r?.vertical?.top,
+    r?.vertical?.right,
+    r?.vertical?.bottom,
+    r?.vertical?.left,
+  ];
+  final axes = [
+    ...horizontal,
+    for (var i = 0; i < 4; i++) vertical[i] ?? horizontal[i],
+  ];
   return BlockBox(
+    radiusFractions: axes.any((v) => v is PercentLength)
+        ? [
+            for (final value in axes)
+              value is PercentLength ? value.value : null,
+          ]
+        : null,
     backgroundImage: BookBackgroundImage.resolve(style.background, context),
+    cloneDecoration: style.decorationBreak == 'clone',
     background: style.background?.color?.argb == null
         ? null
         : Color(style.background!.color!.argb),
@@ -63,10 +94,22 @@ BlockBox? resolveBlockBox(BoxStyleSpec style, LengthContext context) {
       line(b?.left),
     ],
     borderRadius: BorderRadius.only(
-      topLeft: Radius.circular(math.max(0, px(r?.topLeft))),
-      topRight: Radius.circular(math.max(0, px(r?.topRight))),
-      bottomRight: Radius.circular(math.max(0, px(r?.bottomRight))),
-      bottomLeft: Radius.circular(math.max(0, px(r?.bottomLeft))),
+      topLeft: Radius.elliptical(
+        math.max(0, px(r?.topLeft)),
+        math.max(0, px(r?.vertical?.top ?? r?.topLeft)),
+      ),
+      topRight: Radius.elliptical(
+        math.max(0, px(r?.topRight)),
+        math.max(0, px(r?.vertical?.right ?? r?.topRight)),
+      ),
+      bottomRight: Radius.elliptical(
+        math.max(0, px(r?.bottomRight)),
+        math.max(0, px(r?.vertical?.bottom ?? r?.bottomRight)),
+      ),
+      bottomLeft: Radius.elliptical(
+        math.max(0, px(r?.bottomLeft)),
+        math.max(0, px(r?.vertical?.left ?? r?.bottomLeft)),
+      ),
     ),
     shadows: [
       for (final shadow in style.shadow ?? const <ShadowValue>[])

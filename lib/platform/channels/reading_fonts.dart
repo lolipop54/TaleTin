@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
 
@@ -9,9 +10,11 @@ import 'preset_fonts.dart';
 import 'imported_fonts.dart';
 import '../../data/services/imported_font_store.dart';
 import '../../core/diagnostics/reader_work_trace.dart';
+import '../../core/diagnostics/app_errors.dart';
 
 /// 内置字体与平台确认的设备字体：预览、Flutter 正文和 WebView 共用。
 abstract final class ReadingFonts {
+  static int environmentRevision = 0;
   static final _paths = <String, String>{};
   static final _aliases = <String, String>{};
   static final _names = <String, String?>{...PresetFonts.names};
@@ -26,6 +29,7 @@ abstract final class ReadingFonts {
     _names.removeWhere((key, _) => key.startsWith('gt-import-'));
     _pending = null;
     _layoutDigests.clear();
+    environmentRevision++;
   }
 
   /// 导入不写阅读设置；完整候选准备好后，调用方再更新页面的字体名单。
@@ -34,8 +38,28 @@ abstract final class ReadingFonts {
     _names.removeWhere((key, _) => key.startsWith('gt-import-'));
     _names.addAll(imported);
     _pending = Future.value({..._names});
+    _windowsSpreadFonts.clear();
     _layoutDigests.clear();
+    environmentRevision++;
     return {..._names};
+  }
+
+  /// 单个文件损坏时保留同一批中其余成功导入的字体。
+  static Future<int> importFiles(
+    ImportedFontStore store,
+    Iterable<String> paths,
+  ) async {
+    var failed = 0;
+    for (final path in paths) {
+      try {
+        await store.importFile(path, prepare: ImportedFonts.prepare);
+      } catch (error, stack) {
+        failed++;
+        AppErrors.report(error, stack, operation: '导入字体失败');
+      }
+    }
+    await refreshImported();
+    return failed;
   }
 
   /// 排版磁盘缓存只认实际已注册的字体文件；未知回退不产生可信摘要。
@@ -64,6 +88,65 @@ abstract final class ReadingFonts {
         return null;
       }
     }();
+  }
+
+  /// Windows 的桌面字体回退由 Flutter 选择；同时核对系统和用户字体目录，
+  /// 升级引擎、安装字体或替换同名字体后不能继续使用旧双列页序。
+  static Future<String?> spreadFingerprint(String? family) async {
+    if (!Platform.isWindows) return layoutFingerprint(family);
+    final id = resolve(family);
+    return _windowsSpreadFonts[id] ??= _windowsSpreadFont(id);
+  }
+
+  static final _windowsSpreadFonts = <String?, Future<String?>>{};
+  static Future<String?> _windowsSpreadFont(String? id) async {
+    final environment = await (_windowsSpreadEnvironment ??= Isolate.run(
+      _windowsFontStamp,
+    ));
+    if (environment == null) return null;
+    final preset = PresetFonts.families[id];
+    final primary = id == null || preset == null
+        ? ImportedFonts.fingerprint(id)
+        : await _presetDigest(id);
+    final bold = preset?.bold;
+    final extra = bold == null
+        ? ''
+        : await _assetDigest('${PresetFonts.root}/$bold');
+    return '$environment:$id:$primary:$extra';
+  }
+
+  static Future<String?>? _windowsSpreadEnvironment;
+  static String? _windowsFontStamp() {
+    try {
+      final windows = Platform.environment['WINDIR'];
+      if (windows == null) return null;
+      final local = Platform.environment['LOCALAPPDATA'];
+      final stamps = <String>[];
+      final engine = File.fromUri(
+        File(Platform.resolvedExecutable).parent.uri
+            .resolve('flutter_windows.dll'),
+      );
+      for (final dir in [
+        Directory('$windows/Fonts'),
+        if (local != null) Directory('$local/Microsoft/Windows/Fonts'),
+      ]) {
+        if (!dir.existsSync()) continue;
+        for (final file in dir.listSync().whereType<File>()) {
+          final stat = file.statSync();
+          stamps.add(
+            '${file.path}|${stat.size}|${stat.modified.microsecondsSinceEpoch}',
+          );
+        }
+      }
+      if (stamps.isEmpty) return null;
+      if (engine.existsSync()) {
+        stamps.add(engine.lastModifiedSync().toIso8601String());
+      }
+      stamps.sort();
+      return sha256.convert(utf8.encode(stamps.join('\n'))).toString();
+    } on FileSystemException {
+      return null;
+    }
   }
 
   static Future<String?> _presetDigest(String id) {
@@ -144,7 +227,10 @@ abstract final class ReadingFonts {
     _pending = null;
     _system = null;
     _layoutDigests.clear();
+    environmentRevision++;
     _environmentDigest = null;
+    _windowsSpreadEnvironment = null;
+    _windowsSpreadFonts.clear();
     await loadSystem();
   }
 

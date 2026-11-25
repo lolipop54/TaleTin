@@ -2,6 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/repositories/reading_controls_repository.dart';
 import '../../data/repositories/drift_reading_controls_repository.dart';
+import '../../data/services/book_page_counter.dart';
 import 'app_providers.dart';
 
 final readingControlsRepositoryProvider = Provider<ReadingControlsRepository>(
@@ -13,6 +14,11 @@ final readingControlsProvider =
     );
 final pdfFixedViewModeProvider = readingControlsProvider.select(
   (state) => state.value?.pdfFixedViewMode ?? false,
+);
+
+/// 只有装配了原生宿主的阅读窗口才能启动无界面进程。
+final bookPageCounterFactoryProvider = Provider<BookPageCounter Function()?>(
+  (ref) => null,
 );
 
 class ReadingControlsNotifier extends AsyncNotifier<ReadingControls> {
@@ -28,11 +34,13 @@ class ReadingControlsNotifier extends AsyncNotifier<ReadingControls> {
     bool? navigationBar,
     bool? imageViewing,
     bool? pdfFixedViewMode,
+    ReadingProgressStyle? progressStyle,
   }) {
     final next = _writing.then((_) async {
       final repo = ref.read(readingControlsRepositoryProvider);
       final old = await repo.load();
       final value = ReadingControls(
+        progressStyle: progressStyle ?? old.progressStyle,
         keepAwake: awake ?? old.keepAwake,
         volumeKeys: keys ?? old.volumeKeys,
         swipeUpToExit: swipeUpToExit ?? old.swipeUpToExit,

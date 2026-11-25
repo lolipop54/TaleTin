@@ -34,7 +34,7 @@ class BookshelfState {
   final String query;
   final bool gridView;
 
-  /// 空选择仍保留多选面板，只有完成或系统返回退出。
+  /// 空选择仍保留多选面板，退出多选时统一清空勾选。
   final Set<String> selectedIds;
 
   /// 是否处于多选模式

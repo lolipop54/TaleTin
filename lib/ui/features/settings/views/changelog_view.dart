@@ -12,6 +12,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/gt_tokens.dart';
 import '../../../core/widgets/gt_app_bar.dart';
 import '../../../core/widgets/gt_button.dart';
+import '../widgets/windows_settings_layout.dart';
 
 typedef ChangelogContent = ({String markdown, Map<String, Size?> imageSizes});
 
@@ -80,7 +81,7 @@ class ChangelogView extends ConsumerWidget {
     final content = ref.watch(changelogProvider).requireValue;
 
     return Scaffold(
-      appBar: GtAppBar(
+      appBar: GtAppBar.settings(
         title: const Text('更新日志'),
         actions: [
           GtButton(
@@ -103,7 +104,11 @@ class ChangelogView extends ConsumerWidget {
         child: Align(
           alignment: Alignment.topCenter,
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 680),
+            constraints: BoxConstraints(
+              maxWidth: WindowsSettingsPane.contains(context)
+                  ? double.infinity
+                  : 680,
+            ),
             child: Markdown(
               data: content.markdown,
               padding: const EdgeInsets.fromLTRB(
@@ -113,6 +118,9 @@ class ChangelogView extends ConsumerWidget {
                 GtSpacing.s6,
               ),
               styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
+                horizontalRuleDecoration: BoxDecoration(
+                  border: Border(top: Divider.createBorderSide(context)),
+                ),
                 a: TextStyle(
                   color: theme.colorScheme.primary,
                   decoration: TextDecoration.underline,

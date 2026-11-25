@@ -2,12 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:taletin/ui/core/theme/app_theme.dart';
 import 'package:taletin/ui/core/theme/gt_tokens.dart';
+import 'package:taletin/ui/core/widgets/gt_list_button.dart';
 
 import '../view_models/listening_panel_view_model.dart';
 import '../view_models/listening_view_state.dart';
 import 'listening_option_sheet.dart';
 import 'reader_sheet.dart';
 import '../../settings/widgets/settings_slider.dart';
+import '../../settings/view_models/listening_preferences.dart';
 
 class ListeningSettingsControls extends ConsumerStatefulWidget {
   const ListeningSettingsControls({super.key, required this.bookId});
@@ -21,7 +23,9 @@ class _SettingsState extends ConsumerState<ListeningSettingsControls> {
   Widget build(BuildContext context) {
     final speech = ref.watch(listeningViewStateProvider).value;
     final voice = speech?.voice;
-    final rate = speech?.speed ?? 1;
+    final rate = voice == null
+        ? ref.watch(listeningPreferencesProvider).value?.speed ?? 1
+        : speech!.speed;
     final commands = ref.watch(listeningPanelProvider(widget.bookId));
     return Material(
       type: MaterialType.transparency,
@@ -46,18 +50,18 @@ class _SettingsState extends ConsumerState<ListeningSettingsControls> {
             save: voice == null ? null : commands.rate,
           ),
           const SizedBox(height: 6),
-          ListTile(
+          GtListButton(
             minTileHeight: 56,
             contentPadding: EdgeInsets.zero,
             title: const Text('音色', style: TextStyle(fontSize: 14)),
             subtitle: Text(
               voice == null
-                  ? '尚无可用音色，点击选择或安装'
+                  ? (speech?.error == null ? '连接中' : '尚无可用音色，点击选择或安装')
                   : '${voice.displayName} · ${voice.locale}',
               style: TextStyle(fontSize: 12),
             ),
             trailing: const Text('选择'),
-            onTap: () => showListeningVoice(context, ref, widget.bookId),
+            onPressed: () => showListeningVoice(context, ref, widget.bookId),
           ),
         ],
       ),

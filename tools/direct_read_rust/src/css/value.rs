@@ -1,30 +1,32 @@
-// Copyright (c) 2026 GT Reader contributors. MIT license, see LICENSE.
+// Copyright (c) 2026 GT Reader contributors. GPL-3.0-only, see LICENSE.
 //! 统一 CSS 值解析：长度保留单位，颜色保留原始语义，非法值返回 None。
 //!
 //! 这一层只把「书里写的值」变成类型化值，不乘成最终像素；`em/%/auto` 的最终
 //! 解析留给排版上下文。旧转换器需要的「百分之一 em」整数由 `to_legacy` 提供，
 //! 只作为迁移期结构字段，新的样式表仍使用带单位值。
 
-use std::collections::HashMap;
-
 #[derive(Clone, Debug, PartialEq)]
 pub enum Length {
     Em(f64),
+    Ch(f64),
     Rem(f64),
     Percent(f64),
     Px(f64),
     Pt(f64),
+    Viewport(f64, &'static str),
     Auto,
 }
 
 impl Length {
     pub fn to_json(&self) -> serde_json::Value {
         match self {
+            Length::Ch(v) => serde_json::json!({"u":"ch","v":v}),
             Length::Em(v) => serde_json::json!({"u": "em", "v": v}),
             Length::Rem(v) => serde_json::json!({"u": "rem", "v": v}),
             Length::Percent(v) => serde_json::json!({"u": "%", "v": v}),
             Length::Px(v) => serde_json::json!({"u": "px", "v": v}),
             Length::Pt(v) => serde_json::json!({"u": "pt", "v": v}),
+            Length::Viewport(v, unit) => serde_json::json!({"u": unit, "v": v}),
             Length::Auto => serde_json::json!("auto"),
         }
     }
@@ -37,15 +39,28 @@ impl Length {
             Length::Rem(v) => (v * 100.0).round() as i64,
             Length::Px(v) => (v / 16.0 * 100.0).round() as i64,
             Length::Pt(v) => (v * 4.0 / 3.0 / 16.0 * 100.0).round() as i64,
-            Length::Auto => return None,
-            Length::Percent(_) => return None,
+            Length::Auto | Length::Viewport(..) => return None,
+            Length::Percent(_) | Length::Ch(_) => return None,
         })
+    }
+
+    pub fn nonnegative_length(&self) -> bool {
+        match self {
+            Self::Auto => false,
+            Self::Px(v)
+            | Self::Pt(v)
+            | Self::Ch(v)
+            | Self::Em(v)
+            | Self::Rem(v)
+            | Self::Percent(v)
+            | Self::Viewport(v, _) => *v >= 0.0,
+        }
     }
 
     pub fn is_zero(&self) -> bool {
         matches!(
             self,
-            Length::Em(v) | Length::Rem(v) | Length::Percent(v) | Length::Px(v) | Length::Pt(v)
+            Length::Ch(v) | Length::Em(v) | Length::Rem(v) | Length::Percent(v) | Length::Px(v) | Length::Pt(v) | Length::Viewport(v, _)
                 if *v == 0.0
         )
     }
@@ -267,40 +282,10 @@ impl Shadow {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct Background {
-    pub color: Option<Color>,
-    pub image: Option<String>,
-    pub repeat: Option<String>,
-    pub position: Option<String>,
-    pub size: Option<String>,
-    pub raw: Option<String>,
-}
-
-impl Background {
-    pub fn to_json(&self) -> serde_json::Value {
-        let mut map = serde_json::Map::new();
-        if let Some(color) = &self.color {
-            map.insert("c".to_owned(), color.to_json());
-        }
-        if let Some(image) = &self.image {
-            map.insert("u".to_owned(), serde_json::json!(image));
-        }
-        if let Some(repeat) = &self.repeat {
-            map.insert("r".to_owned(), serde_json::json!(repeat));
-        }
-        if let Some(position) = &self.position {
-            map.insert("p".to_owned(), serde_json::json!(position));
-        }
-        if let Some(size) = &self.size {
-            map.insert("s".to_owned(), serde_json::json!(size));
-        }
-        if let Some(raw) = &self.raw {
-            map.insert("raw".to_owned(), serde_json::json!(raw));
-        }
-        serde_json::Value::Object(map)
-    }
-}
+#[path = "background.rs"]
+mod background;
+pub(super) use background::is_gradient;
+pub use background::{Background, parse_background, parse_url};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Decoration {
@@ -355,13 +340,27 @@ pub fn parse_length(value: &str) -> Option<Length> {
         return Some(Length::Px(0.0));
     }
     let (number, unit) = split_number_unit(value)?;
-    Some(match unit {
+    if !number.is_finite() {
+        return None;
+    }
+    Some(match unit.to_ascii_lowercase().as_str() {
+        "" if number == 0.0 => Length::Px(0.0),
         "" => return None,
         "em" => Length::Em(number),
+        "ch" => Length::Ch(number),
         "rem" => Length::Rem(number),
         "%" => Length::Percent(number / 100.0),
         "px" => Length::Px(number),
         "pt" => Length::Pt(number),
+        "in" => Length::Px(number * 96.0),
+        "pc" => Length::Px(number * 16.0),
+        "cm" => Length::Px(number * 96.0 / 2.54),
+        "mm" => Length::Px(number * 96.0 / 25.4),
+        "q" => Length::Px(number * 96.0 / 101.6),
+        "vw" => Length::Viewport(number, "vw"),
+        "vh" => Length::Viewport(number, "vh"),
+        "vmin" => Length::Viewport(number, "vmin"),
+        "vmax" => Length::Viewport(number, "vmax"),
         _ => return None,
     })
 }
@@ -387,7 +386,14 @@ pub fn parse_font_size(value: &str) -> Option<FontSize> {
         });
     }
     let (number, unit) = split_number_unit(&value)?;
+    if !number.is_finite() || number < 0.0 {
+        return None;
+    }
     Some(match unit {
+        "" if number == 0.0 => FontSize {
+            unit: FontSizeUnit::Px,
+            value: 0.0,
+        },
         "em" => FontSize {
             unit: FontSizeUnit::Em,
             value: number,
@@ -418,14 +424,17 @@ pub fn parse_line_height(value: &str) -> Option<LineHeight> {
         return Some(LineHeight::Normal);
     }
     if let Ok(factor) = value.parse::<f64>() {
-        return Some(LineHeight::Factor(factor));
+        return (factor.is_finite() && factor >= 0.0).then_some(LineHeight::Factor(factor));
     }
     if let Some((number, unit)) = split_number_unit(&value) {
         if unit == "%" {
-            return Some(LineHeight::Percent(number / 100.0));
+            return (number.is_finite() && number >= 0.0)
+                .then_some(LineHeight::Percent(number / 100.0));
         }
     }
-    parse_length(&value).map(LineHeight::Length)
+    parse_length(&value)
+        .filter(Length::nonnegative_length)
+        .map(LineHeight::Length)
 }
 
 pub fn parse_font_weight(value: &str) -> Option<(u16, Option<&'static str>)> {
@@ -447,7 +456,9 @@ pub fn parse_spacing(value: &str) -> Option<Option<Length>> {
     if text.eq_ignore_ascii_case("normal") {
         return Some(None);
     }
-    parse_length(text).map(Some)
+    parse_length(text)
+        .filter(|v| !matches!(v, Length::Auto))
+        .map(Some)
 }
 
 pub fn split_top_level(value: &str, separator: char) -> Vec<String> {
@@ -595,73 +606,12 @@ pub fn parse_border_width(value: &str) -> Option<Length> {
         "medium" => Some(Length::Px(3.0)),
         "thick" => Some(Length::Px(5.0)),
         "0" => Some(Length::Px(0.0)),
-        _ => parse_length(value),
+        _ => parse_length(value)
+            .filter(|l| l.nonnegative_length() && !matches!(l, Length::Percent(_))),
     }
 }
 
-pub fn parse_background(value: &str) -> Background {
-    let mut background = Background {
-        color: None,
-        image: None,
-        repeat: None,
-        position: None,
-        size: None,
-        raw: Some(value.trim().to_owned()),
-    };
-    let sides = split_top_level(value, '/');
-    let mut positions = Vec::new();
-    let mut repeats = Vec::new();
-    let mut sizes = Vec::new();
-    for (part, side) in sides.iter().enumerate() {
-        for token in split_whitespace_top_level(side) {
-            let lower = token.to_ascii_lowercase();
-            if lower.starts_with("url(") {
-                background.image = parse_url(&token);
-            } else if matches!(
-                lower.as_str(),
-                "repeat" | "repeat-x" | "repeat-y" | "no-repeat" | "space" | "round"
-            ) {
-                repeats.push(lower);
-            } else if let Some(color) = parse_color(&token) {
-                background.color = Some(color);
-            } else if part > 0
-                && (matches!(lower.as_str(), "cover" | "contain" | "auto")
-                    || parse_length(&token).is_some())
-            {
-                sizes.push(lower);
-            } else if part == 0
-                && (matches!(
-                    lower.as_str(),
-                    "left" | "right" | "top" | "bottom" | "center"
-                ) || parse_length(&token).is_some())
-            {
-                positions.push(lower);
-            }
-        }
-    }
-    if !positions.is_empty() {
-        background.position = Some(positions.join(" "));
-    }
-    if !repeats.is_empty() {
-        background.repeat = Some(repeats.join(" "));
-    }
-    if !sizes.is_empty() {
-        background.size = Some(sizes.join(" "));
-    }
-    background
-}
-
-pub fn parse_url(value: &str) -> Option<String> {
-    let mut parser = cssparser::Parser::new(value);
-    let url = parser.expect_url().ok()?.to_string();
-    if !parser.is_exhausted() || url.is_empty() {
-        None
-    } else {
-        Some(url)
-    }
-}
-
-pub fn parse_decoration(value: &str) -> Decoration {
+pub fn parse_decoration(value: &str) -> Option<Decoration> {
     let mut decoration = Decoration {
         lines: vec![],
         color: None,
@@ -680,13 +630,17 @@ pub fn parse_decoration(value: &str) -> Decoration {
             _ => {
                 if let Some(color) = parse_color(&token) {
                     decoration.color = Some(color);
-                } else if let Some(thickness) = parse_length(&token) {
+                } else if let Some(thickness) =
+                    parse_length(&token).filter(Length::nonnegative_length)
+                {
                     decoration.thickness = Some(thickness);
+                } else if !matches!(lower.as_str(), "from-font" | "auto") {
+                    return None;
                 }
             }
         }
     }
-    decoration
+    Some(decoration)
 }
 
 pub fn parse_list_style(value: &str) -> Option<(Option<&'static str>, Option<&'static str>)> {

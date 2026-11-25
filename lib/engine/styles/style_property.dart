@@ -73,7 +73,14 @@ enum StyleStatus {
 const Set<TargetKind> kTextTargets = {TargetKind.text};
 const Set<TargetKind> kBlockTargets = {TargetKind.block};
 const Set<TargetKind> kBoxTargets = {TargetKind.block, TargetKind.inlineBox};
-const Set<TargetKind> kSizeTargets = {TargetKind.block, TargetKind.replaced};
+// inlineBox 中只有行内块等接受独立尺寸的盒子应用宽高；普通行内文字保留字体尺寸。
+const Set<TargetKind> kSizeTargets = {
+  TargetKind.block,
+  TargetKind.inlineBox,
+  TargetKind.replaced,
+  TargetKind.table,
+  TargetKind.tableCell,
+};
 const Set<TargetKind> kReplacedTargets = {TargetKind.replaced};
 const Set<TargetKind> kTableTargets = {TargetKind.table};
 const Set<TargetKind> kTableCellTargets = {TargetKind.tableCell};

@@ -7,6 +7,7 @@ class ContentTable {
     this.box,
     this.boxId,
     this.columnWidths,
+    this.columnWeights,
     this.columnNodes,
     this.columnStyles,
   });
@@ -19,6 +20,8 @@ class ContentTable {
   /// 来自 `<colgroup><col style="width: 14%">`；没有写宽度的列为 0，排版时
   /// 用剩余宽度平均补齐。旧正文没有该字段时退回平均分栏。
   final List<double>? columnWidths;
+  // HTML 4 星号列按剩余宽度分配，和百分比列分别保存。
+  final List<double>? columnWeights;
 
   /// 列元素的来源节点／当前样式引用；不参与正文统计。
   final List<int>? columnNodes;
@@ -57,6 +60,7 @@ class ContentTable {
     'box': ?box,
     'boxId': ?boxId,
     'colw': ?columnWidths,
+    'colweights': ?columnWeights,
     'colnodes': ?columnNodes,
     'colstyles': ?columnStyles,
   };
@@ -73,6 +77,9 @@ class ContentTable {
     boxId: (json['boxId'] as num?)?.toInt(),
     columnNodes: (json['colnodes'] as List?)?.cast<int>(),
     columnStyles: (json['colstyles'] as List?)?.cast<int>(),
+    columnWeights: (json['colweights'] as List?)
+        ?.map((v) => (v as num).toDouble())
+        .toList(),
     columnWidths: json['colw'] == null
         ? null
         : [for (final value in json['colw'] as List) (value as num).toDouble()],
@@ -87,10 +94,13 @@ class ContentTableCell {
     this.rowSpan = 1,
     this.columnSpan = 1,
     this.header = false,
+    this.alignChar,
+    this.charOffset,
   });
   final List<String> blocks;
   final int row, column, rowSpan, columnSpan;
   final bool header;
+  final String? alignChar, charOffset;
   Map<String, Object> toJson() => {
     'blocks': blocks,
     'row': row,
@@ -98,6 +108,8 @@ class ContentTableCell {
     'rowSpan': rowSpan,
     'columnSpan': columnSpan,
     'header': header,
+    'char': ?alignChar,
+    'charoff': ?charOffset,
   };
   factory ContentTableCell.fromJson(Map<String, dynamic> json) =>
       ContentTableCell(
@@ -107,5 +119,7 @@ class ContentTableCell {
         rowSpan: json['rowSpan'] as int,
         columnSpan: json['columnSpan'] as int,
         header: json['header'] as bool,
+        alignChar: json['char'] as String?,
+        charOffset: json['charoff'] as String?,
       );
 }

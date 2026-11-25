@@ -203,6 +203,7 @@ class PanelTypography extends ConsumerWidget {
   ) => GtButton.raw(
     key: ValueKey('reader-option-$title'),
     tooltip: title,
+    showTooltipOnWindows: false,
     borderRadius: BorderRadius.circular(24),
     onPressed: onTap,
     child: Container(

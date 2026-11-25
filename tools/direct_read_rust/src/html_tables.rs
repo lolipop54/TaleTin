@@ -11,6 +11,21 @@ impl Builder {
         }
         let mut block = resolved;
         if let Some(alt) = attr(n, "alt") {
+            // 多看也把注释全文放在无链接图标的 alt 中。同名图片可重复使用，
+            // 只标记当前元素，已有链接继续按原来的目标处理。
+            if !alt.trim().is_empty()
+                && self.link.is_none()
+                && tag(n) == "img"
+                && self.ancestors.last().is_some_and(|key| {
+                    key.classes.iter().any(|class| class == "duokan-footnote")
+                })
+                && !std::iter::successors(n.parent.borrow().upgrade(), |p| {
+                    p.parent.borrow().upgrade()
+                })
+                .any(|p| tag(&p) == "a" && attr(&p, "href").is_some())
+            {
+                block["altIsFootnote"] = json!(true);
+            }
             block["alt"] = json!(alt);
         }
         if self.footnote {
@@ -54,7 +69,7 @@ impl Builder {
         let table_box = self.box_props.clone();
         // `<col style="width: 14%">`：原书的列宽常常不等宽，简化排版
         // 以前一律平均分栏，宽列的文字会过早换行。
-        let cols = table_columns(table);
+        let cols = crate::css::presentation_table::columns(table);
         let col_widths = if self.engine.is_some() {
             cols.iter()
                 .map(|col| match self.computed_of(col).width {
@@ -79,6 +94,12 @@ impl Builder {
         let mut row: i32 = -1;
         let mut columns = 0;
         let mut rows = 0;
+        let direct_rows = table
+            .children
+            .borrow()
+            .iter()
+            .filter(|n| tag(n) == "tr")
+            .count() as i32;
         for n in table.children.borrow().iter() {
             self.table_visit(
                 n,
@@ -88,17 +109,36 @@ impl Builder {
                 &mut rows,
                 &mut cells,
                 &mut occupied,
+                direct_rows,
+                &cols,
             );
         }
         self.flush();
-        if !self.stats
-            && cells
+        if !self.stats && !cells.is_empty() {
+            let empty = cells
                 .iter()
-                .any(|c: &Value| !c["blocks"].as_array().unwrap().is_empty())
-        {
+                .all(|c: &Value| c["blocks"].as_array().unwrap().is_empty());
             self.tables.truncate(nested_start);
             let mut value = json!({"cells":cells,"columns":columns,"rows":rows});
             if self.engine.is_some() && !cols.is_empty() {
+                let weights: Vec<f64> = cols
+                    .iter()
+                    .map(|col| {
+                        crate::css::presentation_table::col_attr(col, "width")
+                            .and_then(|s| {
+                                let v = s.trim().strip_suffix('*')?.trim();
+                                if v.is_empty() {
+                                    Some(1.)
+                                } else {
+                                    v.parse::<f64>().ok().filter(|n| n.is_finite() && *n >= 0.)
+                                }
+                            })
+                            .unwrap_or(0.)
+                    })
+                    .collect();
+                if weights.iter().any(|w| *w > 0.) {
+                    value["colweights"] = json!(weights);
+                }
                 value["colnodes"] = json!(cols.iter().map(|n| n.id).collect::<Vec<_>>());
             }
             if let Some((values, box_id)) = table_box {
@@ -107,6 +147,15 @@ impl Builder {
             }
             if !col_widths.is_empty() && col_widths.iter().any(|w| *w > 0.0) {
                 value["colw"] = json!(col_widths);
+            }
+            // 无正文的网格只进显示索引，不能为书签、搜索或朗读引入占位段落。
+            if empty {
+                if self.source.enabled
+                    && let Some(&id) = self.element_stack.last()
+                {
+                    self.source.empty_table_grids.insert(id, value);
+                }
+                return;
             }
             self.tables.push(value);
             if let Some(table_id) = self.element_stack.last().copied() {
@@ -124,6 +173,8 @@ impl Builder {
         rows: &mut i32,
         cells: &mut Vec<Value>,
         occupied: &mut HashSet<(i32, i32)>,
+        group_end: i32,
+        cols: &[Handle],
     ) {
         let t = tag(n);
         if self.engine.is_some() && n.name.is_some() {
@@ -140,8 +191,11 @@ impl Builder {
             self.owner_stack.push(self.block_owner);
             self.block_owner = eid;
             *row += 1;
+            *rows = (*rows).max(*row + 1);
             for c in n.children.borrow().iter() {
-                self.table_visit(c, style, row, columns, rows, cells, occupied);
+                self.table_visit(
+                    c, style, row, columns, rows, cells, occupied, group_end, cols,
+                );
             }
             self.flush();
             self.block_owner = self.owner_stack.pop().unwrap_or(0);
@@ -164,10 +218,17 @@ impl Builder {
             while occupied.contains(&(*row, column)) {
                 column += 1;
             }
-            let rs = attr(n, "rowspan")
-                .and_then(|v| v.trim().parse::<i32>().ok())
+            let remaining = (group_end - *row).max(1);
+            let declared = attr(n, "rowspan")
+                .and_then(|v| v.trim().parse::<u32>().ok())
                 .unwrap_or(1)
-                .clamp(1, 1000);
+                .min(i32::MAX as u32) as i32;
+            // rowspan=0 延伸到当前行组最后一行，不能占用下一个 tbody。
+            let rs = if declared == 0 {
+                remaining
+            } else {
+                declared.min(remaining)
+            };
             let cs = attr(n, "colspan")
                 .and_then(|v| v.trim().parse::<i32>().ok())
                 .unwrap_or(1)
@@ -178,7 +239,35 @@ impl Builder {
             self.walk_node(n, style, None, BlockStyle::default());
             self.flush();
             if !self.stats {
-                cells.push(json!({"blocks":self.blocks[first..].iter().map(|b|b["id"].clone()).collect::<Vec<_>>(),"row":*row,"column":column,"rowSpan":rs,"columnSpan":cs,"header":t=="th"}));
+                let mut cell = json!({"blocks":self.blocks[first..].iter().map(|b|b["id"].clone()).collect::<Vec<_>>(),"row":*row,"column":column,"rowSpan":rs,"columnSpan":cs,"header":t=="th"});
+                let row_node = n.parent.borrow().upgrade();
+                let inherited = |key: &str| {
+                    attr(n, key)
+                        .or_else(|| {
+                            cols.get(column as usize)
+                                .and_then(|col| crate::css::presentation_table::col_attr(col, key))
+                        })
+                        .or_else(|| row_node.as_ref().and_then(|r| attr(r, key)))
+                        .or_else(|| {
+                            row_node
+                                .as_ref()?
+                                .parent
+                                .borrow()
+                                .upgrade()
+                                .and_then(|g| attr(&g, key))
+                        })
+                };
+                if inherited("align").is_some_and(|v| v.trim().eq_ignore_ascii_case("char")) {
+                    cell["char"] = json!(
+                        inherited("char")
+                            .and_then(|s| s.chars().next())
+                            .unwrap_or('.')
+                    );
+                    if let Some(v) = inherited("charoff") {
+                        cell["charoff"] = json!(v);
+                    }
+                }
+                cells.push(cell);
                 for r in *row..*row + rs {
                     for c in column..column + cs {
                         occupied.insert((r, c));
@@ -200,8 +289,20 @@ impl Builder {
                 .source
                 .enter(self.element_stack.last().copied(), n.id, t, role);
             self.element_stack.push(eid);
+            let group_end = if matches!(t, "thead" | "tbody" | "tfoot") {
+                *row + 1
+                    + n.children
+                        .borrow()
+                        .iter()
+                        .filter(|c| tag(c) == "tr")
+                        .count() as i32
+            } else {
+                group_end
+            };
             for c in n.children.borrow().iter() {
-                self.table_visit(c, style, row, columns, rows, cells, occupied);
+                self.table_visit(
+                    c, style, row, columns, rows, cells, occupied, group_end, cols,
+                );
             }
             self.source.exit(eid, self.blocks.len());
             self.element_stack.pop();
@@ -256,21 +357,4 @@ fn table_column_widths(table: &Handle) -> Vec<f64> {
         collect(child, &mut widths);
     }
     widths
-}
-
-fn table_columns(table: &Handle) -> Vec<Handle> {
-    let mut result = vec![];
-    let mut stack: Vec<_> = table.children.borrow().iter().rev().cloned().collect();
-    while let Some(node) = stack.pop() {
-        if tag(&node) == "col" {
-            let span = attr(&node, "span")
-                .and_then(|v| v.parse::<usize>().ok())
-                .unwrap_or(1)
-                .clamp(1, 100);
-            result.extend(std::iter::repeat_n(node, span));
-        } else if tag(&node) == "colgroup" {
-            stack.extend(node.children.borrow().iter().rev().cloned());
-        }
-    }
-    result
 }

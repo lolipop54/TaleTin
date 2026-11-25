@@ -7,12 +7,15 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/diagnostics/app_errors.dart';
 import '../core/diagnostics/app_resume_diagnostics.dart';
+import '../platform/reading_font_binding.dart';
 
 /// Binding 与 runApp 必须在同一个 Zone 内；保留 Flutter 原来的控制台报告。
 void runWithAppErrors(VoidCallback start) {
   runZonedGuarded(
     () {
-      final binding = WidgetsFlutterBinding.ensureInitialized();
+      final binding = Platform.isAndroid || Platform.isWindows
+          ? ReadingFontBinding()
+          : WidgetsFlutterBinding.ensureInitialized();
       installAppErrorHandlers();
       final resumeDiagnostics = AppResumeDiagnostics();
       var started = false;

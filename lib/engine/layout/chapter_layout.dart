@@ -12,6 +12,7 @@ import 'dart:ui' show Size, VoidCallback;
 import '../../core/diagnostics/reader_work_trace.dart';
 
 import '../../domain/models/book_document.dart';
+import '../../domain/models/exact_page_count.dart';
 import '../../domain/models/content_table.dart';
 import '../../domain/models/locator.dart';
 import '../../domain/services/layout_checkpoint_store.dart';
@@ -22,10 +23,13 @@ import '../styles/chapter_styler.dart';
 import '../styles/css_layout_styles.dart';
 import 'block_measure.dart';
 import 'block_measurement_cache.dart';
+import 'book_background.dart';
 import 'chapter_paginator.dart';
+import 'container_flow_sizing.dart';
 import 'display_tree.dart';
 import 'layout_options.dart';
 import 'measured_block.dart';
+import 'measured_paragraphs.dart';
 import 'english_hyphenation.dart';
 import 'table_layout.dart';
 import 'parallel_flow_layout.dart';
@@ -33,7 +37,9 @@ import 'layout_work_gate.dart';
 import 'measured_block_codec.dart';
 
 part 'chapter_layout_task.dart';
+part 'chapter_page_count.dart';
 part 'lazy_measured_blocks.dart';
+part 'spread_chapter_boundaries.dart';
 
 /// 排版任务令牌：参数变化或切章后旧任务作废，结果不再上屏
 /// （设计文档 4.1 第 6 条：丢弃过期排版结果）。
@@ -105,6 +111,7 @@ class ChapterLayout {
   final int firstPage;
   final int consumedBeforeWindow;
   final int? _txtWindow;
+  int? get txtWindowIndex => _txtWindow;
   bool get paginatesTxtInWindows => _txtWindow != null;
   bool get readsTxtBySection => task?._indexedTxt != null;
   bool get hasLaterTxtWindow =>
@@ -118,20 +125,23 @@ class ChapterLayout {
       page(pageIndex) != null &&
       identical(page(pageIndex), other.page(otherIndex ?? pageIndex));
 
-  Future<ChapterLayout> ensurePage(int index) async =>
-      task == null ? this : task!.ensure(page: index, txtWindow: _txtWindow);
+  Future<ChapterLayout> ensurePage(int index, {int lookAhead = 4}) async =>
+      task == null
+      ? this
+      : task!.ensure(page: index, txtWindow: _txtWindow, lookAhead: lookAhead);
 
   /// 长章的相邻页可能位于另一个正文窗口，取到页后再切换当前画面。
   Future<({ChapterLayout layout, int pageIndex})?> adjacentPage(
     int index, {
     required bool forward,
+    int lookAhead = 4,
   }) async {
     final next = index + (forward ? 1 : -1);
     if (page(next) != null) return (layout: this, pageIndex: next);
     if (next < 0) return null;
     if (_txtWindow case final window?) {
       if (forward && !isComplete) {
-        final current = await ensurePage(next);
+        final current = await ensurePage(next, lookAhead: lookAhead);
         if (current.page(next) != null) {
           return (layout: current, pageIndex: next);
         }
@@ -140,6 +150,7 @@ class ChapterLayout {
       final adjacent = await task!.ensure(
         txtWindow: window + (forward ? 1 : -1),
         atEnd: !forward,
+        lookAhead: lookAhead,
       );
       return (
         layout: adjacent,
@@ -147,7 +158,7 @@ class ChapterLayout {
       );
     }
     if (forward && isComplete) return null;
-    final prepared = await ensurePage(next);
+    final prepared = await ensurePage(next, lookAhead: lookAhead);
     return prepared.page(next) == null
         ? null
         : (layout: prepared, pageIndex: next);
@@ -250,7 +261,7 @@ class ChapterLayout {
   }
 
   Locator beginLocatorOf(PageSlice? slice) {
-    if (slice == null || slice.fragments.isEmpty) {
+    if (slice == null) {
       return _locatorFor(PageAnchor(blockId: '', utf16Offset: 0));
     }
     // 章题仅用于显示；图片也是有效正文位置，听书会从它向后寻找文字。
@@ -275,7 +286,7 @@ class ChapterLayout {
   }
 
   Locator endLocatorOf(PageSlice? slice) {
-    if (slice == null || slice.fragments.isEmpty) {
+    if (slice == null) {
       return _locatorFor(PageAnchor(blockId: '', utf16Offset: 0));
     }
     return _locatorFor(slice.end);
@@ -301,7 +312,11 @@ class ChapterLayout {
     } else {
       for (var i = 0; i < order && i < blocks.length; i++) {
         final block = blocks[i];
-        if (block.isDecoration && !block.isTitleDecoration) continue;
+        if (block.isDecoration &&
+            !block.isTitleDecoration &&
+            !block.isPageImage) {
+          continue;
+        }
         consumed += block.text.length - block.displayPrefixLength + 1;
       }
     }
@@ -376,7 +391,35 @@ class ChapterLayout {
   // 表格各列同时续排，继续逐片段核对，不能按首尾块号二分查找。
   int? _pageIndexOf(Locator locator, {int fromPage = 0}) {
     if (locator.chapterId != chapterId) return null;
-    if (_orderOf(locator.blockId) < 0) return null;
+    final first = pages.firstOrNull;
+    if (fromPage == 0 &&
+        first != null &&
+        first.index == 0 &&
+        first.fragments.isEmpty &&
+        first.start.blockId == locator.blockId) {
+      return 0;
+    }
+    if (firstPage == 0 &&
+        fromPage == 0 &&
+        (pages.firstOrNull?.fragments.any(
+              (f) => f.block.isPageImage && f.block.blockId == locator.blockId,
+            ) ??
+            false)) {
+      return 0;
+    }
+    if (_orderOf(locator.blockId) < 0) {
+      if (_contentBlockOf(locator.blockId) == null) return null;
+      final tree =
+          task?._displayTree ??
+          (_locatorDisplayTree ??= DisplayTree.build(content));
+      final visible = tree.visibleIndexForHidden(locator.blockId);
+      return visible == null
+          ? null
+          : _pageIndexOf(
+              mapper.at(content.blocks[visible], 0),
+              fromPage: fromPage,
+            );
+    }
     if (firstPage != 0 &&
         pages.isNotEmpty &&
         _compare(locator, pages.first.start) < 0) {
@@ -390,11 +433,7 @@ class ChapterLayout {
           if (fragment.frameOnly || fragment.block.blockId != locator.blockId) {
             continue;
           }
-          final lines = fragment.block.lines;
-          if (lines.isEmpty ||
-              (locator.utf16Offset >= lines[fragment.lineFrom].start &&
-                  (locator.utf16Offset < lines[fragment.lineTo - 1].end ||
-                      fragment.lineTo == lines.length))) {
+          if (fragment.containsSourceOffset(locator.utf16Offset)) {
             return slice.index;
           }
         }
@@ -404,9 +443,15 @@ class ChapterLayout {
       // 同页左右列的块序可能把后续左列文字也夹在这个范围内。
       for (var i = fromPage; i < pages.length; i++) {
         final slice = pages[i];
-        // 半开区间 [start, end)：页首锚点属于本页，页尾锚点属于下一页
-        if (_compare(locator, slice.start) >= 0 &&
-            _compare(locator, slice.end) < 0) {
+        if (_compare(locator, slice.start) < 0) continue;
+        final end = _compare(locator, slice.end);
+        // 同一段跨页时，断页处属于下一页。整段恰好在此页结束时，
+        // 段末书签仍属于本页，下一段有自己的块号。
+        if (end < 0 ||
+            (end == 0 &&
+                _positionOfBlock(locator.blockId)?.isText == true &&
+                locator.utf16Offset ==
+                    _contentBlockOf(locator.blockId)?.runLength)) {
           return slice.index;
         }
       }
@@ -414,6 +459,8 @@ class ChapterLayout {
     // 落在全书该章最后位置之后（例如章尾空块）：归到最后一页
     return pages.isEmpty || !isComplete ? null : pageCount - 1;
   }
+
+  DisplayTree? _locatorDisplayTree;
 
   /// 内容顺序比较：先比块序，再比块内偏移，最后比定位倾向。
   ///
@@ -461,11 +508,18 @@ class ChapterLayout {
     )) {
       for (final page in pages) {
         for (final fragment in page.fragments) {
-          if (fragment.frameOnly || fragment.block != block) continue;
+          if (fragment.frameOnly) continue;
+          if (fragment.block != block &&
+              (!block.isParallelFlow ||
+                  fragment.block.blockId != block.blockId)) {
+            continue;
+          }
+          // 浮图旁的段落可能在本页重新断过行，片段行号属于这次绕排。
+          final displayed = fragment.block;
           buffer.write(
-            block.text.substring(
-              block.lines[fragment.lineFrom].start,
-              block.lines[fragment.lineTo - 1].end,
+            displayed.text.substring(
+              displayed.lines[fragment.lineFrom].start,
+              displayed.lines[fragment.lineTo - 1].end,
             ),
           );
         }
@@ -533,7 +587,10 @@ class ChapterLayout {
       final tables = {
         for (final table in content.tables) table.blockIds.first: table,
       };
-      final tableIds = content.tables.expand((t) => t.blockIds).toSet();
+      final tableIds = {
+        ...content.tables.expand((t) => t.blockIds),
+        ...measurer.displayTree!.captionBlockIds,
+      };
       final parallel = ParallelFlowLayout(
         content,
         measurer.displayTree!,
@@ -544,6 +601,10 @@ class ChapterLayout {
         final block = content.blocks[i];
         measured.addAll(measurer.measureBefore(i));
         if (token?.isCancelled ?? false) throw const LayoutCancelled();
+        if (measurer.displayTree!.hiddenBlocks.contains(i) &&
+            !tables.containsKey(block.id)) {
+          continue;
+        }
         if (parallel.groups.containsKey(i)) {
           measured.addAll(parallel.measure(i, measurer));
           i = parallel.ends[i]!;
@@ -608,8 +669,18 @@ class ChapterLayout {
       trace?.details['measuredBlocks'] = measurer.measuredBlocks;
 
       final paginator = ChapterPaginator(
+        parallelFlow: parallel,
+        compactIllustrations: content.pdfPage == null,
+        chapterStarts: _spreadStarts(content, options, measurer.displayTree!),
         pageHeight: options.contentHeight,
-        gapBefore: measurer.gapBefore,
+        measurer: measurer,
+        pageImages: measurer.pageImagesOf(content),
+        backgroundOnlyAnchor: () => backgroundOnlyPageAnchor(content),
+        containerSizing: () => ContainerFlowSizing.build(
+          measurer.displayTree!,
+          ChapterStyler.layoutTableOf(content),
+          options,
+        ),
       );
       final pages = paginator.paginate(measured);
       trace?.mark('paginate');

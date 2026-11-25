@@ -36,12 +36,13 @@ mixin _ValueEquality {
 ///   不跟随书里的 `html { font-size }`，否则书里写 62.5% 会把整本书缩成一半；
 /// - [reference]：百分比的参照宽度。CSS 里 margin／padding／width／text-indent
 ///   的百分比都按**包含块的内容宽度**算，纵向 margin 也一样，所以只留一个；
-/// - [viewportWidth]／[viewportHeight]：以后支持 `vw`／`vh` 用。
+/// - [viewportWidth]／[viewportHeight]：当前阅读页的可用宽高，用来算 `vw`、`vh`、`vmin` 和 `vmax`。
 class LengthContext {
   const LengthContext({
     required this.fontSize,
     required this.rootFontSize,
     required this.reference,
+    this.zeroAdvance,
     this.viewportWidth = 0,
     this.viewportHeight = 0,
   });
@@ -49,6 +50,7 @@ class LengthContext {
   final double fontSize;
   final double rootFontSize;
   final double reference;
+  final double? zeroAdvance;
   final double viewportWidth;
   final double viewportHeight;
 
@@ -62,6 +64,7 @@ class LengthContext {
     fontSize: fontSize ?? this.fontSize,
     rootFontSize: rootFontSize ?? this.rootFontSize,
     reference: reference ?? this.reference,
+    zeroAdvance: zeroAdvance,
     viewportWidth: viewportWidth ?? this.viewportWidth,
     viewportHeight: viewportHeight ?? this.viewportHeight,
   );
@@ -95,6 +98,19 @@ final class EmLength extends Length {
   Object? toJson() => {'u': 'em', 'v': value};
   @override
   String toString() => '${_num(value)}em';
+}
+
+/// 当前字体数字 0 的排版宽度。无法取得字形的场景按 CSS 的半 em 兜底。
+final class ChLength extends Length {
+  const ChLength(this.value);
+  final double value;
+  @override
+  bool get isPercent => true;
+  @override
+  double resolve(LengthContext context) =>
+      value * (context.zeroAdvance ?? .5 * context.fontSize);
+  @override
+  Object? toJson() => {'u': 'ch', 'v': value};
 }
 
 final class RemLength extends Length {
@@ -154,13 +170,38 @@ final class AutoLength extends Length {
   @override
   bool get isAuto => true;
   @override
-  double resolve(LengthContext context) => throw StateError(
-    'auto 长度必须先由块流按 CSS 2.2 10.3.3 分配，不能直接解析成像素',
-  );
+  double resolve(LengthContext context) =>
+      throw StateError('auto 长度必须先由块流按 CSS 2.2 10.3.3 分配，不能直接解析成像素');
   @override
   Object? toJson() => 'auto';
   @override
   String toString() => 'auto';
+}
+
+/// 视口长度在排版时按本张纸的正文区域换算，单页与双页共用同一规则。
+final class ViewportLength extends Length {
+  const ViewportLength(this.value, this.unit);
+  final double value;
+  final String unit;
+  @override
+  bool get isPercent => true;
+  @override
+  double resolve(LengthContext context) {
+    final w = context.viewportWidth, h = context.viewportHeight;
+    final side = switch (unit) {
+      'vw' => w,
+      'vh' => h,
+      'vmin' => w < h ? w : h,
+      'vmax' => w > h ? w : h,
+      _ => throw StateError('未知视口单位 $unit'),
+    };
+    return side * value / 100;
+  }
+
+  @override
+  Object? toJson() => {'u': unit, 'v': value};
+  @override
+  String toString() => '${_num(value)}$unit';
 }
 
 Length? lengthFromJson(Object? json) {
@@ -172,10 +213,15 @@ Length? lengthFromJson(Object? json) {
   if (value == null) return null;
   return switch (json['u']) {
     'em' => EmLength(value),
+    'ch' => ChLength(value),
     'rem' => RemLength(value),
     '%' => PercentLength(value),
     'px' => PxLength(value),
     'pt' => PtLength(value),
+    'vw' ||
+    'vh' ||
+    'vmin' ||
+    'vmax' => ViewportLength(value, json['u'] as String),
     _ => null,
   };
 }
@@ -290,7 +336,10 @@ sealed class FontSizeSpec with _ValueEquality {
   const FontSizeSpec();
 
   /// 解析成像素；相对值需要父级字号，rem 需要根字号。
-  double resolve({required double parentFontSize, required double rootFontSize});
+  double resolve({
+    required double parentFontSize,
+    required double rootFontSize,
+  });
 
   /// 是否相对父级/根变化。绝对字号换字号时不变，测量缓存可以复用。
   bool get isRelative => true;

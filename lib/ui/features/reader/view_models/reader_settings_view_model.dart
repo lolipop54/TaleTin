@@ -2,6 +2,8 @@
 /// 修改串行保存，字体和背景准备好后才发布，旧单书覆盖不再参与读取。
 library;
 
+import 'package:flutter/foundation.dart'
+    show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../settings/view_models/global_reading_settings.dart';
@@ -28,15 +30,43 @@ class ReaderSettingsState {
     required this.theme,
     this.brightness,
     this.customBrightness,
-    this.pdf = false,
-    this.supportsBookFonts = false,
+    this.format,
+    this.desktopColumns = false,
   }) : fontSettings = settings;
 
   /// 全局排版参数；显示时按格式限制不支持的功能。
   final ReadingSettings fontSettings;
-  final bool pdf;
-  final bool supportsBookFonts;
-  ReadingLayoutMode get layoutMode => fontSettings.layoutModeFor(pdf: pdf);
+  final BookFormat? format;
+  bool get pdf => format == BookFormat.pdf;
+  final bool desktopColumns;
+  static const desktopColumnsMinWidth = 900.0;
+
+  bool get _windows => defaultTargetPlatform == TargetPlatform.windows;
+  bool get _paged => fontSettings.pageTurnEffect != PageTurnEffect.scroll;
+
+  /// 兼容版的原书双页只支持仿真。简化排版可直接使用读者选择的翻页方式。
+  bool get originalSpreadCurlOnly =>
+      !_windows && !pdf && layoutMode.isOriginal && fontSettings.spreadEnabled;
+
+  /// 窗口宽度只影响当前阅读版式，保存的阅读偏好仍可在不同设备间共用。
+  ReaderSettingsState forViewport(double width) {
+    final useColumns =
+        _windows &&
+        width >= desktopColumnsMinWidth &&
+        !layoutMode.isOriginal &&
+        _paged;
+    if (useColumns == desktopColumns) return this;
+    return ReaderSettingsState(
+      settings: fontSettings,
+      theme: theme,
+      brightness: brightness,
+      customBrightness: customBrightness,
+      format: format,
+      desktopColumns: useColumns,
+    );
+  }
+
+  ReadingLayoutMode get layoutMode => fontSettings.layoutModeForBook(format);
   bool get pdfMode => pdf && layoutMode.isOriginal;
   bool freePdfView({required bool fixedView}) => pdfMode && !fixedView;
 
@@ -45,7 +75,7 @@ class ReaderSettingsState {
       ? settings.pageTurnEffect.forPdfFreeView()
       : settings.pageTurnEffect;
   bool get _bookFonts =>
-      supportsBookFonts &&
+      format?.usesOriginalWebView == true &&
       !layoutMode.isOriginal &&
       fontSettings.useBookFontsInSimplified;
 
@@ -57,8 +87,15 @@ class ReaderSettingsState {
       _bookFonts ? 'sans-serif' : fontSettings.fontFamily,
     ),
     bookEdges: !pdfMode && fontSettings.bookEdges,
-    landscapeSpread: !pdfMode && fontSettings.landscapeSpread,
-    pageTurnEffect: !pdfMode && fontSettings.spreadEnabled
+    landscape: desktopColumns || fontSettings.landscape,
+    // 滚动始终用单列。只调整本次显示，回到分页时仍能恢复保存的双列选项。
+    landscapeSpread:
+        !pdfMode &&
+        (_windows
+            ? desktopColumns
+            : fontSettings.landscapeSpread &&
+                  (layoutMode.isOriginal || _paged)),
+    pageTurnEffect: originalSpreadCurlOnly
         ? PageTurnEffect.curl
         : fontSettings.pageTurnEffect,
   );
@@ -105,8 +142,8 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
     return _writing;
   }
 
-  bool _pdf = false;
-  bool _supportsBookFonts = false;
+  BookFormat? _format;
+  bool get _pdf => _format == BookFormat.pdf;
   final _backgroundTextures = <String, ReadingBackgroundTexture>{};
   String? _pendingBackgroundId;
 
@@ -148,8 +185,7 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
     if (ref.mounted) {
       state = AsyncData(
         ReaderSettingsState(
-          pdf: _pdf,
-          supportsBookFonts: _supportsBookFonts,
+          format: _format,
           settings: current.fontSettings,
           theme: theme,
           brightness: current.brightness,
@@ -166,8 +202,7 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
     if (ref.mounted && theme != current.theme) {
       state = AsyncData(
         ReaderSettingsState(
-          pdf: _pdf,
-          supportsBookFonts: _supportsBookFonts,
+          format: _format,
           settings: current.fontSettings,
           theme: theme,
           brightness: current.brightness,
@@ -204,14 +239,10 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
     });
     final brightness = await ref.read(globalBrightnessProvider.future);
     final global = await ref.read(globalSettingsProvider.future);
-    final format = (await ref.read(bookRepositoryProvider).findById(bookId))
-        ?.format;
-    _pdf = format == BookFormat.pdf;
-    _supportsBookFonts = format?.usesOriginalWebView == true;
+    _format = (await ref.read(bookRepositoryProvider).findById(bookId))?.format;
     await _prepareFont(global.typography);
     return ReaderSettingsState(
-      pdf: _pdf,
-      supportsBookFonts: _supportsBookFonts,
+      format: _format,
       settings: global.typography,
       theme: await _appearance(readingThemeOf(global.themeId)),
       brightness: brightness.value,
@@ -232,8 +263,7 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
     if (!ref.mounted) return;
     state = AsyncData(
       ReaderSettingsState(
-        pdf: _pdf,
-        supportsBookFonts: _supportsBookFonts,
+        format: _format,
         settings: global.typography,
         theme: theme,
         brightness: current.brightness,
@@ -245,7 +275,7 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
   /// PDF切回原页前交接听书位置；源书已变更时不能再读取旧正文。
   Future<void> _prepareSettings(ReadingSettings next) async {
     final current = state.value;
-    final mode = next.layoutModeFor(pdf: _pdf);
+    final mode = next.layoutModeForBook(_format);
     if (current?.layoutMode != mode) {
       final book = await ref.read(bookRepositoryProvider).findById(bookId);
       if (!ref.mounted) return;
@@ -269,7 +299,7 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
   }
 
   Future<void> _prepareFont(ReadingSettings settings) async {
-    final original = settings.layoutModeFor(pdf: _pdf).isOriginal;
+    final original = settings.layoutModeForBook(_format).isOriginal;
     if (original && settings.useOriginalFont) return;
     // 原书正文由 WebView 准备内置字体；在这里用 Flutter 再预排一次，
     // 会同步读取整份中文字体，既阻塞加载动画，也没有参与正文绘制。
@@ -277,7 +307,9 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
       return;
     }
     await ref.read(selectedFontLoaderProvider)(
-      !original && _supportsBookFonts && settings.useBookFontsInSimplified
+      !original &&
+              _format?.usesOriginalWebView == true &&
+              settings.useBookFontsInSimplified
           ? 'sans-serif'
           : settings.fontFamily,
     );
@@ -322,22 +354,22 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
       _applySettings((o) => o.copyWith(fontWeight: value));
 
   void restoreOriginalFont() => _applySettings(
-    (o) => o.withFontChoice('__original', o.layoutModeFor(pdf: _pdf)),
+    (o) => o.withFontChoice('__original', o.layoutModeForBook(_format)),
   );
 
   void setFontFamily(String family) => _applySettings(
-    (o) => o.withFontChoice(family, o.layoutModeFor(pdf: _pdf)),
+    (o) => o.withFontChoice(family, o.layoutModeForBook(_format)),
   );
 
   /// 弹层等待保存成功才关闭；失败由串行入口提示，仍保留候选和旧正文。
   Future<bool> confirmFontChoice(String id) async {
     await _applySettings(
-      (o) => o.withFontChoice(id, o.layoutModeFor(pdf: _pdf)),
+      (o) => o.withFontChoice(id, o.layoutModeForBook(_format)),
     );
     final current = state.value?.fontSettings;
     return current != null &&
         (id == '__original'
-            ? current.usesBookFont(current.layoutModeFor(pdf: _pdf))
+            ? current.usesBookFont(current.layoutModeForBook(_format))
             : !current.useOriginalFont &&
                   !current.useBookFontsInSimplified &&
                   current.fontFamily == id);
@@ -347,7 +379,7 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
     (o) => o.withFontChoice(
       // 显式存系统字体，不能用 null（null 会继承全局宋体）。
       readingFontFamily(font) ?? 'sans-serif',
-      o.layoutModeFor(pdf: _pdf),
+      o.layoutModeForBook(_format),
     ),
   );
 
@@ -373,8 +405,7 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
     if (!ref.mounted) return;
     state = AsyncData(
       ReaderSettingsState(
-        pdf: _pdf,
-        supportsBookFonts: _supportsBookFonts,
+        format: _format,
         settings: current.fontSettings,
         theme: theme.withBackground(current.theme.texture),
         brightness: current.brightness,
@@ -398,8 +429,7 @@ class ReaderSettingsNotifier extends AsyncNotifier<ReaderSettingsState> {
     if (ref.mounted) {
       state = AsyncData(
         ReaderSettingsState(
-          pdf: _pdf,
-          supportsBookFonts: _supportsBookFonts,
+          format: _format,
           settings: current.fontSettings,
           theme: current.theme,
           brightness: brightness.value,

@@ -1,3 +1,5 @@
+import '../widgets/reader_link_ink.dart';
+
 import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'package:taletin/ui/core/widgets/gt_button.dart';
 import 'package:taletin/ui/core/widgets/gt_dialog_action.dart';
@@ -9,6 +11,7 @@ import '../../../../core/diagnostics/reader_work_trace.dart';
 
 import '../widgets/completion_prompt.dart';
 import '../widgets/reader_performance.dart';
+import '../widgets/turn_trace.dart' show traceTurn;
 import '../widgets/reader_turn_state_boundary.dart';
 import '../widgets/reader_source_changed_page.dart';
 import '../widgets/source_book_opening.dart';
@@ -19,6 +22,9 @@ import 'dart:ui' as ui;
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart' show kPrimaryButton;
+import 'package:flutter/foundation.dart'
+    show defaultTargetPlatform, TargetPlatform;
 
 import '../../../../domain/models/locator.dart';
 
@@ -26,6 +32,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 
 import '../../../core/widgets/book_loading.dart';
 import '../../../core/widgets/frame_fade.dart';
+import '../../../core/widgets/touch_frame_sampling.dart';
 import '../../../../app/router/reader_route_page.dart';
 
 import 'package:flutter/services.dart';
@@ -72,16 +79,19 @@ import '../widgets/simplified_scroll_area.dart';
 import '../widgets/original_scroll_area.dart';
 import '../widgets/reader_display_transition.dart';
 import '../widgets/reader_content_viewport.dart';
+import '../widgets/book_page_footer.dart';
+import '../widgets/reader_desktop_layout.dart';
+import '../widgets/reader_link_cursor.dart';
 import '../widgets/reader_image_viewer.dart';
 import '../widgets/reader_image_gallery.dart';
 import '../widgets/reader_information.dart';
 import '../widgets/fold_frames.dart';
+import '../widgets/page_curl_texture.dart';
 import '../widgets/page_raster_cache.dart';
 import '../widgets/prepared_page.dart';
 import '../widgets/prepared_page_cache.dart';
 import '../../../../domain/repositories/chapter_content_repository.dart';
 import '../widgets/automatic_scan_area.dart';
-import '../widgets/timed_page_turn.dart';
 import '../widgets/scan_frames.dart';
 import '../widgets/page_turn_area.dart';
 import '../widgets/panel_auto.dart';
@@ -118,6 +128,7 @@ part '../widgets/reader_reading_content.dart';
 part '../widgets/reader_page_area.dart';
 part '../widgets/reader_page_content.dart';
 part '../widgets/reader_spread_area.dart';
+part '../widgets/reader_spread_preparation.dart';
 part '../widgets/spread_page_content.dart';
 part '../widgets/reader_page_preparation.dart';
 part '../widgets/reader_page_selection.dart';
@@ -179,8 +190,7 @@ class _ReaderScopeState extends ConsumerState<_ReaderScope>
   }
 
   late final AppLifecycleListener _lifecycle;
-  late final bool _previousResampling;
-  late final Duration _previousSamplingOffset;
+  final _sampling = TouchFrameSampling();
 
   /// dispose 里不能再读 Provider，先把屏幕能力拿在手上
   late final ScreenControls _screen = ref.read(screenControlsProvider);
@@ -199,10 +209,9 @@ class _ReaderScopeState extends ConsumerState<_ReaderScope>
 
   @override
   void dispose() {
-    WidgetsBinding.instance
-      ..removeObserver(this)
-      ..resamplingEnabled = _previousResampling
-      ..samplingOffset = _previousSamplingOffset;
+    ReaderLinkInk.closeBook(widget.bookId);
+    WidgetsBinding.instance.removeObserver(this);
+    _sampling.release();
     _lifecycle.dispose();
     unawaited(_window.leaveReading(_orientationOwner));
     unawaited(_automatic.pause(save: false));
@@ -214,6 +223,18 @@ class _ReaderScopeState extends ConsumerState<_ReaderScope>
   /// 旋转、分屏或键盘弹出都会改变窗口占位；控制层按最新分类占位重新留白。
   @override
   void didChangeMetrics() {
+    if (readerTurnStateDiagnosticsEnabled && Platform.isWindows) {
+      final view = View.of(context);
+      final details = {
+        'width': view.physicalSize.width,
+        'height': view.physicalSize.height,
+        'pixelRatio': view.devicePixelRatio,
+      };
+      ReaderTurnStateDiagnostics.record('window.metrics', details);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) ReaderTurnStateDiagnostics.record('window.frame', details);
+      });
+    }
     unawaited(_window.refreshBarInsets());
   }
 
@@ -223,17 +244,9 @@ class _ReaderScopeState extends ConsumerState<_ReaderScope>
     _window = ref.read(readingWindowProvider)..enterReading(_orientationOwner);
     WidgetsBinding.instance.addObserver(this);
     unawaited(_window.refreshBarInsets());
-    final binding = WidgetsBinding.instance;
-    _previousResampling = binding.resamplingEnabled;
-    _previousSamplingOffset = binding.samplingOffset;
-    // 将触摸移动对齐到刷新节奏，避免原书平台视图下交替出现一帧、两帧
-    // 的画面间隔。使用真机验证的 8ms 短窗口，不沿用 SDK 的 38ms 默认值。
-    // 仅阅读页持有此设置，退出后恢复书架等界面的原输入配置。
-    binding
-      ..samplingOffset = const Duration(milliseconds: -8)
-      ..resamplingEnabled = !const bool.fromEnvironment(
-        'GT_DISABLE_READER_RESAMPLING',
-      );
+    _sampling.acquire(
+      enabled: !const bool.fromEnvironment('GT_DISABLE_READER_RESAMPLING'),
+    );
     // 即使从未操作自动阅读，也要在界面有效时取得退出所需的引用。
     _automatic = ref.read(automaticReadingProvider(widget.bookId).notifier);
     // 创建时就注册后台监听；延迟到退出时创建会漏掉整次阅读期间的后台事件。

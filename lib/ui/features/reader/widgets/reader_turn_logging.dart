@@ -56,6 +56,18 @@ class _ReaderTurnLoggingState extends State<ReaderTurnLogging> {
     }
     final trace = _scroll;
     if (trace != null) {
+      if (!trace.firstDragMoved &&
+          notification is ScrollUpdateNotification &&
+          notification.dragDetails != null &&
+          (notification.scrollDelta ?? 0) != 0) {
+        trace.firstDragMoved = true;
+        trace.event('scroll.firstDragMove');
+        // 把实际移动正文的那一帧与图形提交对时，单纯收到按下不算首帧。
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          trace.firstDragFrame =
+              WidgetsBinding.instance.platformDispatcher.frameData.frameNumber;
+        });
+      }
       trace.event('scroll.${notification.runtimeType}', [
         notification.metrics.pixels,
         notification.metrics.viewportDimension,

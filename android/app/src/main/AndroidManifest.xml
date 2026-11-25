@@ -81,6 +81,7 @@
              业务逻辑不在这里，它只转发命令到 Dart 控制器（离线听书实现计划 第 9 节）。
              tools:ignore="Instantiatable" 是官方要求的：这个类由插件提供，
              构建期看不到源码，缺了会报「Instantiatable」警告。 -->
+        <service android:name=".BookPageService" android:process=":pagination" android:exported="false" />
         <service
             android:name="com.ryanheise.audioservice.AudioService"
             android:foregroundServiceType="mediaPlayback"

@@ -1,4 +1,4 @@
-// Copyright (c) 2026 GT Reader contributors. MIT license, see LICENSE.
+// Copyright (c) 2026 GT Reader contributors. GPL-3.0-only, see LICENSE.
 //! 自定义属性按元素作用域求值。保留原声明，递归解析依赖，不以循环次数猜收敛。
 use std::collections::{HashMap, HashSet};
 

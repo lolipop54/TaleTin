@@ -1,9 +1,12 @@
 import '../../../../app/di/book_group_providers.dart';
 import '../widgets/shelf_selection_bar.dart';
 
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:taletin/ui/core/widgets/gt_button.dart';
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 
@@ -14,11 +17,15 @@ import 'package:go_router/go_router.dart';
 
 import '../../../../app/di/app_providers.dart';
 import '../../../../app/router/app_router.dart';
+import '../../../../app/router/main_pages_ready.dart';
+import '../../../../core/diagnostics/app_errors.dart';
 import '../../../../platform/channels/original_webview_warmup.dart';
+import '../../../../platform/channels/windows_document_platform.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/gt_tokens.dart';
 import '../../../core/widgets/book_cover.dart';
 import '../../../core/widgets/gt_icon.dart';
+import '../../../core/widgets/gt_round_action_button.dart';
 import '../../../core/widgets/state_views.dart';
 import '../../../core/widgets/frame_fade.dart';
 import '../../../../domain/models/book.dart';
@@ -31,7 +38,9 @@ import '../widgets/bookshelf_widgets.dart';
 import '../widgets/shelf_action_button.dart';
 import '../widgets/shelf_header.dart';
 import '../widgets/shelf_scroll_area.dart';
+import '../widgets/windows_shelf_drop_area.dart';
 import '../../import/widgets/shelf_import_tile.dart';
+import '../../import/view_models/import_view_model.dart';
 
 /// 书架页（参考图 01）：
 /// 标题栏（品牌名 + 搜索／导入／更多）→ 可展开搜索 → 筛选 → 书籍。
@@ -47,6 +56,50 @@ class BookshelfView extends ConsumerStatefulWidget {
 
 class _BookshelfViewState extends ConsumerState<BookshelfView> {
   bool _closingSelection = false;
+  bool _choosingFiles = false;
+
+  Future<void> _openImport() async {
+    if (defaultTargetPlatform != TargetPlatform.windows) {
+      context.push(AppRoutes.import);
+      return;
+    }
+    if (_choosingFiles) return;
+    _choosingFiles = true;
+    try {
+      final documents = await ref
+          .read(documentPlatformProvider)
+          .pickDocuments();
+      if (!mounted || documents.isEmpty) return;
+      // 与安卓文件管理页共用书架导入队列和进度占位。
+      unawaited(ref.read(importProvider.notifier).enqueue(documents));
+    } catch (error, stack) {
+      AppErrors.report(error, stack, operation: '打开导书文件选择器失败');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('无法打开文件选择器，请重试')));
+    } finally {
+      _choosingFiles = false;
+    }
+  }
+
+  Future<void> _importDroppedFiles(List<String> paths) async {
+    if (paths.isEmpty) return;
+    final documents = await windowsDroppedBooks(paths);
+    if (!mounted) return;
+    if (documents.isNotEmpty) {
+      unawaited(ref.read(importProvider.notifier).enqueue(documents));
+    }
+    final skipped = paths.length - documents.length;
+    if (skipped > 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            documents.isEmpty ? '没有可导入的书籍文件' : '已跳过 $skipped 项不可导入的文件或文件夹',
+          ),
+        ),
+      );
+    }
+  }
 
   void _closeSelection() {
     if (_closingSelection) return;
@@ -116,6 +169,47 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
             scaler.scale(15) * 1.5 + GtSpacing.s2 * 2,
           ),
         );
+    final body = SafeArea(
+      bottom: false,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          ShelfHeader(
+            height: headerHeight,
+            onImport: _openImport,
+            selectionHeader: shelf.selectionMode
+                ? _buildSelectionHeader(shelf, colors)
+                : null,
+          ),
+          const SizedBox(height: GtSpacing.s2),
+          const ShelfFilterBar(),
+          Expanded(
+            child: FrameFade(
+              revision: (
+                shelf.filter,
+                shelf.groupId,
+                shelf.sort,
+                shelf.gridView,
+              ),
+              child: visible.hasValue
+                  ? _buildBody(
+                      ref,
+                      visible.requireValue,
+                      hasBooks: library.value?.isNotEmpty ?? false,
+                      query: shelf.query.trim(),
+                    )
+                  : visible.hasError
+                  ? GtErrorView(
+                      title: '书架读取失败',
+                      message: '${visible.error}',
+                      onRetry: () => ref.invalidate(libraryBooksProvider),
+                    )
+                  : const GtLoadingView(label: '正在整理书架…'),
+            ),
+          ),
+        ],
+      ),
+    );
     return PopScope(
       // 多选模式下按返回键先退出多选，不直接退出应用
       canPop: !shelf.selectionMode,
@@ -133,47 +227,17 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
                   onClosed: _finishClosingSelection,
                 )
               : null,
-          body: SafeArea(
-            bottom: false,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                ShelfHeader(
-                  height: headerHeight,
-                  selectionHeader: shelf.selectionMode
-                      ? _buildSelectionHeader(shelf, colors)
-                      : null,
-                ),
-                const SizedBox(height: GtSpacing.s2),
-                const ShelfFilterBar(),
-                Expanded(
-                  child: FrameFade(
-                    revision: (
-                      shelf.filter,
-                      shelf.groupId,
-                      shelf.sort,
-                      shelf.gridView,
-                    ),
-                    child: visible.hasValue
-                        ? _buildBody(
-                            context,
-                            ref,
-                            visible.requireValue,
-                            hasBooks: library.value?.isNotEmpty ?? false,
-                            query: shelf.query.trim(),
-                          )
-                        : visible.hasError
-                        ? GtErrorView(
-                            title: '书架读取失败',
-                            message: '${visible.error}',
-                            onRetry: () => ref.invalidate(libraryBooksProvider),
-                          )
-                        : const GtLoadingView(label: '正在整理书架…'),
-                  ),
-                ),
-              ],
-            ),
-          ),
+          body: defaultTargetPlatform == TargetPlatform.windows
+              ? WindowsShelfDropArea(
+                  enabled:
+                      visible.hasValue &&
+                      !shelf.selectionMode &&
+                      (ModalRoute.isCurrentOf(context) ?? true) &&
+                      MainPagesReady.shelfIsInteractive(context),
+                  onDrop: (paths) => unawaited(_importDroppedFiles(paths)),
+                  child: body,
+                )
+              : body,
         ),
       ),
     );
@@ -184,10 +248,27 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
       padding: const EdgeInsets.fromLTRB(20, 16, 16, 0),
       child: Row(
         children: [
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: TooltipVisibility(
+              visible: false,
+              child: GtRoundActionButton(
+                key: const ValueKey('shelf-close-selection'),
+                tooltip: '退出多选',
+                icon: GtIcons.close,
+                onPressed: _closeSelection,
+              ),
+            ),
+          ),
+          const SizedBox(width: GtSpacing.s2),
           Expanded(
-            child: Text(
-              '已选 ${shelf.selectedIds.length} 本',
-              style: GtText.pageTitle(colors.textPrimary),
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Text(
+                '已选 ${shelf.selectedIds.length} 本',
+                style: GtText.pageTitle(colors.textPrimary),
+              ),
             ),
           ),
           GtButton(
@@ -203,7 +284,6 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
 
   /// 有数据后按「空书架 / 搜索无结果 / 列表」三种情况展示。
   Widget _buildBody(
-    BuildContext context,
     WidgetRef ref,
     List<Book> books, {
     required bool hasBooks,
@@ -219,7 +299,7 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
         title: '书架还是空的',
         message: '导入 EPUB 或 TXT，开始阅读吧',
         actionLabel: '导入书籍',
-        onAction: () => context.push(AppRoutes.import),
+        onAction: _openImport,
       );
     }
     return GtEmptyView(
@@ -243,7 +323,7 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
       ...books.where((book) => !committingIds.contains(book.id)),
     ];
     // 批量导入结束前保留每本书的位置；完成项原位交给正式书籍。
-    Widget tile(int index, bool list) {
+    Widget tile(int index, {double? gridWidth}) {
       final book = books[index];
       final item = imports[book.id];
       final completed =
@@ -253,19 +333,24 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
               ready[item.bookId]?.status == BookStatus.active
           ? ready[item.bookId]
           : null;
+      final displayed = completed ?? book;
       return KeyedSubtree(
         key: ValueKey(book.id),
-        child: completed != null
-            ? (list ? _ListRow(book: completed) : BookTile(book: completed))
-            : item != null
-            ? ShelfImportTile(book: book, item: item, listMode: list)
-            : (list ? _ListRow(book: book) : BookTile(book: book)),
+        child: item != null && completed == null
+            ? ShelfImportTile(
+                book: book,
+                item: item,
+                listMode: gridWidth == null,
+              )
+            : gridWidth == null
+            ? _ListRow(book: displayed)
+            : BookTile(book: displayed, gridWidth: gridWidth),
       );
     }
 
     final gridView = ref.watch(bookshelfProvider.select((s) => s.gridView));
-    return ShelfScrollArea(
-      child: LayoutBuilder(
+    return ShelfScrollToTop(
+      builder: (scroll) => LayoutBuilder(
         builder: (context, constraints) {
           // 在 Scaffold 的 body 内读取 extendBody 提供的实际底栏高度。
           // 多选时这里包含两行操作和手势区，普通模式则继承主导航占位。
@@ -275,15 +360,23 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
           // 网格自身左右有页边距，列数与单元宽度都按内容宽度计算
           final contentWidth =
               constraints.maxWidth - GtSize.shelfPagePadding * 2;
+          final windows = defaultTargetPlatform == TargetPlatform.windows;
+          const windowsMaxColumns = 12;
+          // 超宽窗口达到 12 列后，保留右侧空白，不继续放大封面。
+          final gridWidth = windows
+              ? math.min(
+                  contentWidth,
+                  windowsMaxColumns * 144 + (windowsMaxColumns - 1) * gap,
+                )
+              : contentWidth;
           final windowSize = MediaQuery.sizeOf(context);
           // 用应用窗口判断横屏空间，分屏时仍按实际可用宽度减列。
           final wideLandscape =
               windowSize.width > windowSize.height && windowSize.height >= 600;
-          final columns =
-              ((contentWidth + gap) / (GtSize.shelfMinItemWidth + gap))
-                  .floor()
-                  .clamp(1, wideLandscape ? 8 : 6);
-          final itemWidth = (contentWidth - gap * (columns - 1)) / columns;
+          final columns = ((gridWidth + gap) / (GtSize.shelfMinItemWidth + gap))
+              .floor()
+              .clamp(1, windows ? windowsMaxColumns : (wideLandscape ? 8 : 6));
+          final itemWidth = (gridWidth - gap * (columns - 1)) / columns;
           // 比例与 BookTile 的内容高度同源（含系统字号缩放），
           // 避免封面被拉伸压缩或文字溢出
           final aspectRatio =
@@ -294,6 +387,7 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
               );
           if (!gridView) {
             return ListView.separated(
+              controller: scroll,
               // 提前一屏准备条目及图片，避免封面刚进入视口才开始解码。
               scrollCacheExtent: const ScrollCacheExtent.viewport(1),
               padding: EdgeInsets.fromLTRB(
@@ -304,17 +398,18 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
               ),
               itemCount: books.length,
               separatorBuilder: (_, _) => const SizedBox(height: GtSpacing.s3),
-              itemBuilder: (context, index) => tile(index, true),
+              itemBuilder: (context, index) => tile(index),
             );
           }
           return GridView.builder(
+            controller: scroll,
             scrollCacheExtent: const ScrollCacheExtent.viewport(1),
             // 分类下原有的 16dp 留白放进滚动区，供书本上滑时渐隐；
             // 另留 20dp 容纳封面顶部标签，静止时的书本位置保持一致。
             padding: EdgeInsets.fromLTRB(
               GtSize.shelfPagePadding,
               GtSpacing.s4 + 20,
-              GtSize.shelfPagePadding,
+              GtSize.shelfPagePadding + (contentWidth - gridWidth),
               bottomPadding,
             ),
             gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
@@ -325,7 +420,7 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
               childAspectRatio: aspectRatio,
             ),
             itemCount: books.length,
-            itemBuilder: (context, index) => tile(index, false),
+            itemBuilder: (context, index) => tile(index, gridWidth: itemWidth),
           );
         },
       ),
@@ -337,6 +432,7 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
 class _ListRow extends ConsumerWidget {
   const _ListRow({required this.book});
 
+  static const _coverWidth = 56.0;
   final Book book;
 
   @override
@@ -363,11 +459,12 @@ class _ListRow extends ConsumerWidget {
             const SizedBox(width: GtSpacing.s2),
           ],
           SizedBox(
-            width: 56,
+            width: _coverWidth,
             child: Stack(
               children: [
                 BookCover(
                   bookId: book.id,
+                  displayWidth: _coverWidth,
                   format: book.format,
                   pinned: book.isPinned,
                   title: book.title,

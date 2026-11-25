@@ -10,6 +10,7 @@ import 'dart:ui' show Offset, Rect;
 import '../../engine/layout/chapter_layout.dart';
 import '../../engine/layout/layout_options.dart';
 import '../../engine/selection/selection_rects.dart';
+import '../models/book.dart';
 import '../models/book_document.dart';
 import '../models/locator.dart';
 import 'txt_chapter_sections.dart';
@@ -20,6 +21,7 @@ import 'txt_chapter_sections.dart';
 /// 系统字号缩放是非线性的，折算成单一系数会让测量与渲染行数不一致（设计文档 6.4）。
 class LayoutRequest {
   const LayoutRequest({
+    this.book,
     required this.bookId,
     required this.contentVersion,
     required this.chapter,
@@ -31,6 +33,7 @@ class LayoutRequest {
        chapterOffset = null;
 
   const LayoutRequest.txtSections({
+    this.book,
     required this.bookId,
     required this.contentVersion,
     required this.chapter,
@@ -42,6 +45,7 @@ class LayoutRequest {
        _content = null,
        allowPageRestart = false;
 
+  final Book? book;
   final String bookId;
   final int contentVersion;
   final Chapter chapter;

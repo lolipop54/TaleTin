@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
 
@@ -12,6 +13,7 @@ class GtButton extends StatelessWidget {
     required this.child,
     this.style,
     this.tooltip,
+    this.showTooltipOnWindows = true,
     this.variant = FButtonVariant.ghost,
   }) : iconOnly = false,
        raw = false,
@@ -80,6 +82,7 @@ class GtButton extends StatelessWidget {
     required Widget icon,
     this.style,
     this.tooltip,
+    this.showTooltipOnWindows = true,
   }) : child = icon,
        iconOnly = true,
        raw = false,
@@ -95,6 +98,7 @@ class GtButton extends StatelessWidget {
     required this.onPressed,
     required this.child,
     this.tooltip,
+    this.showTooltipOnWindows = true,
     this.selected = false,
     this.borderRadius,
     this.customBorder,
@@ -132,6 +136,10 @@ class GtButton extends StatelessWidget {
   final Widget child;
   final ButtonStyle? style;
   final String? tooltip;
+
+  /// 已有可见文字或约定俗成的图标时，可关闭 Windows 的浮层提示。
+  /// 只显示图标的按钮仍把 [tooltip] 用作读屏名称。
+  final bool showTooltipOnWindows;
   final FButtonVariant variant;
   final bool iconOnly, raw;
   final bool selected;
@@ -141,6 +149,13 @@ class GtButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (raw) {
+      // 书架条目自行排版和配色，快拖时无需逐本解析普通按钮的颜色、间距和最小尺寸。
+      final decoration = customBorder != null
+          ? ShapeDecoration(shape: customBorder!, color: Colors.transparent)
+          : BoxDecoration(borderRadius: borderRadius);
+      return _tappable(child, FVariants.all(decoration));
+    }
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final filled = variant == FButtonVariant.primary;
@@ -185,14 +200,10 @@ class GtButton extends StatelessWidget {
                     : scheme.outline,
               )
             : BorderSide.none);
-    final decoration = raw
-        ? customBorder != null
-              ? ShapeDecoration(shape: customBorder!, color: Colors.transparent)
-              : BoxDecoration(borderRadius: borderRadius)
-        : ShapeDecoration(
-            color: background,
-            shape: shape.copyWith(side: side),
-          );
+    final decoration = ShapeDecoration(
+      color: background,
+      shape: shape.copyWith(side: side),
+    );
     final requestedSize =
         effective?.minimumSize?.resolve(states) ??
         (iconOnly ? const Size(40, 40) : const Size(64, 40));
@@ -227,7 +238,7 @@ class GtButton extends StatelessWidget {
     decorations = FVariants.from(
       decoration,
       variants: {
-        if (!raw && onPressed != null)
+        if (onPressed != null)
           [FTappableVariant.pressed]: DecorationDelta.shapeDelta(
             color: Color.alphaBlend(
               foreground.withValues(alpha: 0.08),
@@ -236,45 +247,53 @@ class GtButton extends StatelessWidget {
           ),
       },
     );
-    Widget content = raw
-        ? child
-        : ConstrainedBox(
-            constraints: BoxConstraints(
-              minWidth: requestedSize.width,
-              minHeight: requestedSize.height,
+    final surface = ConstrainedBox(
+      constraints: BoxConstraints(
+        minWidth: requestedSize.width,
+        minHeight: requestedSize.height,
+      ),
+      child: Padding(
+        padding: padding,
+        child: Center(
+          widthFactor: 1,
+          heightFactor: 1,
+          child: DefaultTextStyle.merge(
+            style:
+                (effective?.textStyle?.resolve(states) ??
+                        theme.textTheme.labelLarge!)
+                    .copyWith(color: foreground),
+            child: IconTheme.merge(
+              data: IconThemeData(color: foreground, size: 24),
+              child: child,
             ),
-            child: Padding(
-              padding: padding,
-              child: Center(
-                widthFactor: 1,
-                heightFactor: 1,
-                child: DefaultTextStyle.merge(
-                  style:
-                      (effective?.textStyle?.resolve(states) ??
-                              theme.textTheme.labelLarge!)
-                          .copyWith(color: foreground),
-                  child: IconTheme.merge(
-                    data: IconThemeData(color: foreground, size: 24),
-                    child: child,
-                  ),
-                ),
-              ),
-            ),
-          );
-    if (!raw) {
-      final surface = content;
-      // 外层负责完整触摸范围，内层保留原按钮实际绘制高度和圆角。
-      // 用 Forui 当前交互状态绘制内层底色，不改变按钮绘制尺寸。
-      content = GtButtonTapArea(
-        minimumSize: minSize,
-        child: Builder(
-          builder: (context) => DecoratedBox(
-            decoration: decorations.resolve(FButtonData.of(context).variants),
-            child: surface,
           ),
         ),
-      );
-    }
+      ),
+    );
+    // 外层负责完整触摸范围，内层保留原按钮实际绘制高度和圆角。
+    // 用 Forui 当前交互状态绘制内层底色，不改变按钮绘制尺寸。
+    final content = GtButtonTapArea(
+      minimumSize: minSize,
+      child: Builder(
+        builder: (context) => DecoratedBox(
+          decoration: decorations.resolve(FButtonData.of(context).variants),
+          child: surface,
+        ),
+      ),
+    );
+    return _tappable(content, const FVariants.all(BoxDecoration()));
+  }
+
+  Widget _tappable(
+    Widget content,
+    FVariants<
+      FTappableVariantConstraint,
+      FTappableVariant,
+      Decoration,
+      DecorationDelta
+    >
+    decoration,
+  ) {
     content = FButton.raw(
       variant: variant,
       onPress: onPressed,
@@ -286,11 +305,13 @@ class GtButton extends StatelessWidget {
         tappableStyle: const FTappableStyleDelta.delta(
           motion: FTappableMotion.none,
         ),
-        decoration: raw ? decorations : const FVariants.all(BoxDecoration()),
+        decoration: decoration,
       ),
       child: content,
     );
-    if (tooltip != null) {
+    if (tooltip != null &&
+        (showTooltipOnWindows ||
+            defaultTargetPlatform != TargetPlatform.windows)) {
       content = Tooltip(
         message: tooltip!,
         triggerMode: TooltipTriggerMode.longPress,

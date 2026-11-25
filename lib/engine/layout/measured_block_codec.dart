@@ -1,12 +1,26 @@
 import 'package:flutter/painting.dart';
 
 import '../../domain/models/book_document.dart';
+import 'book_image_fit.dart';
 import 'measured_block.dart';
+import 'book_language.dart';
 import 'math_formula.dart';
 import 'background_image_style.dart';
+import 'vertical_margins.dart';
 
 /// 仅编码已完成的测量数据，不持有绘图句柄。格式变化同时变更缓存身份版本。
 abstract final class MeasuredBlockCodec {
+  static BlockMargins? decodeMargins(Object? encoded) {
+    if (encoded == null) return null;
+    final values = encoded as List;
+    double px(int index) => (values[index] as num).toDouble();
+    return BlockMargins(
+      VerticalMargin(px(0), px(1)),
+      VerticalMargin(px(2), px(3)),
+      through: values[4] == true,
+    );
+  }
+
   static Map<String, Object?> encode(MeasuredBlock b) => {
     'id': b.blockId,
     if (b.decorationAtStart) 'leadingDecoration': true,
@@ -22,13 +36,14 @@ abstract final class MeasuredBlockCodec {
           s.fontWeight?.value,
           s.fontStyle?.index,
           s.height,
-          // 文字装饰：0 无、1 下划线、2 删除线、3 两者都有
+          // 低三位分别表示下划线、删除线、上划线。
           s.decoration == null
               ? 0
               : (s.decoration!.contains(TextDecoration.underline) ? 1 : 0) |
                     (s.decoration!.contains(TextDecoration.lineThrough)
                         ? 2
-                        : 0),
+                        : 0) |
+                    (s.decoration!.contains(TextDecoration.overline) ? 4 : 0),
           // 书里给的文字颜色：漏存会让重开后的文字退回主题黑字
           // （真机：红底白字的章题重开后变成黑字）
           s.color?.toARGB32(),
@@ -44,13 +59,22 @@ abstract final class MeasuredBlockCodec {
                     shadow.color.toARGB32(),
                   ],
                 ],
-          if (s.fontFamilyFallback != null || s.fontVariations != null)
+          if (s.fontFamilyFallback != null ||
+              s.fontVariations != null ||
+              s.decorationColor != null ||
+              s.decorationStyle != null)
             s.fontFamilyFallback,
-          if (s.fontVariations != null)
-            [
-              for (final variation in s.fontVariations!)
-                [variation.axis, variation.value],
-            ],
+          if (s.fontVariations != null ||
+              s.decorationColor != null ||
+              s.decorationStyle != null)
+            s.fontVariations == null
+                ? null
+                : [
+                    for (final variation in s.fontVariations!)
+                      [variation.axis, variation.value],
+                  ],
+          if (s.decorationColor != null || s.decorationStyle != null)
+            [s.decorationColor?.toARGB32(), s.decorationStyle?.index],
         ],
     ],
     'lines': [
@@ -81,9 +105,14 @@ abstract final class MeasuredBlockCodec {
                     ruby.fontFamily,
                     ruby.width,
                     ruby.height,
+                    if (ruby.color != null || ruby.below)
+                      ruby.color?.toARGB32(),
+                    if (ruby.below) true,
                   ],
               ],
           ],
+          if (l.stacked || l.floatInterval != null) l.stacked,
+          if (l.floatInterval case final span?) ...[span.left, span.right],
         ],
     ],
     'inlineImages': [
@@ -99,6 +128,9 @@ abstract final class MeasuredBlockCodec {
           image.alt,
           image.formula?.toJson(),
           image.noteLink,
+          if (image.imageFit != null || image.altIsFootnote)
+            image.imageFit?.toJson(),
+          if (image.altIsFootnote) true,
         ],
     ],
     'box': b.box == null ? null : _encodeBox(b.box!),
@@ -139,8 +171,19 @@ abstract final class MeasuredBlockCodec {
     'bodyBottom': b.bodyBottom,
     'marginTop': b.marginTop,
     'marginBottom': b.marginBottom,
+    if (b.flowMargins case final margins?)
+      'flowMargins': [
+        margins.before.positive,
+        margins.before.negative,
+        margins.after.positive,
+        margins.after.negative,
+        margins.through,
+      ],
     'boxFirst': b.boxFirst,
     'boxLast': b.boxLast,
+    if (b.textStyle.rtl) 'rtl': true,
+    if (b.runStyles.any((s) => s.locale != null))
+      'locales': [for (final s in b.runStyles) s.locale?.toLanguageTag()],
     'textShadows': b.textStyle.shadows == null
         ? null
         : [
@@ -161,7 +204,10 @@ abstract final class MeasuredBlockCodec {
     'image': b.imageSize == null
         ? null
         : [b.imageSize!.width, b.imageSize!.height],
+    if (b.paperArtwork) 'paperArtwork': true,
     'resource': b.resourcePath,
+    if (b.imageFit != null) 'imageFit': b.imageFit!.toJson(),
+    if (b.altIsFootnote) 'altIsFootnote': true,
     if (b.noteLink != null) 'noteLink': b.noteLink,
     'alt': b.alt,
     'inset': b.inset,
@@ -178,8 +224,57 @@ abstract final class MeasuredBlockCodec {
             b.tableBounds!.height,
           ],
     'tableTop': b.tableTop,
+    'tableContentBottom': ?b.tableContentBottom,
+    if (b.tableBreakRows.isNotEmpty)
+      'tableBreakRows': [
+        for (final row in b.tableBreakRows)
+          [row.top, row.bottom, row.avoidUntil],
+      ],
+    if (b.positionedOverlay) 'positionedOverlay': true,
     'tableUnit': b.tableUnit,
+    if (b.tableHeaderBand case final h?)
+      'tableHead': [h.top, h.bottom, h.bodyTop, h.bodyEnd],
     'tableHeader': b.tableHeader,
+    if (b.legendFieldset != null) 'legend': b.legendFieldset,
+    if (b.tableBackdrops.isNotEmpty)
+      'tableLayers': [
+        for (final layer in b.tableBackdrops)
+          [
+            _encodeBox(layer.box),
+            layer.area.left,
+            layer.area.top,
+            layer.area.width,
+            layer.area.height,
+          ],
+      ],
+    if (b.tableCellBox case final box?) 'tableCellBox': _encodeBox(box),
+    if (b.collapsedTableBorders) 'collapsedTableBorders': true,
+    if (b.tableVerticalBorders.isNotEmpty)
+      'tableVerticalBorders': [
+        for (final e in b.tableVerticalBorders)
+          [
+            e.top,
+            e.bottom,
+            e.border.width,
+            e.border.style,
+            e.border.color.toARGB32(),
+            e.border.side,
+            e.left,
+          ],
+      ],
+    if (b.tableHorizontalBorders.isNotEmpty)
+      'tableHorizontalBorders': [
+        for (final edge in b.tableHorizontalBorders)
+          [
+            edge.left,
+            edge.right,
+            edge.border.width,
+            edge.border.style,
+            edge.border.color.toARGB32(),
+            edge.border.side,
+            edge.top,
+          ],
+      ],
     // 引用块里的表格：盒子本身不能丢，否则重开章节后只剩文字、没有背景边框
     'tableBox': b.tableBox == null ? null : _encodeBox(b.tableBox!),
     'layoutWidth': b.layoutWidth,
@@ -205,6 +300,11 @@ abstract final class MeasuredBlockCodec {
       box.borderRadius.topRight.x,
       box.borderRadius.bottomRight.x,
       box.borderRadius.bottomLeft.x,
+      box.borderRadius.topLeft.y,
+      box.borderRadius.topRight.y,
+      box.borderRadius.bottomRight.y,
+      box.borderRadius.bottomLeft.y,
+      ...?box.radiusFractions,
     ],
     box.padTop,
     box.padRight,
@@ -222,6 +322,7 @@ abstract final class MeasuredBlockCodec {
     ],
     ...box.borderStyles,
     box.backgroundImage?.toJson(),
+    if (box.cloneDecoration) true,
   ];
 
   static MeasuredBlock decode(Map<String, dynamic> j) {
@@ -252,6 +353,10 @@ abstract final class MeasuredBlockCodec {
           hardBreak: row.length > 5 && row[5] == true,
           left: row.length > 6 ? number(row[6]) : 0,
           textTop: row.length > 7 ? number(row[7]) : 0,
+          stacked: row.length > 9 && row[9] == true,
+          floatInterval: row.length > 11
+              ? (left: number(row[10]), right: number(row[11]))
+              : null,
           segments: row.length > 8
               ? [
                   for (final rawSegment in row[8] as List)
@@ -275,6 +380,10 @@ abstract final class MeasuredBlockCodec {
                                 ruby[2] as String?,
                                 number(ruby[3]),
                                 number(ruby[4]),
+                                below: ruby.length > 6 && ruby[6] == true,
+                                color: ruby.length > 5 && ruby[5] != null
+                                    ? Color(ruby[5] as int)
+                                    : null,
                               ),
                         letterSpacing: segment.length > 4
                             ? number(segment[4])
@@ -298,6 +407,8 @@ abstract final class MeasuredBlockCodec {
             size: Size(number(row[4]), number(row[5])),
             resourcePath: row[6] as String,
             alt: row.length > 7 ? row[7] as String? : null,
+            imageFit: row.length > 10 ? BookImageFit.fromJson(row[10]) : null,
+            altIsFootnote: row.length > 11 && row[11] == true,
             noteLink: row.length > 9 ? row[9] as String? : null,
             formula: row.length > 8 && row[8] is Map
                 ? FormulaGeometry.fromJson(row[8] as Map)
@@ -336,10 +447,13 @@ abstract final class MeasuredBlockCodec {
           TextRun.fromJson(Map<String, Object?>.from(r as Map)),
       ],
       runStyles: [
-        for (final raw in j['styles'] as List)
+        for (final (index, raw) in (j['styles'] as List).indexed)
           (() {
             final s = raw as List;
             return TextStyle(
+              locale: j['locales'] == null
+                  ? null
+                  : bookLocale(j['locales'][index] as String?),
               fontFamily: s[0] as String?,
               fontSize: s[1] == null ? null : number(s[1]),
               fontWeight: s[2] == null
@@ -350,6 +464,8 @@ abstract final class MeasuredBlockCodec {
               decoration: (s.length > 5 ? (s[5] as num).toInt() : 0) == 0
                   ? null
                   : TextDecoration.combine([
+                      if (((s[5] as num).toInt() & 4) != 0)
+                        TextDecoration.overline,
                       if ((s.length > 5 ? (s[5] as num).toInt() : 0) & 1 != 0)
                         TextDecoration.underline,
                       if ((s.length > 5 ? (s[5] as num).toInt() : 0) & 2 != 0)
@@ -366,7 +482,13 @@ abstract final class MeasuredBlockCodec {
               fontFamilyFallback: s.length > 10
                   ? (s[10] as List?)?.cast<String>()
                   : null,
-              fontVariations: s.length > 11
+              decorationColor: s.length > 12 && s[12][0] != null
+                  ? Color(s[12][0] as int)
+                  : null,
+              decorationStyle: s.length > 12 && s[12][1] != null
+                  ? TextDecorationStyle.values[s[12][1] as int]
+                  : null,
+              fontVariations: s.length > 11 && s[11] != null
                   ? [
                       for (final v in (s[11] as List).cast<List>())
                         FontVariation(v[0] as String, number(v[1])),
@@ -382,7 +504,10 @@ abstract final class MeasuredBlockCodec {
           ? null
           : Size(number(image[0]), number(image[1])),
       resourcePath: j['resource'] as String?,
+      paperArtwork: j['paperArtwork'] == true,
+      imageFit: BookImageFit.fromJson(j['imageFit']),
       alt: j['alt'] as String?,
+      altIsFootnote: j['altIsFootnote'] == true,
       noteLink: j['noteLink'] as String?,
       inset: number(j['inset']),
       isDecoration: j['decoration'] as bool,
@@ -398,8 +523,72 @@ abstract final class MeasuredBlockCodec {
               number(bounds[3]),
             ),
       tableTop: number(j['tableTop']),
+      tableContentBottom: (j['tableContentBottom'] as num?)?.toDouble(),
+      tableBreakRows: [
+        for (final row in j['tableBreakRows'] as List? ?? const [])
+          (
+            top: number(row[0]),
+            bottom: number(row[1]),
+            avoidUntil: (row[2] as num?)?.toDouble(),
+          ),
+      ],
+      positionedOverlay: j['positionedOverlay'] == true,
       tableUnit: number(j['tableUnit']),
+      tableHeaderBand: switch (j['tableHead']) {
+        [final num a, final num b, final num c, final num d] => (
+          top: a.toDouble(),
+          bottom: b.toDouble(),
+          bodyTop: c.toDouble(),
+          bodyEnd: d.toDouble(),
+        ),
+        _ => null,
+      },
       tableHeader: j['tableHeader'] as bool,
+      legendFieldset: j['legend'] as int?,
+      tableBackdrops: [
+        for (final row in j['tableLayers'] as List? ?? const [])
+          (
+            box: _decodeBox(row[0] as List, number),
+            area: Rect.fromLTWH(
+              number(row[1]),
+              number(row[2]),
+              number(row[3]),
+              number(row[4]),
+            ),
+          ),
+      ],
+      tableCellBox: j['tableCellBox'] == null
+          ? null
+          : _decodeBox(j['tableCellBox'] as List, number),
+      collapsedTableBorders: j['collapsedTableBorders'] == true,
+      tableVerticalBorders: [
+        for (final e in j['tableVerticalBorders'] as List? ?? const [])
+          (
+            top: number(e[0]),
+            bottom: number(e[1]),
+            left: e[6] as bool,
+            border: (
+              width: number(e[2]),
+              style: e[3] as int,
+              color: Color(e[4] as int),
+              side: e[5] as int,
+            ),
+          ),
+      ],
+      tableHorizontalBorders: [
+        for (final edge in (j['tableHorizontalBorders'] as List? ?? const []))
+          (
+            left: number(edge[0]),
+            right: number(edge[1]),
+            top: edge[6] as bool,
+            border: (
+              width: number(edge[2]),
+              style: edge[3] as int,
+              color: Color(edge[4] as int),
+              side: edge[5] as int,
+            ),
+          ),
+      ],
       tableBox: j['tableBox'] == null
           ? null
           : _decodeBox(j['tableBox'] as List, number),
@@ -420,9 +609,11 @@ abstract final class MeasuredBlockCodec {
       bodyBottom: j['bodyBottom'] == null ? 0 : number(j['bodyBottom']),
       marginTop: j['marginTop'] == null ? 0 : number(j['marginTop']),
       marginBottom: j['marginBottom'] == null ? 0 : number(j['marginBottom']),
+      flowMargins: decodeMargins(j['flowMargins']),
       boxFirst: j['boxFirst'] != false,
       boxLast: j['boxLast'] != false,
       textStyle: BlockTextStyle(
+        rtl: j['rtl'] == true,
         shadows: j['textShadows'] == null
             ? null
             : _decodeShadows(j['textShadows'] as List, number),
@@ -476,7 +667,14 @@ abstract final class MeasuredBlockCodec {
       );
     }
     final styleBase = 15 + shadowCount * 5;
+    final radii = raw[9] as List;
+    // 旧缓存只保存四个圆半径；新缓存按先横后纵保存八个分量。
+    Radius corner(int index) => Radius.elliptical(
+      number(radii[index]),
+      number(radii[radii.length >= 8 ? index + 4 : index]),
+    );
     return BlockBox(
+      cloneDecoration: raw.length > styleBase + 5 && raw[styleBase + 5] == true,
       backgroundImage: raw.length > styleBase + 4
           ? BookBackgroundImage.fromJson(raw[styleBase + 4])
           : null,
@@ -493,11 +691,14 @@ abstract final class MeasuredBlockCodec {
       borderRight: number(raw[6]),
       borderBottom: number(raw[7]),
       borderLeft: number(raw[8]),
+      radiusFractions: radii.length == 16
+          ? [for (final v in radii.skip(8)) v == null ? null : number(v)]
+          : null,
       borderRadius: BorderRadius.only(
-        topLeft: Radius.circular(number((raw[9] as List)[0])),
-        topRight: Radius.circular(number((raw[9] as List)[1])),
-        bottomRight: Radius.circular(number((raw[9] as List)[2])),
-        bottomLeft: Radius.circular(number((raw[9] as List)[3])),
+        topLeft: corner(0),
+        topRight: corner(1),
+        bottomRight: corner(2),
+        bottomLeft: corner(3),
       ),
       padTop: number(raw[10]),
       padRight: number(raw[11]),

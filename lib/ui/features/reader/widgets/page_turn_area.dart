@@ -23,16 +23,19 @@ import '../../../../engine/layout/chapter_layout.dart' show LayoutCancelled;
 
 import '../../../core/theme/gt_tokens.dart';
 import 'fold_frames.dart';
+import 'book_page_footer.dart';
 import 'page_fold.dart';
 import 'prepared_page.dart';
 import 'prepared_page_view.dart';
 import 'turn_trace.dart';
 import 'turn_response_trace.dart';
 import 'reader_drag_detector.dart';
+import '../../../../platform/reading_font_binding.dart';
 import 'reader_turn_timing.dart';
 import 'original_scroll_frames.dart';
 
 part 'page_turn_input.dart';
+part 'page_turn_paper.dart';
 part 'page_turn_logging.dart';
 part 'page_turn_state_logging.dart';
 
@@ -110,9 +113,18 @@ class PageTurnArea extends StatefulWidget {
 
   static Future<void> turn(GlobalKey key, bool forward) async {
     final state = key.currentState;
-    if (state is _PageTurnAreaState &&
-        !state._dragAccepted &&
-        state._inputBlockReason() == null) {
+    final reason = state is! _PageTurnAreaState
+        ? 'noPageTurnArea'
+        : state._dragAccepted
+        ? 'dragAccepted'
+        : state._inputBlockReason();
+    if (ReaderTurnStateDiagnostics.tracingWheel) {
+      ReaderTurnStateDiagnostics.record(
+        reason == null ? 'wheel.turnStart' : 'wheel.rejected',
+        {'blockReason': reason, 'direction': forward ? 'forward' : 'backward'},
+      );
+    }
+    if (state is _PageTurnAreaState && reason == null) {
       await state._finishInput(
         () => state._tapTurn(
           forward ? PageTurnDirection.forward : PageTurnDirection.backward,
@@ -128,6 +140,7 @@ class PageTurnArea extends StatefulWidget {
     required this.nextPage,
     required this.turnId,
     required this.onTurn,
+    this.onPreparedTurn,
     required this.onCenterTap,
     this.prepareFold,
     this.effect = PageTurnEffect.curl,
@@ -143,12 +156,14 @@ class PageTurnArea extends StatefulWidget {
     this.dragEnabled = true,
     this.requireDragDistance = false,
     this.spread = false,
+    this.deferBookFontRefresh = false,
     this.slideImages = false,
   });
 
   /// 诊断日志里区分两套排版（简化 / 原书），只用于 GT_PROFILE_CAPTURE 采样。
   final String traceLabel;
   final bool spread;
+  final bool deferBookFontRefresh;
 
   /// 原书平移使用整页截图；简化排版和PDF继续各自原有的页面交接。
   final bool slideImages;
@@ -180,8 +195,10 @@ class PageTurnArea extends StatefulWidget {
 
   /// 提交翻页；返回 false 表示没有翻动（已在全书首尾）
   final Future<bool> Function(PageTurnDirection direction) onTurn;
+  final Future<bool> Function(PreparedPage from, PreparedPage to)?
+  onPreparedTurn;
   final VoidCallback onCenterTap;
-  final Future<FoldFrames?> Function(PageTurnDirection)? prepareFold;
+  final FutureOr<FoldFrames?> Function(PageTurnDirection)? prepareFold;
 
   @override
   State<PageTurnArea> createState() => _PageTurnAreaState();
@@ -240,7 +257,24 @@ class _PageTurnAreaState extends State<PageTurnArea>
   double _foldProgress = 0.5;
   bool _finishingInput = false, _ignorePointer = false;
 
-  int? _pointer;
+  int? _pointer, _fontPointer;
+  final _fontInputOwner = Object();
+  final _fontLandingOwner = Object();
+
+  // 抬手后目标页仍可能在准备。触点与落页各自持有，二者都结束才允许字体刷新。
+  void _fontActivity(Object owner, bool moving, {bool closing = false}) {
+    final binding = WidgetsBinding.instance;
+    if (widget.deferBookFontRefresh && binding is ReadingFontBinding) {
+      binding.setReaderMoving(owner, moving, closing: closing);
+    }
+  }
+
+  void _endFontPointer(int pointer) {
+    if (_fontPointer != pointer) return;
+    _fontPointer = null;
+    _fontActivity(_fontInputOwner, false);
+  }
+
   final _responseTrace = TurnResponseTrace();
   ReaderTurnTrace? _turnLog;
   int _stallPageRevision = 0;
@@ -256,6 +290,7 @@ class _PageTurnAreaState extends State<PageTurnArea>
       return;
     }
     _finishingInput = true;
+    _fontActivity(_fontLandingOwner, true);
     _stallEvent('action.begin');
     final responsePointer = _responseTrace.active;
     final turnLog = _turnLog;
@@ -283,6 +318,7 @@ class _PageTurnAreaState extends State<PageTurnArea>
     } finally {
       _responseTrace.finish(responsePointer);
       _finishingInput = false;
+      if (mounted) _fontActivity(_fontLandingOwner, false);
       turnLog?.operationActive = false;
       turnLog?.finish('inputReleased');
       _stallEvent('action.end');
@@ -423,10 +459,15 @@ class _PageTurnAreaState extends State<PageTurnArea>
           traceTurn('fold no-neighbour $_traceInput');
           return;
         }
-        final frames = await _tracePageStep<FoldFrames?>(
-          'fold.prepare-images',
-          () async => await widget.prepareFold?.call(direction),
-        );
+        // 已就绪的两页在本次移动里直接接手。仍需解码时才异步等待，
+        // 随后的令牌检查同样防止旧手势的结果覆盖新页。
+        final result = widget.prepareFold?.call(direction);
+        final frames = result is Future<FoldFrames?>
+            ? await _tracePageStep<FoldFrames?>(
+                'fold.prepare-images',
+                () => result,
+              )
+            : result;
         stage('prepare');
         if (!mounted || token != _foldToken) {
           traceTurn(
@@ -443,6 +484,11 @@ class _PageTurnAreaState extends State<PageTurnArea>
             backward: direction == PageTurnDirection.backward,
             // 覆盖只平移整页图，不使用卷曲网格的裁剪图。
             curl: widget.effect == PageTurnEffect.curl,
+          );
+        } else if (widget.effect == PageTurnEffect.slide) {
+          frames?.prepareSlide(
+            context.size!,
+            MediaQuery.devicePixelRatioOf(context),
           );
         }
         stage('paint');
@@ -501,6 +547,8 @@ class _PageTurnAreaState extends State<PageTurnArea>
 
   @override
   void dispose() {
+    _fontActivity(_fontInputOwner, false, closing: true);
+    _fontActivity(_fontLandingOwner, false, closing: true);
     _blockedInputCheck?.cancel();
     ReaderTurnStateDiagnostics.detach(this);
     _dragLifecycle.dispose();
@@ -529,130 +577,9 @@ class _PageTurnAreaState extends State<PageTurnArea>
           final width = constraints.maxWidth.isFinite
               ? constraints.maxWidth
               : MediaQuery.sizeOf(context).width;
-          return _buildInput(width);
+          return _buildInput(width, constraints.maxHeight);
         },
       ),
-    );
-  }
-
-  Widget _buildStack(double width) {
-    if (_offset.abs() > 0.1 &&
-        (_fold != null || (widget.prepareFold == null && _neighbour != null))) {
-      _responseTrace.changedFrame(widget.traceLabel);
-    }
-    if (widget.effect == PageTurnEffect.none) return widget.currentPage;
-    // 三种动画统一交接完整正文：动画中复用当前图，落页时接收目标图。
-    // 各分支只负责几何画法，不能各自决定是否重新加载正文图片。
-    final current = RepaintBoundary(
-      child: PreparedPageTransfer(
-        page: _landing ?? _fold?.preparedCurrent,
-        child: widget.currentPage,
-      ),
-    );
-    // 原书平移复用已经确认的原尺寸截图。两页一起移动，不能套用底页不动的覆盖画法。
-    // 没准备好时仍显示旧页；拖动期间不再逐次等待 WebView 执行位移。
-    if (widget.slideImages &&
-        widget.effect == PageTurnEffect.slide &&
-        _fold?.hasPageImages == true) {
-      return CustomPaint(
-        willChange: true,
-        painter: SlideFramesPainter(
-          _fold!,
-          _offset,
-          _direction == PageTurnDirection.backward,
-        ),
-      );
-    }
-    if ((widget.effect == PageTurnEffect.curl ||
-            widget.effect == PageTurnEffect.cover) &&
-        widget.prepareFold != null) {
-      final frames = _fold;
-      return Stack(
-        fit: StackFit.expand,
-        children: [
-          current,
-          // 连续变化的卷页无需让引擎尝试缓存每一帧不同的绘制结果。
-          if (frames != null)
-            CustomPaint(
-              willChange: true,
-              painter: widget.effect == PageTurnEffect.cover
-                  ? CoverFramesPainter(
-                      frames,
-                      _offset,
-                      _direction == PageTurnDirection.backward,
-                    )
-                  : FoldFramesPainter(
-                      frames,
-                      _foldProgress,
-                      _direction == PageTurnDirection.backward,
-                      _fromTop,
-                      touchPosition: _touchPosition,
-                      edgeCurl: _edgeCurl,
-                      edgeOriginY: _edgeOriginY,
-                      settledTouch: _settledTouch,
-                    ),
-            ),
-        ],
-      );
-    }
-    final neighbour = _neighbour;
-    if (neighbour == null && widget.effect != PageTurnEffect.slide) {
-      return current;
-    }
-
-    final forward = _direction == PageTurnDirection.forward;
-    if (widget.effect == PageTurnEffect.cover) {
-      // 未使用图片缓存的调用方也遵循同一覆盖顺序，底页始终不动。
-      return Stack(
-        fit: StackFit.expand,
-        children: [
-          forward ? neighbour! : current,
-          Positioned(
-            left: forward ? _offset : _offset - width,
-            top: 0,
-            bottom: 0,
-            width: width,
-            child: forward ? current : neighbour!,
-          ),
-        ],
-      );
-    }
-    // 和卷页一样，图片未准备好时保留整张旧页，不能先推开正文露出空白。
-    final showNeighbour =
-        neighbour != null && (widget.prepareFold == null || _fold != null);
-    return Stack(
-      children: [
-        if (showNeighbour)
-          Positioned(
-            key: const ValueKey('neighbour-page'),
-            left: 0,
-            top: 0,
-            width: width,
-            bottom: 0,
-            child: Transform.translate(
-              offset: Offset(forward ? width + _offset : _offset - width, 0),
-              child: RepaintBoundary(
-                child: PreparedPageTransfer(
-                  page: _fold?.preparedTarget,
-                  child: neighbour,
-                ),
-              ),
-            ),
-          ),
-        Positioned(
-          // 平移前后保留同一正文实例，并接收动画已解码的图片，避免重新加载闪页。
-          key: const ValueKey('current-page'),
-          left: 0,
-          top: 0,
-          width: width,
-          bottom: 0,
-          // 只改绘制位置，不逐帧重新布局整页。正文实例和图片交接保持不变。
-          child: Transform.translate(
-            offset: Offset(showNeighbour ? _offset : 0, 0),
-            child: current,
-          ),
-        ),
-      ],
     );
   }
 
@@ -686,7 +613,7 @@ class _PageTurnAreaState extends State<PageTurnArea>
     final touchFrom = touch == null
         ? corner
         : _followsSpreadCorner || _settledTouch
-        ? spread?.boundCornerTouch(touch) ?? touch
+        ? spread?.boundCornerTouch(touch, fromTop: _fromTop) ?? touch
         : PageFold.dragTouch(
             size,
             corner,

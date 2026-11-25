@@ -7,6 +7,7 @@ import '../../../../core/theme/gt_tokens.dart';
 import '../../../../core/widgets/gt_icon.dart';
 import '../../view_models/reader_view_model.dart';
 import '../reader_sheet.dart';
+import '../reader_desktop_layout.dart';
 import 'bookmark_tab.dart';
 import 'book_notes_tab.dart';
 import 'contents_pager.dart';
@@ -52,7 +53,7 @@ class _PanelContentsState extends ConsumerState<PanelContents> {
 
     return ReaderSheet(
       title: titles[tab],
-      maxHeightFactor: 0.85,
+      maxHeightFactor: readerUsesDesktopPanels ? 1 : 0.85,
       onClose: vm.closePanel,
       child: Column(
         mainAxisSize: MainAxisSize.min,

@@ -10,6 +10,7 @@ import '../../../../platform/channels/system_toast.dart';
 import '../../../core/theme/gt_tokens.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/widgets/gt_button.dart';
+import '../../../core/widgets/edge_to_edge_sheet.dart';
 import '../view_models/bookshelf_view_model.dart';
 import 'book_group_dialog.dart';
 import 'book_group_row.dart';
@@ -26,18 +27,19 @@ Future<void> showBookGroupSheet(
     context: context,
     useRootNavigator: true,
     isScrollControlled: true,
-    useSafeArea: true,
     showDragHandle: false,
     shape: const RoundedRectangleBorder(),
     backgroundColor: context.gtColors.surface,
     sheetAnimationStyle: MediaQuery.disableAnimationsOf(context)
         ? AnimationStyle.noAnimation
         : null,
-    builder: (_) => BookGroupSheet(
-      groups: groups,
-      books: books,
-      repository: ref.read(bookGroupRepositoryProvider),
-      onDeleted: ref.read(bookshelfProvider.notifier).groupDeleted,
+    builder: (_) => EdgeToEdgeSheet(
+      child: BookGroupSheet(
+        groups: groups,
+        books: books,
+        repository: ref.read(bookGroupRepositoryProvider),
+        onDeleted: ref.read(bookshelfProvider.notifier).groupDeleted,
+      ),
     ),
   );
 }

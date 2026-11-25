@@ -1,5 +1,6 @@
 import 'package:flutter/painting.dart';
 
+import 'book_image_fit.dart';
 import 'math_formula.dart';
 import 'background_image_style.dart';
 
@@ -37,11 +38,17 @@ class RubyLabel {
     this.fontSize,
     this.fontFamily,
     this.width,
-    this.height,
-  );
+    this.height, {
+    this.color,
+    this.below = false,
+  });
+  final bool below;
 
   final String text;
   final String? fontFamily;
+
+  /// rt 最终生效的原书字色。没有声明时，绘制时再采用当前阅读主题的字色。
+  final Color? color;
   final double fontSize, width, height;
 
   static TextPainter painter(
@@ -75,7 +82,9 @@ class InlineImagePlacement {
     required this.resourcePath,
     this.alt,
     this.formula,
+    this.imageFit,
     this.noteLink,
+    this.altIsFootnote = false,
   });
 
   /// 在块文字里的字符位置（UTF-16）
@@ -94,7 +103,10 @@ class InlineImagePlacement {
   final String resourcePath;
   final String? alt;
   final FormulaGeometry? formula;
+  final BookImageFit? imageFit;
   final String? noteLink;
+  final bool altIsFootnote;
+  String? get noteText => altIsFootnote ? alt : null;
 }
 
 /// 一行在块文本中的范围与高度。
@@ -109,6 +121,8 @@ class MeasuredLine {
     this.left = 0,
     this.textTop = 0,
     this.segments = const [],
+    this.stacked = false,
+    this.floatInterval,
   });
 
   /// 行首偏移（UTF-16 code unit，相对整块文本）
@@ -141,6 +155,12 @@ class MeasuredLine {
 
   /// 行内图片把文字隔开的各段；为空表示这一行是普通文字行。
   final List<MeasuredSegment> segments;
+
+  /// 同一个分页行带里有多个文字基线，例如首字下沉或并排的多行目录文字。
+  final bool stacked;
+
+  /// 图旁窄行与图下整宽行合在同一段时，保留各行相对正文区的左右边界。
+  final ({double left, double right})? floatInterval;
 }
 
 /// 标题装饰块（章题）与其下短分隔线之间的间距
@@ -193,6 +213,7 @@ class BlockBox {
   const BlockBox({
     required this.background,
     this.backgroundImage,
+    this.cloneDecoration = false,
     required this.borderColors,
     required this.borderTop,
     required this.borderRight,
@@ -201,6 +222,7 @@ class BlockBox {
     this.borderStyles = const [1, 1, 1, 1],
     double radius = 0,
     BorderRadius? borderRadius,
+    this.radiusFractions,
     required this.shadows,
     required this.padTop,
     required this.padRight,
@@ -259,6 +281,7 @@ class BlockBox {
   /// 盒子是否什么都没画（避免无意义的绘制）
   final Color? background;
   final BookBackgroundImage? backgroundImage;
+  final bool cloneDecoration;
 
   /// 四条边各自的颜色（上、右、下、左）。
   ///
@@ -280,6 +303,24 @@ class BlockBox {
   final List<int> borderStyles;
 
   /// 四个角独立保留，不能取最大值后把直角也画圆。
+  // 百分比要等到实际边框盒宽高确定。顺序是左上、右上、右下、左下，先横后纵。
+  final List<double?>? radiusFractions;
+  BorderRadius cornersIn(Size size) {
+    final fractions = radiusFractions;
+    if (fractions == null) return borderRadius;
+    Radius corner(int i, Radius px) => Radius.elliptical(
+      fractions[i] == null ? px.x : fractions[i]! * size.width,
+      fractions[4 + i] == null ? px.y : fractions[4 + i]! * size.height,
+    );
+    final r = borderRadius;
+    return BorderRadius.only(
+      topLeft: corner(0, r.topLeft),
+      topRight: corner(1, r.topRight),
+      bottomRight: corner(2, r.bottomRight),
+      bottomLeft: corner(3, r.bottomLeft),
+    );
+  }
+
   final BorderRadius? _borderRadius;
   final double _radius;
   BorderRadius get borderRadius =>
@@ -295,6 +336,25 @@ class BlockBox {
   final List<BoxShadow> shadows;
   final double padTop, padRight, padBottom, padLeft;
 
+  BlockBox withHorizontalPadding(double left, double right) => BlockBox(
+    background: background,
+    backgroundImage: backgroundImage,
+    cloneDecoration: cloneDecoration,
+    borderColors: borderColors,
+    borderTop: borderTop,
+    borderRight: borderRight,
+    borderBottom: borderBottom,
+    borderLeft: borderLeft,
+    borderStyles: borderStyles,
+    borderRadius: borderRadius,
+    radiusFractions: radiusFractions,
+    shadows: shadows,
+    padTop: padTop,
+    padRight: right,
+    padBottom: padBottom,
+    padLeft: left,
+  );
+
   double get insetLeft => padLeft + borderLeft;
   double get insetRight => padRight + borderRight;
   double get insetTop => padTop + borderTop;
@@ -303,15 +363,18 @@ class BlockBox {
 
 /// 块内文字颜色与文字阴影（书内指定时使用，否则跟随阅读主题）。
 class BlockTextStyle {
-  const BlockTextStyle({this.color, this.shadows});
+  const BlockTextStyle({this.color, this.shadows, this.rtl = false});
+  final bool rtl;
 
   final Color? color;
   final List<Shadow>? shadows;
 
-  bool get isEmpty => color == null && (shadows == null || shadows!.isEmpty);
+  bool get isEmpty =>
+      !rtl && color == null && (shadows == null || shadows!.isEmpty);
 
   BlockTextStyle merge(BlockTextStyle other) => BlockTextStyle(
     color: other.color ?? color,
     shadows: other.shadows ?? shadows,
+    rtl: rtl || other.rtl,
   );
 }

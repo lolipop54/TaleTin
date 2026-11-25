@@ -17,6 +17,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../app/di/app_providers.dart';
+import '../../../../core/diagnostics/reader_turn_state_diagnostics.dart';
 import '../../../../data/services/offline_dictionary.dart';
 import '../../../../domain/models/annotation.dart';
 import '../../../../domain/models/book_document.dart';
@@ -26,6 +27,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/gt_tokens.dart';
 import '../../../core/theme/reading_theme.dart';
 import '../view_models/reader_session_view_model.dart';
+import '../view_models/reader_note_title.dart';
 import '../view_models/reader_view_model.dart';
 import 'dictionary_popover.dart';
 import 'selection_action_menu.dart';
@@ -134,7 +136,12 @@ class _SelectionActionsState extends ConsumerState<SelectionActions> {
         vm.showNotice('请选择单个字、词语或短语');
         return;
       }
-      final entries = await lookup(term);
+      final entries = readerTurnStateDiagnosticsEnabled
+          ? await ReaderTurnStateDiagnostics.step(
+              'dictionary.lookup',
+              () => lookup(term),
+            )
+          : await lookup(term);
       if (!mounted) return;
       if (ref.read(readerProvider).selection != selection ||
           ModalRoute.of(context)?.isCurrent == false) {
@@ -158,12 +165,19 @@ class _SelectionActionsState extends ConsumerState<SelectionActions> {
         term: term,
         entries: entries,
         lookup: lookup,
-        onPresented: stopwatch == null
+        onPresented: stopwatch == null && !readerTurnStateDiagnosticsEnabled
             ? null
             : () {
-                debugPrint(
-                  'GT_DICTIONARY_UI tap_to_frame_ms=${stopwatch.elapsedMilliseconds}',
-                );
+                if (readerTurnStateDiagnosticsEnabled) {
+                  ReaderTurnStateDiagnostics.record('dictionary.presented', {
+                    'entries': entries.length,
+                  });
+                }
+                if (stopwatch != null) {
+                  debugPrint(
+                    'GT_DICTIONARY_UI tap_to_frame_ms=${stopwatch.elapsedMilliseconds}',
+                  );
+                }
               },
       );
     } on Exception {
@@ -312,7 +326,7 @@ class _SelectionActionsState extends ConsumerState<SelectionActions> {
     for (final annotation in overlapping) {
       range = unionRange(range, annotation.range, chapterOrdinals: ordinals);
     }
-    return _resolveRange(ref, range);
+    return _resolveRange(ref, range, withChapterTitle: true);
   }
 
   /// 保存合并后的这一条：位置取并集、摘录取并集正文，其余记录删掉。
@@ -349,7 +363,11 @@ class _SelectionActionsState extends ConsumerState<SelectionActions> {
   /// 选区跨到的章节都读一遍（当前章的正文已在会话里，其余章从正文仓库按需读），
   /// 摘录与范围都由 N3 那一层统一给出。
   Future<({SelectionRange range, String quote, String chapterTitle})?>
-  _resolveRange(WidgetRef ref, SelectionRange selection) async {
+  _resolveRange(
+    WidgetRef ref,
+    SelectionRange selection, {
+    bool withChapterTitle = false,
+  }) async {
     final session = ref.read(readerSessionProvider(widget.bookId)).value;
     if (session == null || session.chapters.isEmpty) return null;
 
@@ -390,11 +408,18 @@ class _SelectionActionsState extends ConsumerState<SelectionActions> {
       chapters: session.chapters,
       contentOf: (id) => contents[id]!,
     );
-    return (
-      range: resolved.range,
-      quote: resolved.quote,
-      chapterTitle: session.chapters[session.chapterIndex].title,
-    );
+    if (!mounted) return null;
+    final title = withChapterTitle
+        ? await readerNoteTitle(
+            ref,
+            widget.bookId,
+            resolved.range.start,
+            fullContent: visibleBlocks == null
+                ? contents[resolved.range.start.chapterId]
+                : null,
+          )
+        : '';
+    return (range: resolved.range, quote: resolved.quote, chapterTitle: title);
   }
 }
 

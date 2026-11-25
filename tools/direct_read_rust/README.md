@@ -15,6 +15,6 @@
 
 安装 Rust 1.98.1 或兼容工具链，并安装目标 aarch64-linux-android、armv7-linux-androideabi、x86_64-linux-android；Windows x64 使用 MSVC。首次执行 `cargo fetch --locked --manifest-path tools/direct_read_rust/Cargo.toml`。随后正常 Flutter 构建或测试会运行 hook/build.dart；不手工复制 so 文件，运行时不下载依赖。
 
-修改 src/scan.h 后在本包执行 `dart run tool/ffigen.dart <libclang 动态库路径>`，生成文件不直接编辑。Cargo.lock 锁定 Rust 依赖；LICENSE 收录本项目、各 crate 及 Rust 标准库声明，随 Flutter 许可清单分发。旧 Dart 对照位于 test/support，真实手机结果见 docs/TXT与EPUB_Rust实现与验证261014.md。
+修改 src/scan.h 后在本包执行 `dart run tool/ffigen.dart <libclang 动态库路径>`，生成文件不直接编辑。Cargo.lock 锁定 Rust 依赖；本目录自有代码采用 GPL-3.0-only。LICENSE 收录 GPL-3.0 原文以及各 crate 和 Rust 标准库的原有许可声明，随 Flutter 许可清单分发。旧 Dart 对照位于 test/support，真实手机结果见 docs/TXT与EPUB_Rust实现与验证261014.md。
 
 参考：[html5ever](https://docs.rs/html5ever/0.40.1/html5ever/)、[Rust Android 目标](https://doc.rust-lang.org/rustc/platform-support/android.html)、[Dart C 互操作](https://dart.dev/interop/c-interop)、[Code Assets](https://pub.dev/packages/code_assets)。

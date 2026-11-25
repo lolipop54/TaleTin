@@ -3,6 +3,43 @@ part of 'reader_session_view_model.dart';
 typedef SpreadPageRef = ({ChapterLayout layout, int pageIndex});
 
 extension ReaderSpreadPages on ReaderSessionNotifier {
+  /// 卷页已经画出的那一页就是落页。快速回翻时邻章预取可能仍在更换，
+  /// 不能在松手或动画结束时再从邻章缓存里另取一份页面。
+  Future<bool> commitManualPage(
+    SpreadPageRef origin,
+    SpreadPageRef target,
+  ) async {
+    cancelProgressNavigation();
+    await beginManualReading();
+    if (!_sessionRef.mounted) return false;
+    final session = _scanSession;
+    if (!origin.layout.samePageAs(
+      session.layout,
+      origin.pageIndex,
+      session.pageIndex,
+    )) {
+      return false;
+    }
+    _clearRestoredPosition();
+    if (origin.layout.chapterId == target.layout.chapterId) {
+      _publishScan(
+        session.copyWith(layout: target.layout, pageIndex: target.pageIndex),
+      );
+      unawaited(persist());
+      return true;
+    }
+    final index = session.chapters.indexWhere(
+      (chapter) => chapter.id == target.layout.chapterId,
+    );
+    return _layoutChapter(
+      chapterIndex: index,
+      options: target.layout.options,
+      anchor: null,
+      atChapterEnd: index < session.chapterIndex,
+      preparedLayout: target.layout,
+    );
+  }
+
   /// 只查询、准备页面。双页可能跨章，但准备右页不能改动当前阅读位置。
   Future<SpreadPageRef?> adjacentSpreadPage(
     SpreadPageRef source,
@@ -26,57 +63,11 @@ extension ReaderSpreadPages on ReaderSessionNotifier {
       }
       return adjacent;
     }
-    final chapterIndex =
-        snapshot.chapters.indexWhere((c) => c.id == layout.chapterId) +
-        (forward ? 1 : -1);
-    if (chapterIndex < 0 || chapterIndex >= snapshot.chapters.length) {
-      return null;
-    }
-    final next = await _prepareNeighborChapter(
-      snapshot,
-      chapterIndex,
-      options,
-      atEnd: !forward,
+    final origin = snapshot.chapters.indexWhere(
+      (c) => c.id == layout.chapterId,
     );
-    return next.pageCount == 0
-        ? null
-        : (layout: next, pageIndex: forward ? 0 : next.pageCount - 1);
-  }
-
-  /// 从当前左页按实际页数前后数，沿用连续翻页时的左右配对。
-  Future<SpreadPageRef> _spreadLeftForImage(
-    ReaderSession session,
-    SpreadPageRef origin,
-    Locator locator,
-  ) async {
-    final from = session.chapterIndex;
-    final to = session.chapters.indexWhere((c) => c.id == locator.chapterId);
-    if (to < 0) throw const ReaderFailure('图片所在章节无法读取');
-    final options = origin.layout.options;
-    var distance = -origin.pageIndex;
-    ChapterLayout? target = from == to ? origin.layout : null;
-    final direction = to >= from ? 1 : -1;
-    for (var chapter = from; chapter != to; chapter += direction) {
-      // 只数当前章到目标章之间的页。往前数时扣掉前一章的真实页数。
-      final index = direction > 0 ? chapter : chapter - 1;
-      final end = await _prepareNeighborChapter(
-        session,
-        index,
-        options,
-        atEnd: true,
-      );
-      distance += direction * end.pageCount;
-      if (index == to) target = end;
-    }
-    target ??= await _prepareNeighborChapter(session, to, options);
-    final layout = await target.ensureTarget(locator);
-    final index = layout.pageIndexOf(locator);
-    if (index == null) throw const ReaderFailure('无法定位图片所在页');
-    final page = (layout: layout, pageIndex: index);
-    // 相差奇数页时目标在右侧，左页有可能在上一章。
-    return (distance + index).isOdd
-        ? await adjacentSpreadPage(page, false) ?? page
-        : page;
+    if (origin < 0) return null;
+    return _readableNeighbor(snapshot, origin, options, forward);
   }
 
   Future<void> commitSpreadPage(
@@ -99,5 +90,64 @@ extension ReaderSpreadPages on ReaderSessionNotifier {
       nextPage: target.pageIndex,
       content: content,
     );
+  }
+}
+
+extension _ReadableNeighbor on _ReaderLayoutCoordinator {
+  // 超长 TXT 的转换与用户跳转共用正文后台任务。留给真正的翻页或跳转请求，
+  // 防止刚到目标页就排队解码两侧长章，拖慢随后返回或再次跳转。
+  bool _canPrefetchChapter(ReaderSession session, int index) =>
+      session.book.format != BookFormat.txt ||
+      session.chapters[index].textLength < kLongTxtChapterLength;
+
+  /// 沿书内顺序寻找真正排出页面的章节。纯图片章有页，空锚点章没有页。
+  Future<SpreadPageRef?> _readableNeighbor(
+    ReaderSession session,
+    int origin,
+    LayoutOptions options,
+    bool forward,
+  ) async {
+    final step = forward ? 1 : -1;
+    final version = _tokenVersion;
+    for (
+      var index = origin + step;
+      index >= 0 && index < session.chapters.length;
+      index += step
+    ) {
+      ChapterLayout? layout;
+      if (session.book.format != BookFormat.pdf) {
+        for (final cached in [
+          session.layout,
+          _nextChapterLayout,
+          _previousChapterLayout,
+        ]) {
+          final ready = _matchingChapterLayout(cached, session, index, options);
+          if (ready != null &&
+              !ready.paginatesTxtInWindows &&
+              (ready.isComplete && ready.pageCount == 0 ||
+                  (forward || ready.isComplete) &&
+                      ready.page(forward ? 0 : ready.pageCount - 1) != null)) {
+            layout = ready;
+            break;
+          }
+        }
+      }
+      layout ??= await _prepareNeighborChapter(
+        session,
+        index,
+        options,
+        atEnd: !forward,
+      );
+      if (_tokenVersion != version) {
+        throw const LayoutCancelled(LayoutCancellationReason.requestSuperseded);
+      }
+      if (layout.pageCount > 0) {
+        return (
+          layout: layout,
+          pageIndex: forward ? layout.firstPage : layout.pageCount - 1,
+        );
+      }
+    }
+    return null;
   }
 }

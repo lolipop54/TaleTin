@@ -17,7 +17,16 @@ class GtAppBar extends StatelessWidget implements PreferredSizeWidget {
     this.bottom,
     this.surfaceTintColor,
     this.scrolledUnderElevation,
+    this.showBackTooltipOnWindows = true,
   });
+  const GtAppBar.settings({Key? key, Widget? title, List<Widget>? actions})
+    : this(
+        key: key,
+        title: title,
+        actions: actions,
+        showBackTooltipOnWindows: false,
+      );
+
   final Widget? title, leading;
   final List<Widget>? actions;
   final Color? backgroundColor, foregroundColor;
@@ -26,6 +35,7 @@ class GtAppBar extends StatelessWidget implements PreferredSizeWidget {
   final double? leadingWidth, scrolledUnderElevation;
   final PreferredSizeWidget? bottom;
   final Color? surfaceTintColor;
+  final bool showBackTooltipOnWindows;
 
   @override
   Size get preferredSize => const Size.fromHeight(kToolbarHeight);
@@ -50,6 +60,7 @@ class GtAppBar extends StatelessWidget implements PreferredSizeWidget {
           leading ??
           (route?.impliesAppBarDismissal == true
               ? GtButton.icon(
+                  showTooltipOnWindows: close || showBackTooltipOnWindows,
                   tooltip: close
                       ? MaterialLocalizations.of(context).closeButtonTooltip
                       : MaterialLocalizations.of(context).backButtonTooltip,

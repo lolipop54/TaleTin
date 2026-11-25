@@ -4,26 +4,43 @@ import 'dart:ui' as ui;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../app/di/app_providers.dart';
-import '../../../../domain/models/book_cover_choice.dart';
-import '../../../../domain/models/book.dart';
+import '../../../../domain/repositories/book_cover_repository.dart';
 import '../../../../platform/channels/backup_documents.dart';
 
 final bookCoverControllerProvider = Provider(BookCoverController.new);
+final bookCoverPickerProvider = Provider<Future<List<String>> Function()>(
+  (_) =>
+      () => BackupDocuments.forCurrentPlatform().pickCoverImages(
+        BookCoverRepository.maxImagesPerImport,
+      ),
+);
 
 class BookCoverController {
   BookCoverController(this.ref);
   final Ref ref;
 
-  Future<void> select(Iterable<String> ids, BookCoverPreset? preset) =>
-      ref.read(bookCoverRepositoryProvider).save(ids, preset: preset);
-
   /// 系统选择器仅授权所选图片。解码成功后缩至封面需要的大小，
   /// 写入独立 PNG，后续不再依赖手机相册路径或临时 URI 授权。
-  Future<bool> import(Iterable<String> ids, {BookFormat? format}) async {
+  Future<List<String>> import() async {
     final repository = ref.read(bookCoverRepositoryProvider);
+    final uris = await ref.read(bookCoverPickerProvider)();
+    if (uris.isEmpty) return [];
+    // 选择器返回的批次仍需核对数量，再读取用户选中的图片。
+    const limit = BookCoverRepository.maxImagesPerImport;
+    if (uris.length > limit) {
+      throw const FormatException('一次最多导入 $limit 张封面，请重新选择');
+    }
+    Stream<Uint8List> images() async* {
+      for (final uri in uris) {
+        yield await _decode(uri);
+      }
+    }
+
+    return repository.addImages(images());
+  }
+
+  Future<Uint8List> _decode(String uri) async {
     final platform = ref.read(documentPlatformProvider);
-    final uri = await BackupDocuments().pickImage();
-    if (uri == null) return false;
     final session = await platform.open(uri);
     final bytes = BytesBuilder(copy: false);
     try {
@@ -60,12 +77,7 @@ class BookCoverController {
       image = (await codec.getNextFrame()).image;
       final png = await image.toByteData(format: ui.ImageByteFormat.png);
       if (png == null) throw StateError('图片转换失败');
-      if (format != null) {
-        await repository.saveGlobal(format, image: png.buffer.asUint8List());
-      } else {
-        await repository.save(ids, image: png.buffer.asUint8List());
-      }
-      return true;
+      return png.buffer.asUint8List();
     } finally {
       image?.dispose();
       codec?.dispose();

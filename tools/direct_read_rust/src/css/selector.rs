@@ -1,4 +1,4 @@
-// Copyright (c) 2026 GT Reader contributors. MIT license, see LICENSE.
+// Copyright (c) 2026 GT Reader contributors. GPL-3.0-only, see LICENSE.
 //! 把 `selectors` 接在现有 `html5ever` DOM 上。
 //!
 //! `selectors::Element` 不能直接实现给外部类型 `Rc<Node>`（孤儿规则），所以用一层
@@ -387,6 +387,13 @@ pub fn matches_selector_list(
     selectors: &SelectorList<CssSelectorImpl>,
     element: &ElementRef,
 ) -> Option<u32> {
+    matching_specificity(selectors.slice().iter(), element)
+}
+
+pub(super) fn matching_specificity<'a>(
+    branches: impl Iterator<Item = &'a selectors::parser::Selector<CssSelectorImpl>>,
+    element: &ElementRef,
+) -> Option<u32> {
     let mut caches = selectors::context::SelectorCaches::default();
     let mut context = MatchingContext::new(
         selectors::context::MatchingMode::Normal,
@@ -397,7 +404,7 @@ pub fn matches_selector_list(
         selectors::context::MatchingForInvalidation::No,
     );
     let mut best: Option<u32> = None;
-    for selector in selectors.slice() {
+    for selector in branches {
         if selectors::matching::matches_selector(selector, 0, None, element, &mut context) {
             let specificity = selector.specificity();
             best = Some(best.map_or(specificity, |current| current.max(specificity)));

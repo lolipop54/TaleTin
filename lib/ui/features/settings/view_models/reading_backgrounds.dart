@@ -104,7 +104,7 @@ class ReadingBackgrounds extends AsyncNotifier<ReadingBackgroundCatalog> {
     final current = await _load();
     final remaining = ReadingBackground.limit - current.custom.length;
     if (remaining <= 0) return;
-    final uris = await BackupDocuments().pickImages(remaining);
+    final uris = await BackupDocuments.forCurrentPlatform().pickImages(remaining);
     if (uris.isEmpty) return;
     if (uris.length > remaining) throw StateError('本次最多还能导入$remaining张背景');
     final platform = ref.read(documentPlatformProvider);

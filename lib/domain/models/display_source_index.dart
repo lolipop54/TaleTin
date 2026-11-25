@@ -11,6 +11,9 @@ class DisplaySourceIndex {
     required this.blockElements,
     this.codeLines = const {},
     this.spaces = const {},
+    this.wideSpaces = const {},
+    this.cellSpaces = const {},
+    this.nonBreakingSpaces = const {},
     this.hasLinkSemantics = false,
   });
 
@@ -25,7 +28,10 @@ class DisplaySourceIndex {
   final List<int> blockElements;
   final Map<int, Map<int, int>> codeLines;
   final Map<int, Map<int, int>> spaces;
+  final Map<int, Map<int, int>> wideSpaces;
+  final Map<int, Map<int, int>> nonBreakingSpaces;
   final bool hasLinkSemantics;
+  final Map<int, bool> cellSpaces;
 
   static DisplaySourceIndex? fromJson(Map<String, Object?>? json) {
     if (json == null || json['v'] != version) return null;
@@ -67,9 +73,15 @@ class DisplaySourceIndex {
       );
     }
     return DisplaySourceIndex(
+      cellSpaces: {
+        for (final e in (json['cellSpaces'] as Map? ?? const {}).entries)
+          int.parse(e.key as String): e.value as bool,
+      },
       hasLinkSemantics: json['linkSemantics'] == true,
       codeLines: _codeLines(json['codeLines']),
       spaces: _codeLines(json['spaces']),
+      wideSpaces: _codeLines(json['wideSpaces']),
+      nonBreakingSpaces: _codeLines(json['nonBreakingSpaces']),
       elements: elements,
       blockOwners: [
         for (final value in (json['blocks'] as List? ?? const []))
@@ -116,6 +128,8 @@ class DisplaySourceIndex {
   Map<String, Object?> toJson() => {
     'v': version,
     if (hasLinkSemantics) 'linkSemantics': true,
+    if (cellSpaces.isNotEmpty)
+      'cellSpaces': {for (final e in cellSpaces.entries) '${e.key}': e.value},
     'elements': [for (final element in elements) element.toJson()],
     'blocks': blockOwners,
     'blockElements': blockElements,

@@ -1,4 +1,4 @@
-// Copyright (c) 2026 GT Reader contributors. MIT license, see LICENSE.
+// Copyright (c) 2026 GT Reader contributors. GPL-3.0-only, see LICENSE.
 use flate2::{Decompress, FlushDecompress, Status};
 
 /// Bound actual output while inflating, even if a ZIP header lies about size.

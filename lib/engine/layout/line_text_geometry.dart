@@ -28,6 +28,57 @@ extension LineTextGeometry on MeasuredBlock {
         textScaler: scaler,
       );
 
+  /// 只在负边距导致行带相交时使用。一个普通行（或混排中的文字段）只塑形一次，
+  /// 复用同一个 painter 查询各段可读文字，避免把缩进、词间空白或插图视为文字。
+  List<Rect> readableRectsInLine(int index, TextScaler scaler, double width) {
+    final line = lines[index], boxes = <Rect>[];
+    final left = inset + horizontalOffset(index, width);
+    void collect(
+      int from,
+      int to,
+      double x,
+      double y,
+      TextPainter Function() make,
+    ) {
+      final start = math.max(from, displayPrefixLength);
+      if (start >= to) return;
+      TextPainter? painter;
+      for (final word in _visibleWords.allMatches(text.substring(start, to))) {
+        painter ??= make();
+        for (final box in painter.getBoxesForSelection(
+          TextSelection(
+            baseOffset: start - from + word.start,
+            extentOffset: start - from + word.end,
+          ),
+        )) {
+          if (box.right > box.left) boxes.add(box.toRect().shift(Offset(x, y)));
+        }
+      }
+      painter?.dispose();
+    }
+
+    if (hasSegmentedText) {
+      for (final seg in line.segments) {
+        collect(
+          seg.start,
+          seg.end,
+          left + seg.left,
+          line.textTop + seg.top,
+          () => _geometrySegment(seg, scaler),
+        );
+      }
+    } else {
+      collect(
+        line.start,
+        line.end,
+        left,
+        0,
+        () => _geometryPainter(index, scaler, width),
+      );
+    }
+    return boxes;
+  }
+
   List<Rect> rangeRectsInLine(
     int index,
     int from,
@@ -35,8 +86,10 @@ extension LineTextGeometry on MeasuredBlock {
     required TextScaler scaler,
     required double width,
     bool tight = false,
+    bool includeInlineImages = true,
   }) {
     final line = lines[index], rects = <Rect>[];
+    final useGlyphHeight = tight || line.stacked;
     final left = inset + horizontalOffset(index, width);
     if (hasSegmentedText) {
       for (final s in line.segments) {
@@ -50,9 +103,9 @@ extension LineTextGeometry on MeasuredBlock {
             rects.add(
               Rect.fromLTWH(
                 left + s.left + box.left,
-                line.textTop + s.top + (tight ? box.top : 0),
+                line.textTop + s.top + (useGlyphHeight ? box.top : 0),
                 box.right - box.left,
-                tight
+                useGlyphHeight
                     ? box.bottom - box.top
                     : math.max(0, line.height - line.textTop - s.top),
               ),
@@ -61,6 +114,8 @@ extension LineTextGeometry on MeasuredBlock {
         }
         p.dispose();
       }
+      // 脚注命中会按绘制位置单独检查图片，不能把图片旁边整行高度当成正文。
+      if (!includeInlineImages) return rects;
       for (final object in inlineImagesInLines(index, index + 1)) {
         if (object.formula == null) {
           if (object.offset >= from && object.offset < to) {
@@ -123,11 +178,20 @@ extension LineTextGeometry on MeasuredBlock {
               .clamp(line.start, line.end);
         }
       }
-      final s = segmentAtX(index, x);
+      final s = line.stacked
+          ? _stackedSegment(index, x, point.dy, scaler)
+          : segmentAtX(index, x);
       if (s == null) return line.start;
       final p = _geometrySegment(s.segment, scaler);
       final offset = p
-          .getPositionForOffset(Offset(s.dx, line.height / 2))
+          .getPositionForOffset(
+            Offset(
+              s.dx,
+              line.stacked
+                  ? point.dy - line.textTop - s.segment.top
+                  : line.height / 2,
+            ),
+          )
           .offset;
       p.dispose();
       return (s.segment.start + offset).clamp(line.start, line.end);
@@ -182,7 +246,9 @@ extension LineTextGeometry on MeasuredBlock {
           );
         }
       }
-      final hit = segmentAtX(index, x);
+      final hit = line.stacked
+          ? _stackedSegment(index, x, point.dy, scaler, strict: true)
+          : segmentAtX(index, x);
       if (hit == null) return null;
       final segment = hit.segment;
       return textRange(
@@ -220,8 +286,14 @@ extension LineTextGeometry on MeasuredBlock {
             Rect.zero,
           )
           .dx;
+      final height = line.stacked ? p.height : line.height;
       p.dispose();
-      return Rect.fromLTWH(left + s.left + x, 0, 0, line.height);
+      return Rect.fromLTWH(
+        left + s.left + x,
+        line.stacked ? line.textTop + s.top : 0,
+        0,
+        height,
+      );
     }
     final p = _geometryPainter(index, scaler, width);
     final x = p
@@ -230,4 +302,38 @@ extension LineTextGeometry on MeasuredBlock {
     p.dispose();
     return Rect.fromLTWH(left + x, 0, 0, line.height);
   }
+
+  /// 同一行带可含上下两段。先按实际字形所在的高度找，再算左右位置。
+  ({MeasuredSegment segment, double dx})? _stackedSegment(
+    int index,
+    double x,
+    double y,
+    TextScaler scaler, {
+    bool strict = false,
+  }) {
+    final line = lines[index];
+    MeasuredSegment? nearest;
+    var bestVertical = double.infinity, bestHorizontal = double.infinity;
+    for (final segment in line.segments) {
+      final painter = _geometrySegment(segment, scaler);
+      final top = line.textTop + segment.top;
+      final bottom = top + painter.height;
+      painter.dispose();
+      final vertical = math.max(0.0, math.max(top - y, y - bottom));
+      final horizontal = math.max(
+        0.0,
+        math.max(segment.left - x, x - segment.left - segment.width),
+      );
+      if (strict && (vertical > 0 || horizontal > 0)) continue;
+      if (vertical < bestVertical ||
+          (vertical == bestVertical && horizontal < bestHorizontal)) {
+        nearest = segment;
+        bestVertical = vertical;
+        bestHorizontal = horizontal;
+      }
+    }
+    return nearest == null ? null : (segment: nearest, dx: x - nearest.left);
+  }
 }
+
+final _visibleWords = RegExp(r'[^\s\uFFFC]+');

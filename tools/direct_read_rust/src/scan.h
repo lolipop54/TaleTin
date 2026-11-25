@@ -1,4 +1,4 @@
-// Copyright (c) 2026 GT Reader contributors. MIT license, see LICENSE.
+// Copyright (c) 2026 GT Reader contributors. GPL-3.0-only, see LICENSE.
 #include <stdint.h>
 #include <stddef.h>
 typedef struct GtScanResult {
@@ -8,6 +8,8 @@ typedef struct GtScanResult {
 // Result views belong to the handle until its next call/close. Legacy free is a no-op.
 // The caller owns bounds[2]. Both offsets and hit use UTF-16 code units.
 uint32_t gt_chinese_word_at(const uint16_t *text, size_t length, size_t hit, uint32_t *bounds);
+// Writes at most length UTF-16 end offsets into caller-owned breaks.
+size_t gt_line_breaks(const uint16_t *text, size_t length, uint32_t *breaks);
 void gt_scan_free(uint8_t *data, size_t length);
 void *gt_hash_open(void);
 void gt_hash_feed(void *handle, const uint8_t *input, size_t length, uint32_t finish, GtScanResult *result);

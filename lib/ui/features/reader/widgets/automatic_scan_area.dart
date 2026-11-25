@@ -6,19 +6,25 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../domain/models/automatic_scan.dart';
 import '../view_models/automatic_reading.dart';
 import 'scan_frames.dart';
+import 'book_page_footer.dart';
 import 'scan_frames_painter.dart';
 
 /// 扫描显示器不另存阅读位置，整轮结束只调用阅读会话的提交入口。
 class AutomaticScanArea extends ConsumerStatefulWidget {
   const AutomaticScanArea({super.key, required this.bookId, required this.page,
     required this.ready, required this.prepare, required this.bounds,
-    required this.paper, required this.line, required this.child, this.frameBounds});
+    required this.paper, required this.line, required this.child, this.frameBounds,
+    this.columns = 1, this.secondsPerColumn = false});
   final String bookId;
   final ScanPage page;
   final bool Function() ready;
   final Future<ScanPreparation> Function(ValueChanged<ui.Image> cover) prepare;
   final Rect bounds;
   final Rect? frameBounds;
+  final int columns;
+
+  /// 安卓双页的设置按一张纸计时，Windows 双列共用一页的时长。
+  final bool secondsPerColumn;
   final Color paper, line;
   final Widget child;
   @override
@@ -77,7 +83,7 @@ class AutomaticScanAreaState extends ConsumerState<AutomaticScanArea>
       if (!mounted || version != _version) return;
       setState(() { _cover?.dispose(); _cover = image.clone(); });
     });
-    if (!mounted || version != _version) { prepared.frames.dispose(); return; }
+    if (!mounted || version != _version) { prepared.dispose(); return; }
     setState(() {
       _prepared = prepared; _cover?.dispose(); _cover = null;
       scan.prepared(task, prepared.commit == null ? null : (bookId: widget.page.bookId,
@@ -91,7 +97,10 @@ class AutomaticScanAreaState extends ConsumerState<AutomaticScanArea>
   void _tick(Duration elapsed) {
     final scan = _scan;
     final before = scan?.progress;
-    final complete = scan?.advance(elapsed, _seconds) ?? false;
+    final seconds = widget.secondsPerColumn
+        ? _seconds * widget.columns
+        : _seconds;
+    final complete = scan?.advance(elapsed, seconds) ?? false;
     _automatic.reportAdvancing(!complete && scan != null && scan.progress != before);
     if (!complete) {
       if (mounted) setState(() {});
@@ -138,7 +147,7 @@ class AutomaticScanAreaState extends ConsumerState<AutomaticScanArea>
     final old = _prepared, cover = _cover;
     _prepared = null; _cover = null;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      old?.frames.dispose(); cover?.dispose();
+      old?.dispose(); cover?.dispose();
     });
   }
 
@@ -167,10 +176,76 @@ class AutomaticScanAreaState extends ConsumerState<AutomaticScanArea>
       child: IgnorePointer(child: RawImage(image: _cover, fit: BoxFit.fill))),
     if (_cover != null && widget.frameBounds == null) Positioned.fill(
       child: IgnorePointer(child: RawImage(image: _cover, fit: BoxFit.fill))),
-    if (_prepared != null) IgnorePointer(child: RepaintBoundary(child: CustomPaint(
-      key: const Key('automatic-scan-paint'), painter: ScanFramesPainter(
-        frames: _prepared!.frames, progress: progress, bounds: widget.bounds,
-        frameBounds: widget.frameBounds,
-        paper: widget.paper, line: widget.line)))),
+    if (_prepared != null) _scanPaper(),
   ]);
+
+  Widget _scanPaper() {
+    final painter = ScanFramesPainter(frames: _prepared!.frames, progress: progress,
+        bounds: widget.bounds, frameBounds: widget.frameBounds,
+        paper: widget.paper, line: widget.line, columns: widget.columns);
+    final image = RepaintBoundary(child: CustomPaint(
+        key: const Key('automatic-scan-paint'), painter: painter));
+    final footer = BookPagePaperScope.of(context);
+    if (footer == null) return IgnorePointer(child: image);
+    return IgnorePointer(
+      child: LayoutBuilder(
+        builder: (_, constraints) {
+          final size = constraints.biggest;
+          final target = _prepared!.footerTarget;
+          final frames = _prepared!.frames;
+          Widget sheet(ui.Image image, {bool next = false}) => footer.onPaper(
+            Stack(
+              fit: StackFit.expand,
+              children: [
+                ColoredBox(color: widget.paper),
+                Positioned.fromRect(
+                  rect: widget.frameBounds ?? Offset.zero & size,
+                  child: RawImage(
+                    image: image,
+                    fit: BoxFit.fill,
+                    filterQuality: FilterQuality.none,
+                  ),
+                ),
+              ],
+            ),
+            size,
+            page: next ? target : footer.current,
+          );
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              sheet(frames.current),
+              if (frames.next case final next?)
+                ClipPath(
+                  clipper: _ScanReveal(painter.revealed),
+                  child: sheet(next, next: true),
+                ),
+              CustomPaint(
+                key: const Key('automatic-scan-paint'),
+                painter: _ScanLine(painter),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _ScanReveal extends CustomClipper<Path> {
+  const _ScanReveal(this.path);
+  final Path path;
+  @override
+  Path getClip(Size size) => path;
+  @override
+  bool shouldReclip(_ScanReveal old) => old.path != path;
+}
+
+class _ScanLine extends CustomPainter {
+  const _ScanLine(this.scan);
+  final ScanFramesPainter scan;
+  @override
+  void paint(Canvas canvas, Size size) => scan.paintLine(canvas);
+  @override
+  bool shouldRepaint(_ScanLine old) => scan.shouldRepaint(old.scan);
 }

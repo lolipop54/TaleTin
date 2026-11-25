@@ -348,12 +348,14 @@ Future<void> _verifyWorker(
           continue;
         }
         final dimensions = sniffImageSize(publication.readBytes(entry));
-        if (dimensions.width != block.resourceWidth ||
-            dimensions.height != block.resourceHeight) {
+        // SVG 的旧宽高可能来自根元素百分比，尺寸纠正不影响正文迁移。
+        if (dimensions.svgRatioOnly == null &&
+            (dimensions.width != block.resourceWidth ||
+                dimensions.height != block.resourceHeight)) {
           reply.send(false);
           return;
         }
-        newReader.index.images[entry] = [dimensions.width, dimensions.height];
+        newReader.index.images[entry] = dimensions.toIndex();
       }
       final generated = await newReader.read(
         chapter,

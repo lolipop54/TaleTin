@@ -32,24 +32,14 @@ extension _DividerMeasurement on BlockMeasurer {
     final bottom = (box?.insetBottom ?? 0) + spacing.outerBottom;
     final width = options.contentWidth - spacing.left - spacing.rightSpace;
     final lengths = _lengthContext(style.computed, spacing.containerWidth);
-    var height = kDividerHeight;
-    if (css) {
-      final context = lengths.copyWith(reference: options.contentHeight);
-      double? px(Length? value) =>
-          value == null || value.isAuto ? null : value.resolve(context);
-      final size = style.computed.size;
-      final borderBox = size.boxSizing == BoxSizingSpec.borderBox;
-      final edges = box!.insetTop + box.insetBottom;
-      double content(double value) =>
-          math.max(0, value - (borderBox ? edges : 0));
-      height = content(px(size.height) ?? 0);
-      if (px(size.maxHeight) case final maximum?) {
-        height = math.min(height, content(maximum));
-      }
-      if (px(size.minHeight) case final minimum?) {
-        height = math.max(height, content(minimum));
-      }
-    }
+    final height = css
+        ? BoxSizeResolver.heightOf(
+            lengths,
+            style.computed.size,
+            box,
+            parentHeight: spacing.containerHeight,
+          ).use(0)
+        : kDividerHeight;
     final line = style.rawLine;
     return MeasuredBlock(
       blockId: block.id,
@@ -77,6 +67,7 @@ extension _DividerMeasurement on BlockMeasurer {
         reference: spacing.containerWidth,
         rootFontSize: lengths.rootFontSize,
       ),
+      flowMargins: spacing.margins,
       line: css || line == null
           ? null
           : [

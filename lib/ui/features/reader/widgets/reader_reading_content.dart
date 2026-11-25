@@ -51,7 +51,8 @@ class _ReadingContentState extends ConsumerState<_ReadingContent> {
   ReaderState get state => widget.state;
   String get bookId => widget.bookId;
   ReadingTheme get theme => widget.theme;
-  ReaderSettingsState get settings => widget.settings;
+  ReaderSettingsState get settings =>
+      widget.settings.forViewport(MediaQuery.sizeOf(context).width);
   bool get settingsReady => widget.settingsReady;
 
   @override
@@ -144,9 +145,54 @@ class _ReadingContentState extends ConsumerState<_ReadingContent> {
     final jumpBusy = ref.watch(
       readerProgressReturnProvider(bookId).select((s) => s.busy),
     );
+    final desktop =
+        defaultTargetPlatform == TargetPlatform.windows &&
+        !(settings.settings.layoutMode.isOriginal &&
+            session?.book.format.usesOriginalWebView == true);
     return ReadingStatisticsScope(
       bookId: bookId,
+      desktopScrolling: desktop
+          ? settings.settings.pageTurnEffect == PageTurnEffect.scroll
+          : null,
+      wheelReadyDetails: readerTurnStateDiagnosticsEnabled
+          ? () => {
+              'settingsReady': settingsReady,
+              'displayReady': _displayReady(),
+              'failed': ref.read(readerSessionProvider(bookId)).hasError,
+              'searchBusy': ref.read(bookSearchNavigationProvider(bookId)).busy,
+              'jumpBusy': ref.read(readerProgressReturnProvider(bookId)).busy,
+            }
+          : null,
+      onDesktopScroll: desktop
+          ? (delta) async {
+              if (_pdfKey.currentState case final pdf?) {
+                await pdf.scrollBy(delta);
+              } else {
+                await _textScrollKey.currentState?.scrollBy(delta);
+              }
+            }
+          : null,
+      onDesktopZoom:
+          desktop &&
+              session?.book.format == BookFormat.pdf &&
+              settings.settings.layoutMode.isOriginal
+          ? (delta, position) =>
+                _pdfKey.currentState?.zoomFromWheel(delta, position)
+          : null,
       onVolumeTurn: (forward) async {
+        if (ReaderTurnStateDiagnostics.tracingWheel) {
+          ReaderTurnStateDiagnostics.record('wheel.target', {
+            'mode': _spreadKey.currentState != null
+                ? 'spread'
+                : _pdfKey.currentState != null
+                ? 'pdf'
+                : _textScrollKey.currentState != null
+                ? 'scroll'
+                : _pageKey.currentState != null
+                ? 'single'
+                : 'noSimplifiedTarget',
+          });
+        }
         if (_spreadKey.currentState case final spread?) {
           await spread.turn(forward);
         } else if (_pdfKey.currentState case final pdf?) {
@@ -165,6 +211,9 @@ class _ReadingContentState extends ConsumerState<_ReadingContent> {
       },
       ready: () =>
           settingsReady &&
+          (!desktop ||
+              (!ref.read(bookSearchNavigationProvider(bookId)).busy &&
+                  !ref.read(readerProgressReturnProvider(bookId)).busy)) &&
           _displayReady() &&
           !ref.read(readerSessionProvider(bookId)).hasError &&
           ref.read(readerSessionProvider(bookId)).value?.currentAnchor != null,
@@ -186,9 +235,11 @@ class _ReadingContentState extends ConsumerState<_ReadingContent> {
                   final originalPaged =
                       settings.settings.layoutMode.isOriginal &&
                       settings.settings.pageTurnEffect != PageTurnEffect.scroll;
+                  final reading = settings.settings;
                   if (MediaQuery.viewInsetsOf(context).bottom == 0) {
                     _originalViewport = constraints.biggest;
                   }
+                  final body = _body(context, ref, sessionAsync, session);
                   return ReaderDisplayTransition(
                     key: _transitionKey,
                     onWorkChanged: ReaderDeliveryExperiments.originalNavigation
@@ -228,11 +279,16 @@ class _ReadingContentState extends ConsumerState<_ReadingContent> {
                           )
                         : searchBusy,
                     display: (
-                      settings.settings.layoutMode,
-                      settings.settings.spreadEnabled,
-                      settings.settings.bookEdges,
-                      settings.settings.pageTurnEffect == PageTurnEffect.scroll,
+                      reading.layoutMode,
+                      reading.layoutMode.isOriginal && reading.spreadEnabled,
+                      reading.bookEdges,
+                      reading.pageTurnEffect == PageTurnEffect.scroll,
                     ),
+                    spread:
+                        reading.layoutMode.isOriginal ||
+                            reading.pageTurnEffect == PageTurnEffect.scroll
+                        ? null
+                        : reading.spreadEnabled,
                     ready: () =>
                         !ref.read(readerSourceChangeProvider(bookId)) &&
                         settingsReady &&
@@ -253,8 +309,9 @@ class _ReadingContentState extends ConsumerState<_ReadingContent> {
                             settings.settings.spreadEnabled &&
                             settings.settings.pageTurnEffect !=
                                 PageTurnEffect.scroll &&
-                            MediaQuery.sizeOf(context).width >
-                                MediaQuery.sizeOf(context).height,
+                            (settings.desktopColumns ||
+                                MediaQuery.sizeOf(context).width >
+                                    MediaQuery.sizeOf(context).height),
                         'fontFamily': settings.settings.fontFamily,
                         'fontSize': settings.settings.fontSize,
                         'fontWeight': settings.settings.fontWeight,
@@ -267,7 +324,14 @@ class _ReadingContentState extends ConsumerState<_ReadingContent> {
                       },
                       label:
                           '${settings.settings.layoutMode.name}.${settings.settings.pageTurnEffect.name}',
-                      child: _body(context, ref, sessionAsync, session),
+                      // 只关 Windows 正文的系统滚动条。目录和设置面板仍处理各自的滚动。
+                      child: desktop
+                          ? ScrollConfiguration(
+                              behavior: ScrollConfiguration.of(context)
+                                  .copyWith(scrollbars: false),
+                              child: body,
+                            )
+                          : body,
                     ),
                   );
                 },

@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 
@@ -15,6 +17,9 @@ final storageRepositoryProvider = Provider<StorageRepository>((ref) {
     cacheRoot: ref.watch(cacheRootPathProvider),
     originals: ref.watch(epubSourceRepositoryProvider),
     readInstalledStorage: readInstalledStorage,
+    windowsExecutablePath: Platform.isWindows
+        ? Platform.resolvedExecutable
+        : null,
     clearChapterCache: contents is FileChapterContentRepository
         ? contents.clearChapterCache
         : null,

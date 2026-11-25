@@ -15,6 +15,45 @@ abstract final class ProseLineBreaks {
     r'[）】》」』”’。，、；：！？](?=[（【《「『“‘A-Za-z0-9])',
   );
 
+  // Chromium 对 ASCII 标点使用兼容断点。路径斜线后紧接 ASCII 文字时
+  // 不能把下一段文件名推到下一行，只留一个斜线在行尾。
+  static bool joinsPath(String text, int offset) {
+    if (offset == 0 ||
+        offset >= text.length ||
+        text.codeUnitAt(offset - 1) != 47) {
+      return false;
+    }
+    final c = text.codeUnitAt(offset);
+    return c >= 33 && c <= 126 && c != 40 && c != 60 && c != 91 && c != 123;
+  }
+
+  static bool startsPathAfterSpace(String text, int offset) =>
+      offset > 0 &&
+      offset < text.length &&
+      text.codeUnitAt(offset - 1) == 32 &&
+      text.codeUnitAt(offset) == 47;
+
+  static HyphenatedText tableText(String source, {bool hyphenate = false}) {
+    final base = display(source, hyphenate: hyphenate);
+    if (!base.text.contains('/')) return base;
+    final old = base.insertions.toSet(),
+        out = StringBuffer(),
+        insertions = <int>[];
+    for (var i = 0; i < base.text.length; i++) {
+      if (startsPathAfterSpace(base.text, i)) {
+        insertions.add(out.length);
+        out.write('\u200b');
+      }
+      if (joinsPath(base.text, i)) {
+        insertions.add(out.length);
+        out.write('\u2060');
+      }
+      if (old.contains(i)) insertions.add(out.length);
+      out.writeCharCode(base.text.codeUnitAt(i));
+    }
+    return HyphenatedText(out.toString(), insertions);
+  }
+
   static HyphenatedText display(String source, {bool hyphenate = true}) {
     final base = hyphenate
         ? EnglishHyphenation.display(source)

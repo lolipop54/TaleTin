@@ -16,26 +16,43 @@ import 'toc_anchor_metadata.dart';
 import 'dom_text_map.dart';
 import 'epub_archive.dart';
 import 'book_styles.dart';
+import 'publication_style_tree.dart';
 import 'style_references.dart';
 import 'xhtml_models.dart';
 export 'xhtml_models.dart';
 export 'style_references.dart';
 export 'book_styles.dart';
 
+// 这里只找需要读入的文件，语法校验、条件及实际展开由 Rust tokenizer 负责。
+// 注释和普通字符串整段跳过，带引号的 URL 保留内部空格。
+final _cssImportTokens = RegExp(
+  r'''/\*[\s\S]*?\*/|@import\b(?:\s|/\*[\s\S]*?\*/)*(?:url\(\s*)?(?:"([^"\r\n]*)"|'([^'\r\n]*)'|([^"')\s;]+))|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*' '''
+      .trimRight(),
+  caseSensitive: false,
+);
+
 class XhtmlBlockBuilder {
   XhtmlBlockBuilder({
     required this.basePath,
     required this.resolveImage,
+    this.containsResource,
+    this.legacyMobi = false,
     this.importTiming,
     this.styles,
     this.styleResolver,
     this.styleTextResolver,
+    this.styleBook,
     this.cssFiles = const {},
+    this.cssTraceElement,
     bool buildTextMap = true,
     this.statisticsOnly = false,
   }) : buildTextMap = buildTextMap && !statisticsOnly;
+  final bool legacyMobi;
   final String basePath;
   final ImageResolver resolveImage;
+
+  /// 核对样式表中的书内资源，只查归档目录，不解压图片。
+  final bool Function(String entryPath)? containsResource;
   final ImportTiming? importTiming;
 
   /// 全书样式表（可选）；为空时只读本章引用的样式。
@@ -49,9 +66,13 @@ class XhtmlBlockBuilder {
   /// 和 [styleResolver] 二选一：传入它时，Rust 负责语法、选择器、层叠和继承，
   /// Dart 不再解析 CSS；没有它则继续走旧白名单（旧缓存/测试）。
   final String? Function(String entryPath)? styleTextResolver;
+  final String? styleBook;
 
   /// 书内全部 CSS 文本（键是归档条目路径），供 Rust 在规则原位置展开 `@import`。
   final Map<String, String> cssFiles;
+
+  /// 开发诊断按 data-gt-id 或 id 选一个元素，平时不收集声明轨迹。
+  final String? cssTraceElement;
   final bool buildTextMap, statisticsOnly;
   Document? _document;
   Document? get document => _document;
@@ -62,10 +83,9 @@ class XhtmlBlockBuilder {
 
   /// 原书字节直接进入 Rust；资源路径和正文模型仍由原来的规则处理。
   ///
-  /// 这里额外解码一份字符串，只为找出本章引用的样式文件与内联 `<style>`；
-  /// 正文本身仍以原始字节交给 Rust。
+  /// 样式树从已解析的 DOM 查引用，省去 Dart 端的第二份正文字符串。
   XhtmlBlocks convertBytes(Uint8List source) => _convert(
-    utf8.decode(source, allowMalformed: true),
+    styleBook == null ? utf8.decode(source, allowMalformed: true) : null,
     () => NativeHtml.bytes(source),
   );
 
@@ -116,11 +136,10 @@ class XhtmlBlockBuilder {
     final seenImports = <String>{};
     void addImports(String path, String text) {
       // 只递归读取本章真正会展开的 @import，不把全书 CSS 都塞进每次转换的元数据。
-      for (final match in RegExp(
-        r'''@import\s+(?:url\(\s*)?["']?([^"')\s;]+)''',
-        caseSensitive: false,
-      ).allMatches(text)) {
-        final entry = resolveEntryPath(path, match.group(1)!);
+      for (final match in _cssImportTokens.allMatches(text)) {
+        final target = match.group(1) ?? match.group(2) ?? match.group(3);
+        if (target == null) continue;
+        final entry = resolveEntryPath(path, target);
         if (entry == null || !seenImports.add(entry)) continue;
         final imported = resolver(entry);
         if (imported == null) continue;
@@ -209,8 +228,16 @@ class XhtmlBlockBuilder {
       }
       final metadata = _metadata(references, basePath, resolveImage);
       metadata['documentPath'] = basePath;
+      if (legacyMobi) metadata['legacyMobi'] = true;
+      if (trace != null) metadata['cssDiagnostics'] = true;
+      if (cssTraceElement case final target?) {
+        metadata['cssTraceElement'] = target;
+      }
       // 统一 CSS：Dart 只按文档顺序读出原始字节，语法、匹配、层叠、继承都在 Rust。
-      if (!statisticsOnly &&
+      if (!statisticsOnly && styleBook != null) {
+        metadata['cssBook'] = styleBook!;
+        if (publicationCssMode == 'tree') metadata['cssFullScan'] = true;
+      } else if (!statisticsOnly &&
           (styleTextResolver != null ||
               (styles == null && styleResolver == null))) {
         final resolved = _resolveCssSources(
@@ -245,6 +272,23 @@ class XhtmlBlockBuilder {
       );
       final result =
           importTiming?.detail('blocks_and_text_map', convert) ?? convert();
+      if (result['cssError'] case final String error) {
+        throw FormatException(error);
+      }
+      if (trace != null && result['cssDiagnostics'] is Map) {
+        trace.details['css'] = result['cssDiagnostics'];
+      }
+      final display = result['displaySource'];
+      final contains = containsResource;
+      if (contains != null &&
+          display is Map &&
+          display['backgroundResources'] is List) {
+        display['backgroundResources'] = [
+          for (final path
+              in (display['backgroundResources'] as List).whereType<String>())
+            if (path.startsWith('res/') && contains(path.substring(4))) path,
+        ];
+      }
       trace?.mark('native_convert_and_transfer');
       DomTextMap? textMap;
       if (buildTextMap) {
@@ -319,7 +363,9 @@ class XhtmlBlockBuilder {
     ImageResolver resolver, {
     ImportTiming? timing,
     List<Uint8List>? rawSources,
+    void Function(String, List<dynamic>, List<dynamic>?)? onStyleSources,
     bool statisticsOnly = true,
+    bool legacyMobi = false,
     Map<String, List<String>> tocFragments = const {},
     Map<String, Map<String, double?>>? tocPositions,
     Map<String, Map<String, double>>? tocHeadings,
@@ -349,6 +395,14 @@ class XhtmlBlockBuilder {
       ];
       final input = timing?.detail('resource_metadata', metadata) ?? metadata();
       for (var i = 0; i < paths.length; i++) {
+        if (legacyMobi) input[i]['legacyMobi'] = true;
+        if (onStyleSources != null) {
+          onStyleSources(
+            paths[i],
+            (refs[i] as Map)['css'] as List? ?? const [],
+            (refs[i] as Map)['opening'] as List?,
+          );
+        }
         final fragments = tocFragments[paths[i]];
         if (fragments != null && fragments.isNotEmpty) {
           input[i]['anchors'] = anchorCandidates(fragments).toList();
@@ -420,6 +474,7 @@ Map<String, Object> _metadata(
         'resource': image.resourcePath,
         'width': image.width,
         'height': image.height,
+        if (image.svgRatioOnly == true) 'svgRatioOnly': true,
       };
     }
   }
@@ -441,7 +496,7 @@ XhtmlBlocks _result(
   bool stats, {
   DomTextMap? textMap,
 }) {
-  var heading = result['heading'] as String?;
+  var heading = (result['heading'] as String?)?.trim();
   if (heading != null && heading.length > 60) {
     heading = heading.substring(0, 60);
   }
@@ -466,5 +521,6 @@ XhtmlBlocks _result(
     displaySourceJson: result['displaySource'] is Map
         ? (result['displaySource'] as Map).cast<String, Object?>()
         : null,
+    cssTrace: (result['cssTrace'] as Map?)?.cast<String, Object?>(),
   );
 }

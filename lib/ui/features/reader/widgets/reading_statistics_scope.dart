@@ -1,8 +1,12 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:taletin/core/diagnostics/app_errors.dart';
 
+import '../../../../core/diagnostics/reader_turn_state_diagnostics.dart';
+
 import 'turn_trace.dart';
+import 'desktop_reading_input.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -10,6 +14,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../app/di/statistics_providers.dart';
 import '../../../../app/di/reading_controls_providers.dart';
 import '../../../../platform/channels/reading_window.dart';
+import '../../../../platform/channels/windows_wheel_modifier.dart';
 import '../../../../domain/services/reading_statistics_service.dart';
 import '../view_models/automatic_reading.dart';
 import '../view_models/reader_view_model.dart';
@@ -26,9 +31,17 @@ class ReadingStatisticsScope extends ConsumerStatefulWidget {
     required this.ready,
     required this.child,
     this.onVolumeTurn,
+    this.desktopScrolling,
+    this.onDesktopScroll,
+    this.onDesktopZoom,
+    this.wheelReadyDetails,
   });
   final Future<void> Function(bool forward)? onVolumeTurn;
+  final bool? desktopScrolling;
+  final Future<void> Function(double delta)? onDesktopScroll;
+  final void Function(double delta, Offset position)? onDesktopZoom;
   final String bookId;
+  final Map<String, Object?> Function()? wheelReadyDetails;
   final bool Function() ready;
   final Widget child;
   @override
@@ -121,6 +134,9 @@ class _StatisticsScopeState extends ConsumerState<ReadingStatisticsScope>
     super.initState();
     service = ref.read(readingStatisticsServiceProvider);
     window = ref.read(readingWindowProvider);
+    if (readerTurnStateDiagnosticsEnabled) {
+      ReaderTurnStateDiagnostics.attach(this, 'desktopInput', _wheelState);
+    }
     if (readerRecoveryDiagnosticsEnabled) {
       ReaderRecoveryDiagnostics.attach(this);
       WidgetsBinding.instance.addObserver(this);
@@ -129,15 +145,10 @@ class _StatisticsScopeState extends ConsumerState<ReadingStatisticsScope>
       if (call.method != 'turn' || !_keys || _turning) return;
       sync(interaction: true);
       if (!_keys) return;
-      _turning = true;
-      try {
-        await widget.onVolumeTurn?.call(call.arguments == true);
-      } catch (error, stack) {
-        AppErrors.report(error, stack, operation: '音量键翻页失败', notify: mounted);
-        if (mounted) ref.read(readerProvider.notifier).showNotice('翻页失败，请重试');
-      } finally {
-        _turning = false;
-      }
+      await _runTurn(
+        () => widget.onVolumeTurn?.call(call.arguments == true),
+        '音量键翻页失败',
+      );
     });
     foreground =
         WidgetsBinding.instance.lifecycleState == null ||
@@ -194,6 +205,84 @@ class _StatisticsScopeState extends ConsumerState<ReadingStatisticsScope>
     });
   }
 
+  bool get _readingUncovered {
+    final reader = ref.read(readerProvider);
+    return !ref.read(readerSourceChangeProvider(widget.bookId)) &&
+        currentRoute &&
+        widget.ready() &&
+        !reader.controlsVisible &&
+        reader.panel == ReaderPanel.none &&
+        reader.note == null &&
+        reader.selection == null;
+  }
+
+  bool get _readingVisible => foreground && _readingUncovered;
+
+  // 桌面点击、滚轮和按键都由系统送到当前窗口；Flutter 的焦点状态可能迟到。
+  // 统计和 Android 音量键仍使用前台状态，桌面主动操作只检查正文是否可用。
+  bool get _desktopInputEnabled => _readingUncovered && !window.exiting.value;
+
+  Map<String, Object?> _wheelState() {
+    final session = ref.read(readerSessionProvider(widget.bookId)).value;
+    final reader = ref.read(readerProvider);
+    return {
+      ...?widget.wheelReadyDetails?.call(),
+      'exiting': window.exiting.value,
+      'routeCurrent': currentRoute,
+      'sourceChanged': ref.read(readerSourceChangeProvider(widget.bookId)),
+      'controls': reader.controlsVisible,
+      'panel': reader.panel.name,
+      'selection': reader.selection != null,
+      'note': reader.note != null,
+      'turning': _turning,
+      'inputAllowed': _desktopInputEnabled,
+      'format': session?.book.format.name,
+      'chapter': session?.chapterIndex,
+      'page': session?.pageIndex,
+      'anchorPresent': session?.currentAnchor != null,
+    };
+  }
+
+  Future<void> _runTurn(
+    Future<void>? Function() action,
+    String operation,
+  ) async {
+    _turning = true;
+    try {
+      await action();
+    } catch (error, stack) {
+      if (ReaderTurnStateDiagnostics.tracingWheel) {
+        ReaderTurnStateDiagnostics.record('wheel.failed', {
+          'errorType': error.runtimeType.toString(),
+        });
+      }
+      AppErrors.report(error, stack, operation: operation, notify: mounted);
+      if (mounted) ref.read(readerProvider.notifier).showNotice('翻页失败，请重试');
+    } finally {
+      _turning = false;
+    }
+  }
+
+  void _desktopMove(Future<void>? Function() action) {
+    if (_turning || !_desktopInputEnabled) {
+      if (ReaderTurnStateDiagnostics.tracingWheel) {
+        ReaderTurnStateDiagnostics.record('wheel.rejected', {
+          'blockReason': _turning ? 'turnInProgress' : 'inputDisabled',
+        });
+      }
+      return;
+    }
+    sync(interaction: true);
+    final turn = _runTurn(action, '桌面翻页失败');
+    if (ReaderTurnStateDiagnostics.tracingWheel) {
+      unawaited(
+        turn.whenComplete(
+          () => ReaderTurnStateDiagnostics.record('wheel.finished'),
+        ),
+      );
+    }
+  }
+
   void sync({bool interaction = false}) {
     if (!mounted) return;
     final reader = ref.read(readerProvider);
@@ -202,15 +291,7 @@ class _StatisticsScopeState extends ConsumerState<ReadingStatisticsScope>
       _loggedReady = true;
       traceTurn('load first-readable us=${_opening.elapsedMicroseconds}');
     }
-    final visible =
-        !ref.read(readerSourceChangeProvider(widget.bookId)) &&
-        foreground &&
-        currentRoute &&
-        widget.ready() &&
-        !reader.controlsVisible &&
-        reader.panel == ReaderPanel.none &&
-        reader.note == null &&
-        reader.selection == null;
+    final visible = _readingVisible;
     final controls = ref.read(readingControlsProvider).value;
     // 锁屏、切后台和阅读内弹层都保留系统栏设置。若失去前台时显示系统栏，
     // 回来再隐藏，正文会按临时高度重排，页首反复取整就会退到前一页。
@@ -288,12 +369,34 @@ class _StatisticsScopeState extends ConsumerState<ReadingStatisticsScope>
         _recovery('pointerUp');
         sync(interaction: true);
       },
-      child: widget.child,
+      child: switch (widget.desktopScrolling) {
+        final scrolling? => DesktopReadingInput(
+          scrolling: scrolling,
+          readWheelModifier: Platform.isWindows
+              ? readWindowsWheelModifier
+              : null,
+          enabled: () => _desktopInputEnabled,
+          onTurn: (forward) =>
+              _desktopMove(() => widget.onVolumeTurn?.call(forward)),
+          onScroll: (delta) =>
+              _desktopMove(() => widget.onDesktopScroll?.call(delta)),
+          onZoom: (delta, position) {
+            if (_turning || widget.onDesktopZoom == null) return;
+            sync(interaction: true);
+            widget.onDesktopZoom!(delta, position);
+          },
+          child: widget.child,
+        ),
+        null => widget.child,
+      },
     );
   }
 
   @override
   void dispose() {
+    if (readerTurnStateDiagnosticsEnabled) {
+      ReaderTurnStateDiagnostics.detach(this);
+    }
     for (final timer in _recoveryChecks) {
       timer.cancel();
     }

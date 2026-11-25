@@ -83,7 +83,7 @@ extension _SpreadPageContent on _ReaderSpreadAreaState {
     ];
   }
 
-  PageCanvas _canvas(SpreadPageRef page, int side, {required bool current}) {
+  PageCanvas _canvas(SpreadPageRef page, int side, {required bool current, _SpreadPair? spread}) {
     final settings = widget.settings.settings;
     final state = ref.read(readerProvider);
     final engine = ref.read(readerEngineProvider);
@@ -91,7 +91,7 @@ extension _SpreadPageContent on _ReaderSpreadAreaState {
     final marks = _marks(page);
     final unit = ref.read(listeningViewStateProvider).value?.activeUnit;
     final infoSettings = settings;
-    final pair = current ? _pair : _target;
+    final pair = spread ?? (current ? _pair : _target);
     bool marked(SpreadPageRef p) =>
         ref
             .read(bookmarksProvider(widget.bookId))
@@ -117,10 +117,12 @@ extension _SpreadPageContent on _ReaderSpreadAreaState {
           (c) => c.id == page.layout.chapterId,
         ),
         page.layout.progressOfPage(page.pageIndex),
+        simplifiedPage: true,
         spreadSide: side,
         showReturnProgress: false,
         bookmarked:
             side == 1 &&
+            (!current || !_pullingBookmark) &&
             (pair == null
                 ? marked(page)
                 : marked(pair.left) ||
@@ -289,8 +291,8 @@ extension _SpreadPageContent on _ReaderSpreadAreaState {
         return true;
       }
     }
-    final footnote = readerLinkNearPoint(page.layout, page.pageIndex, local);
-    if (footnote != null) {
+    final footnote = readerPageHit(page.layout, page.pageIndex, local);
+    if (footnote != null && !footnote.image) {
       if (!mounted) return true;
       final box = context.findRenderObject()! as RenderBox;
       final shown = await openReaderLink(
@@ -298,9 +300,9 @@ extension _SpreadPageContent on _ReaderSpreadAreaState {
         ref: ref,
         bookId: widget.bookId,
         chapters: widget.session.chapters,
-        link: footnote.link,
+        link: footnote.link!,
         footnote: footnote.footnote,
-        anchor: box.localToGlobal(point),
+        anchor: box.localToGlobal(origin + footnote.anchor),
         theme: widget.settings.theme,
       );
       if (!shown && mounted) {
@@ -310,11 +312,12 @@ extension _SpreadPageContent on _ReaderSpreadAreaState {
       }
       return true;
     }
+    final imagePoint = footnote?.image == true ? footnote!.anchor : local;
     final viewImages =
         ref.read(readingControlsProvider).value?.imageViewing != false;
     // 行内图片只做单张大图预览，不进入连续图片窗口。
     for (final f in page.layout.page(page.pageIndex)!.fragments) {
-      final image = f.inlineImageAt(local);
+      final image = f.inlineImageAt(imagePoint);
       if (image == null) continue;
       if (!mounted) return true;
       if (await openReaderImageNote(
@@ -323,7 +326,8 @@ extension _SpreadPageContent on _ReaderSpreadAreaState {
         bookId: widget.bookId,
         chapters: widget.session.chapters,
         link: image.noteLink,
-        point: point,
+        noteText: image.noteText,
+        point: origin + imagePoint,
         theme: widget.settings.theme,
       )) {
         return true;
@@ -346,7 +350,7 @@ extension _SpreadPageContent on _ReaderSpreadAreaState {
     for (final f in page.layout.page(page.pageIndex)!.fragments) {
       final path = f.block.resourcePath;
       final rect = f.imageRectIn(page.layout.contentSize.width);
-      if (rect == null || path == null || !rect.contains(local)) continue;
+      if (rect == null || path == null || !rect.contains(imagePoint)) continue;
       if (!mounted) return true;
       if (await openReaderImageNote(
         context,
@@ -354,7 +358,8 @@ extension _SpreadPageContent on _ReaderSpreadAreaState {
         bookId: widget.bookId,
         chapters: widget.session.chapters,
         link: f.block.noteLink,
-        point: point,
+        noteText: f.block.noteText,
+        point: origin + imagePoint,
         theme: widget.settings.theme,
       )) {
         return true;

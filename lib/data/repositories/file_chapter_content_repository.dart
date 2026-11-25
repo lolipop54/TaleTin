@@ -13,6 +13,7 @@ import 'dart:typed_data';
 import 'package:path/path.dart' as p;
 
 import '../../core/diagnostics/reader_work_trace.dart';
+import '../../core/io/publication_cache_path.dart';
 
 import '../../domain/models/book_document.dart';
 import '../../domain/models/locator.dart';
@@ -77,11 +78,15 @@ class FileChapterContentRepository implements ChapterContentRepository {
     this.cacheCapacity = 4,
     this.textPreparation,
     this.cacheRoot,
+    this.pageCountReadCache,
   });
 
   /// `files/library` 绝对路径
   final String libraryRoot;
   final String? cacheRoot;
+
+  /// 算页专用。只读阅读器已有的正文，图片和其他临时文件仍归本次任务。
+  final String? pageCountReadCache;
   Future<ChapterContentWorker>? _worker;
   final _storageModes = <String, Future<bool>>{};
   final _pdfBooks = <String>{};
@@ -106,6 +111,7 @@ class FileChapterContentRepository implements ChapterContentRepository {
       _worker ??= ChapterContentWorker.open(
         libraryRoot: libraryRoot,
         cacheRoot: cacheRoot,
+        pageCountReadCache: pageCountReadCache,
         preparation: textPreparation,
       );
 
@@ -143,6 +149,12 @@ class FileChapterContentRepository implements ChapterContentRepository {
     return _decodeChapter(
       (jsonDecode(await file.readAsString()) as Map).cast<String, Object?>(),
     );
+  }
+
+  @override
+  Future<String?> spreadSourceDigest(String bookId, Chapter chapter) async {
+    final path = p.dirname(chapterAbsolutePath(bookId, chapter));
+    return (await _manifest(path))?.sourceIndex?.sourceDigest;
   }
 
   Future<bool> _indexed(String bookId, Chapter chapter) {
@@ -379,17 +391,38 @@ class FileChapterContentRepository implements ChapterContentRepository {
     var content = await _readChapterFile(bookId, chapter);
     if (chapter.href != null &&
         (content.displaySourceJson == null ||
-            content.displaySourceJson?['htmlPresentation'] != 3 ||
+            content.displaySourceJson?['spreadChapters'] == null ||
+            content.displaySourceJson?['htmlPresentation'] != 7 ||
+            (content.displaySourceJson?['coverPage'] == null &&
+                content.displaySourceJson?['coverImage'] == null &&
+                (chapter.ordinal == 0 || content.blocks.length == 1) &&
+                content.blocks.any((b) => b.kind == BlockKind.image)) ||
+            (content.displaySourceJson?['tableGridRevision'] != 3 &&
+                (content.tables.isNotEmpty ||
+                    (content.displaySourceJson?['elements'] as List? ??
+                            const [])
+                        .any((e) => e['tag'] == 'table'))) ||
             content.displaySourceJson?['linkSemantics'] != true ||
             content.displaySourceJson?['codeLines'] == null ||
             (content.displaySourceJson?['computed'] == true &&
                 content.displaySourceJson?['fontSizeDeclarations'] == null &&
                 content.displaySourceJson?['css'] == null))) {
+      final directory = p.join(libraryRoot, bookId);
+      var source = bookSourcePath(directory, 'epub');
+      if (!await File(source).exists()) {
+        for (final extension in ['mobi', 'azw3']) {
+          final candidate = bookSourcePath(directory, extension);
+          if (await File(candidate).exists()) {
+            source = candidate;
+            break;
+          }
+        }
+      }
       content = await refreshLegacyPublicationStyles(
         content,
         chapter,
         p.dirname(chapterAbsolutePath(bookId, chapter)),
-        bookSourcePath(p.join(libraryRoot, bookId), 'epub'),
+        source,
       );
     }
     if (chapter.href != null &&
@@ -517,7 +550,6 @@ class FileChapterContentRepository implements ChapterContentRepository {
     var chapters = const <Chapter>[];
     var encoding = '';
     Map<String, dynamic>? manifest;
-    var tocRevision = 0;
     TocLocations? locations;
     if (await file.exists()) {
       try {
@@ -531,7 +563,6 @@ class FileChapterContentRepository implements ChapterContentRepository {
               headings: index.tocHeadings,
             );
           }
-          tocRevision = (decoded['tocRevision'] as num?)?.toInt() ?? 0;
           encoding = decoded['encoding'] as String? ?? '';
           final rawToc = decoded['toc'];
           if (rawToc is List) {
@@ -563,10 +594,10 @@ class FileChapterContentRepository implements ChapterContentRepository {
     }
     // 新导入已生成完整目录。只有没有规则标记的旧书才修复，且按真实章节
     // 格式分支；本地 TXT 的 source.path 不能拿去尝试打开 EPUB 归档。
-    if (tocRevision < kTocRevision && chapters.isNotEmpty) {
+    if (chapters.isNotEmpty && manifest != null && needsTocRecovery(manifest)) {
       final epub = chapters.any((chapter) => chapter.href != null);
       final directory = p.join(libraryRoot, bookId);
-      final rawIndex = manifest?['sourceIndex'];
+      final rawIndex = manifest['sourceIndex'];
       final index = rawIndex is Map
           ? SourceContentIndex.fromJson(rawIndex.cast<String, dynamic>())
           : null;
@@ -594,19 +625,17 @@ class FileChapterContentRepository implements ChapterContentRepository {
             );
           }
           // 只保存补齐的目录与完成标记，不重写正文、块号或阅读位置。
-          if (manifest != null) {
-            final next = File('${file.path}.next');
-            await next.writeAsString(
-              jsonEncode({
-                ...manifest,
-                'toc': nodes.map((node) => node.toJson()).toList(),
-                'tocRevision': kTocRevision,
-              }),
-              flush: true,
-            );
-            await next.rename(file.path);
-            _manifests.remove(p.dirname(file.path));
-          }
+          final next = File('${file.path}.next');
+          await next.writeAsString(
+            jsonEncode({
+              ...manifest,
+              'toc': nodes.map((node) => node.toJson()).toList(),
+              'tocRevision': kTocRevision,
+            }),
+            flush: true,
+          );
+          await next.rename(file.path);
+          _manifests.remove(p.dirname(file.path));
         } on Object {
           // 原文件或修复保存失败时仍可用旧目录，下次读取可以继续尝试。
         }
@@ -636,14 +665,16 @@ class FileChapterContentRepository implements ChapterContentRepository {
     if (store != null &&
         resourcePath.startsWith('res/') &&
         !store.$2.contains(resourcePath)) {
-      return p.join(store.$1, resourcePath.substring(4));
+      return p.join(store.$1, publicationCachePath(resourcePath.substring(4)));
     }
     return p.join(
       libraryRoot,
       bookId,
       'content',
       '$contentVersion',
-      resourcePath,
+      resourcePath.startsWith('res/')
+          ? 'res/${publicationCachePath(resourcePath.substring(4))}'
+          : resourcePath,
     );
   }
 

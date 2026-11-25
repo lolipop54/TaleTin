@@ -17,7 +17,11 @@ const _container = '''<?xml version="1.0" encoding="UTF-8"?>
 </container>''';
 
 /// One original MOBI plus compact native/segment recipes; no publication files.
-class MobiPublicationSource implements BatchedPublicationEntries {
+class MobiPublicationSource
+    implements BatchedPublicationEntries, MobiRendition {
+  @override
+  int get mobiVersion => native.version;
+
   MobiPublicationSource._(this.native, this.metadata) {
     _nativeEntries = {for (final entry in native.entries) entry.name: entry};
     _segments = (metadata['segments'] as Map).cast<String, dynamic>();

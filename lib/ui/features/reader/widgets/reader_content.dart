@@ -14,7 +14,39 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
   Timer? _controlsExitTimer;
   bool _keepOriginal = false;
   bool _swipeExiting = false;
+  int _desktopPanelRequest = 0;
+  final _backgroundImporting = ValueNotifier(false);
   String get bookId => widget.bookId;
+
+  Future<void> _openDesktopPanel(ReaderPanel panel) async {
+    final request = ++_desktopPanelRequest;
+    final vm = ref.read(readerProvider.notifier);
+    final previous = ref.read(readerProvider).panel;
+    if (previous == panel) {
+      vm.closePanel();
+      return;
+    }
+    try {
+      await prepareReaderPanel(
+        context,
+        ProviderScope.containerOf(context),
+        bookId,
+        panel,
+      );
+      if (!mounted || request != _desktopPanelRequest) return;
+      final current = ref.read(readerProvider);
+      if (current.controlsVisible &&
+          !current.panelCovered &&
+          current.panel == previous) {
+        vm.openPanel(panel);
+      }
+    } catch (error, stack) {
+      AppErrors.report(error, stack, operation: '打开阅读面板失败');
+      if (mounted && request == _desktopPanelRequest) {
+        vm.showNotice('面板准备失败，请重试');
+      }
+    }
+  }
 
   Future<void> _exitBySwipe() async {
     if (_swipeExiting) return;
@@ -38,6 +70,31 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
     }
   }
 
+  void _exitByEscape() {
+    final state = ref.read(readerProvider);
+    if (_swipeExiting ||
+        ModalRoute.isCurrentOf(context) != true ||
+        ref.read(readingWindowProvider).exiting.value ||
+        ref.read(readerSourceChangeProvider(bookId)) ||
+        state.controlsVisible ||
+        state.panel != ReaderPanel.none ||
+        state.selection != null ||
+        state.note != null) {
+      return;
+    }
+    _swipeExiting = true;
+    unawaited(
+      saveAndLeaveReader(context, ref, bookId, source: 'escape').catchError((
+        Object error,
+        StackTrace stack,
+      ) {
+        if (!mounted) return;
+        _swipeExiting = false;
+        AppErrors.report(error, stack, operation: '按 Esc 退出阅读失败');
+      }),
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -49,6 +106,7 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
   void dispose() {
     ReaderWorkTrace.start('reader.body.dispose', {'bookId': bookId})?.finish();
     _controlsExitTimer?.cancel();
+    _backgroundImporting.dispose();
     unawaited(OriginalHostController.setCaptureEnabled(false));
     super.dispose();
   }
@@ -64,6 +122,11 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
       }
     });
     final state = ref.watch(readerProvider);
+    final desktop = readerUsesDesktopPanels;
+    final toolPanelOpen =
+        state.panel != ReaderPanel.none &&
+        state.panel != ReaderPanel.search &&
+        !state.panelCovered;
     // 保持动画任务存活到退出结束；简化排版即使没有原书显示器也要避让。
     ref.listen(readerControlsMotionProvider, (_, _) {});
     ref.listen(readerProvider, (previous, next) {
@@ -86,6 +149,7 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
             );
       }
       if (previous.controlsVisible && !next.controlsVisible) {
+        _desktopPanelRequest++;
         ref
             .read(readerProgressReturnProvider(bookId).notifier)
             .controlsClosed();
@@ -179,7 +243,7 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
       'bookEdges': settings.settings.bookEdges,
     };
 
-    return PopScope(
+    final reader = PopScope(
       // 分页和滚动都先保存最终位置，不能在路由已经销毁后读取 Provider。
       canPop: false,
       onPopInvokedWithResult: (didPop, _) async {
@@ -287,6 +351,10 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
                       bookId: bookId,
                     ),
                   ReaderContentViewport(
+                    settleWindowResize:
+                        desktop &&
+                        !settings.layoutMode.isOriginal &&
+                        settings.settings.pageTurnEffect != PageTurnEffect.scroll,
                     child: Builder(
                       builder: (context) => ReaderSwipeExitGesture(
                         scrolling: scrolling,
@@ -336,7 +404,8 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
                             navigationBar: showNavigationBar,
                             settingsReady: loaded != null,
                             noticeAboveControls:
-                                controlsState?.panel == ReaderPanel.none &&
+                                (desktop ||
+                                    controlsState?.panel == ReaderPanel.none) &&
                                 state.controlsVisible &&
                                 !progressTitles.isLoading,
                           ),
@@ -362,12 +431,15 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
                             ref.read(readerProvider.notifier).toggleControls(),
                       ),
                     ),
-                    if (controlsState.panel == ReaderPanel.none)
+                    if (desktop || controlsState.panel == ReaderPanel.none)
                       _TopBar(
                         visible: state.controlsVisible,
                         state: controlsState,
                         theme: theme,
                         bookId: bookId,
+                        onTool: desktop
+                            ? (panel) => unawaited(_openDesktopPanel(panel))
+                            : null,
                       ),
                     if (!progressTitles.isLoading)
                       _BottomControls(
@@ -402,35 +474,58 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
                     ),
                   ],
                   // 子面板和遮罩共用当前阅读主题。
-                  if (state.panel != ReaderPanel.none &&
-                      state.panel != ReaderPanel.search &&
-                      !state.panelCovered)
+                  if (toolPanelOpen)
                     Positioned(
                       left: 0,
                       right: 0,
-                      top: 0,
-                      bottom: readerPanelBottom(context),
-                      child: GestureDetector(
-                        onTap: () =>
-                            ref.read(readerProvider.notifier).closePanel(),
-                        child: Container(color: ReaderSheet.scrimOf(context)),
-                      ),
+                      top: desktop ? readerDesktopHeaderHeight : 0,
+                      bottom: desktop
+                          ? readerDesktopProgressHeight
+                          : readerPanelBottom(context),
+                      child: desktop && state.panel == ReaderPanel.brightness
+                          ? ValueListenableBuilder<bool>(
+                              valueListenable: _backgroundImporting,
+                              builder: (context, importing, _) =>
+                                  GestureDetector(
+                                    behavior: HitTestBehavior.opaque,
+                                    // 双击确认选图后可能只收到鼠标的一半手势；
+                                    // 只有应用内单独完成的一次空白点击才收起。
+                                    onTap: importing
+                                        ? null
+                                        : () => ref
+                                              .read(readerProvider.notifier)
+                                              .closePanel(),
+                                  ),
+                            )
+                          : desktop
+                          ? Listener(
+                              key: const ValueKey(
+                                'windows-reader-panel-dismiss',
+                              ),
+                              behavior: HitTestBehavior.opaque,
+                              onPointerDown: (event) {
+                                if (event.buttons != kPrimaryButton) return;
+                                ref.read(readerProvider.notifier).closePanel();
+                              },
+                            )
+                          : GestureDetector(
+                              onTap: () => ref
+                                  .read(readerProvider.notifier)
+                                  .closePanel(),
+                              child: ColoredBox(
+                                color: ReaderSheet.scrimOf(context),
+                              ),
+                            ),
                     ),
                   ReaderPanelViewport(
                     child: ReaderPanelMotion(
-                      panel:
-                          state.panel == ReaderPanel.none ||
-                              state.panel == ReaderPanel.search ||
-                              state.panelCovered
+                      panel: toolPanelOpen ? state.panel : null,
+                      delayOpening: !desktop && !state.panelCovered,
+                      child: !toolPanelOpen
                           ? null
-                          : state.panel,
-                      delayOpening: !state.panelCovered,
-                      child:
-                          state.panel == ReaderPanel.none ||
-                              state.panel == ReaderPanel.search ||
-                              state.panelCovered
-                          ? null
-                          : _buildPanel(ref, state),
+                          : ReaderPanelSurface(
+                              child: _buildPanel(ref, state),
+                            ),
                     ),
                   ),
                   // 保留已有正文树，更新期间阻止继续翻页或编辑旧正文。
@@ -445,6 +540,17 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
         ),
       ),
     );
+    return desktop
+        ? CallbackShortcuts(
+            bindings: {
+              const SingleActivator(
+                LogicalKeyboardKey.escape,
+                includeRepeats: false,
+              ): _exitByEscape,
+            },
+            child: reader,
+          )
+        : reader;
   }
 
   Widget _buildPanel(WidgetRef ref, ReaderState state) {
@@ -452,7 +558,14 @@ class _ReaderBodyState extends ConsumerState<_ReaderBody> {
       case ReaderPanel.contents:
         return PanelContents(state: state, bookId: bookId);
       case ReaderPanel.brightness:
-        return PanelBrightness(bookId: bookId);
+        return PanelBrightness(
+          bookId: bookId,
+          onBackgroundImportingChanged: readerUsesDesktopPanels
+              ? (importing) {
+                  if (mounted) _backgroundImporting.value = importing;
+                }
+              : null,
+        );
       case ReaderPanel.typography:
         // 排版模式开关只对 EPUB 显示，面板需要知道本书格式
         return PanelTypography(

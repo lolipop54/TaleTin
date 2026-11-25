@@ -28,7 +28,11 @@ class ResolvedRunStyle {
   });
 
   /// 片段没有 `styleId`（旧正文或测试夹具）时，沿用片段自带的旧字段。
-  factory ResolvedRunStyle.of(TextRun run, StyleTable? table) {
+  factory ResolvedRunStyle.of(
+    TextRun run,
+    StyleTable? table, {
+    double? tableFontRoot,
+  }) {
     final id = run.styleId;
     if (table == null || id == null) {
       return ResolvedRunStyle(
@@ -43,16 +47,30 @@ class ResolvedRunStyle {
         hasFontSize: run.sizeScale != 1,
       );
     }
-    return ResolvedRunStyle.fromStyle(table[id]);
+    return ResolvedRunStyle.fromStyle(table[id], tableFontRoot: tableFontRoot);
   }
 
-  factory ResolvedRunStyle.fromStyle(ComputedStyle style) {
+  factory ResolvedRunStyle.fromStyle(
+    ComputedStyle style, {
+    double? tableFontRoot,
+  }) {
     final decoration = style.text.decoration?.lines ?? const {};
     final vertical = style.text.verticalAlign;
     final superscript =
         vertical is VerticalAlignKeyword && vertical.keyword == 'super';
     final subscript =
         vertical is VerticalAlignKeyword && vertical.keyword == 'sub';
+    final font = style.text.fontSize;
+    final scale = switch (font) {
+      RelativeFontSize(:final factor) => factor,
+      final size? when tableFontRoot != null =>
+        size.resolve(
+              parentFontSize: tableFontRoot,
+              rootFontSize: tableFontRoot,
+            ) /
+            tableFontRoot,
+      _ => null,
+    };
     return ResolvedRunStyle(
       bold: style.text.fontWeight?.isBold ?? false,
       italic:
@@ -63,11 +81,8 @@ class ResolvedRunStyle {
       underline: decoration.contains(TextDecorationLine.underline),
       strike: decoration.contains(TextDecorationLine.lineThrough),
       color: style.text.color?.argb,
-      sizeScale: switch (style.text.fontSize) {
-        RelativeFontSize(:final factor) => factor,
-        _ => 1.0,
-      },
-      hasFontSize: style.text.fontSize is RelativeFontSize,
+      sizeScale: scale ?? 1.0,
+      hasFontSize: scale != null,
     );
   }
 

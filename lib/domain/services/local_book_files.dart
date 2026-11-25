@@ -58,6 +58,12 @@ abstract class LocalBookFiles {
     bool counts = true,
     Set<String> extensions = const {'txt', 'epub', 'mobi', 'azw3', 'pdf'},
   });
+
+  /// 一次列出一批目录的直接子项；单个目录不可读不影响同批其他目录。
+  Future<LocalFileInspection> scanDirectories(
+    List<String> paths,
+    Set<String> extensions,
+  );
   Future<void> delete(String path);
   Future<LocalFileInspection> inspect(List<String> paths);
 

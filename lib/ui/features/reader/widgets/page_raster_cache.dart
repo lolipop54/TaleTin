@@ -4,10 +4,12 @@ import '../../../../core/diagnostics/reader_work_trace.dart';
 import 'prepared_page.dart';
 import 'turn_trace.dart';
 
-/// 空闲时完成原尺寸页图栅格化；最多两张、合计24MiB，不降低分辨率。
+/// 空闲时完成原尺寸页图栅格化；平板上也能同时留下当前页和一张邻页。
 /// 动态选区／标注／听书及菜单沿用实时画法，不缓存这些易变外观。
 class PageRasterCache {
-  PageRasterCache({this.budgetBytes = 24 * 1024 * 1024});
+  static const maxPageBytes = 24 * 1024 * 1024;
+  static const defaultBudgetBytes = 2 * maxPageBytes;
+  PageRasterCache({this.budgetBytes = defaultBudgetBytes});
   final int budgetBytes;
   final _entries = <Object, _RasterPage>{};
   Future<void>? _pending;
@@ -19,7 +21,8 @@ class PageRasterCache {
 
   Object? _key(PreparedPage prepared, ui.Size size, double ratio) {
     final page = prepared.page;
-    if (page.selectionRects.isNotEmpty ||
+    final slice = page.layout.page(page.pageIndex);
+    if (slice == null || page.selectionRects.isNotEmpty ||
         page.selectionHandles.isNotEmpty ||
         page.speechRects.isNotEmpty ||
         page.highlights.isNotEmpty ||
@@ -28,8 +31,7 @@ class PageRasterCache {
       return null;
     }
     return (
-      page.layout.identity,
-      page.pageIndex,
+      slice,
       page.theme,
       size,
       ratio,
@@ -68,7 +70,8 @@ class PageRasterCache {
     if (key == null ||
         width <= 0 ||
         height <= 0 ||
-        width * height * 4 > budgetBytes) {
+        width * height * 4 > budgetBytes ||
+        width * height * 4 > maxPageBytes) {
       return Future.value();
     }
     final existing = _entries.remove(key);

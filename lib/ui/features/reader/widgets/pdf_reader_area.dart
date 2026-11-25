@@ -84,6 +84,7 @@ class PdfReaderArea extends ConsumerStatefulWidget {
 class PdfReaderAreaState extends ConsumerState<PdfReaderArea> {
   final _paged = GlobalKey<_PdfPagedState>();
   final _scroll = GlobalKey<_PdfScrollState>();
+  final _zoomSurface = GlobalKey<PdfZoomSurfaceState>();
   bool get isReady =>
       ref.read(pdfBookProvider(widget.bookId)).hasError ||
       _paged.currentState?._error != null ||
@@ -96,6 +97,13 @@ class PdfReaderAreaState extends ConsumerState<PdfReaderArea> {
       await _scroll.currentState?.volumeTurn(forward);
     }
   }
+
+  Future<void> scrollBy(double delta) async {
+    await _scroll.currentState?.scrollBy(delta);
+  }
+
+  void zoomFromWheel(double delta, Offset position) =>
+      _zoomSurface.currentState?.zoomFromWheel(delta, position);
 
   @override
   Widget build(BuildContext context) {
@@ -125,12 +133,14 @@ class PdfReaderAreaState extends ConsumerState<PdfReaderArea> {
                     parent: widget,
                     book: book,
                     fixedView: fixedView,
+                    zoomSurface: _zoomSurface,
                   )
                 : _PdfPaged(
                     key: _paged,
                     parent: widget,
                     book: book,
                     fixedView: fixedView,
+                    zoomSurface: _zoomSurface,
                   ),
             loading: () => const Center(child: BookLoading()),
             error: (e, s) => Center(child: Text('PDF无法读取：$e')),
@@ -159,10 +169,12 @@ class _PdfPaged extends ConsumerStatefulWidget {
     required this.parent,
     required this.book,
     required this.fixedView,
+    required this.zoomSurface,
   });
   final PdfReaderArea parent;
   final PdfBookController book;
   final bool fixedView;
+  final GlobalKey<PdfZoomSurfaceState> zoomSurface;
   @override
   ConsumerState<_PdfPaged> createState() => _PdfPagedState();
 }
@@ -540,6 +552,7 @@ class _PdfPagedState extends ConsumerState<_PdfPaged> {
         _information[index] = _prepareInfo(index);
       }
       return PdfZoomSurface(
+        key: widget.zoomSurface,
         view: view,
         fixedView: widget.fixedView,
         canStart: () => ready && !PageTurnArea.settling(_turn),

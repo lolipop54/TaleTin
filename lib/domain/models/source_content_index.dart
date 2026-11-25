@@ -35,6 +35,7 @@ class SourceContentIndex {
     required this.chapters,
     this.charset = '',
     this.images = const {},
+    this.coverEntries,
     this.sourceStamp,
     this.publication = const {},
     this.mobiIndex = const {},
@@ -54,8 +55,11 @@ class SourceContentIndex {
   final Map<String, List<Object>> chapters;
 
   /// 已确认存在的图片尺寸；[-1, -1] 表示等实际读章再探测并提取。
+  /// SVG 的第三项为 1 时，前两项只表示比例，为 0 时表示已探测过绝对尺寸。
   /// 只读搜索/定位保留图片块和路径，不提取资源。
   final Map<String, List<int>> images;
+  /// EPUB 的封面文档及图片路径。旧索引首次需要时从包文档读取。
+  final List<String>? coverEntries;
 
   /// MOBI/AZW3 重建文件的摘要；备份和读章均核对，不能混用损坏或旧产物。
   final Map<String, String> publication;
@@ -84,6 +88,7 @@ class SourceContentIndex {
     if (sourceStamp != null) 'sourceStamp': sourceStamp,
     if (charset.isNotEmpty) 'charset': charset,
     'chapters': chapters,
+    if (coverEntries != null) 'coverEntries': coverEntries,
     if (images.isNotEmpty) 'images': images,
     if (publication.isNotEmpty) 'publication': publication,
     if (directMobi) 'mobiIndex': mobiIndex,
@@ -120,6 +125,7 @@ class SourceContentIndex {
       sourceBytes: json['sourceBytes'] as int,
       sourceStamp: json['sourceStamp'] as String?,
       charset: json['charset'] as String? ?? '',
+      coverEntries: (json['coverEntries'] as List?)?.cast<String>(),
       chapters: (json['chapters'] as Map).map(
         (key, value) => MapEntry(key as String, (value as List).cast<Object>()),
       ),

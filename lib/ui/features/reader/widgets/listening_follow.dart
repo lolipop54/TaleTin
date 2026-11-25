@@ -158,13 +158,16 @@ class _ListeningFollowState extends ConsumerState<ListeningFollow> {
       return;
     }
     _requested = target;
-    if (settings.settings.spreadEnabled &&
-        spreadContains(
-          ref.read(visibleSpreadProvider(widget.bookId)),
-          target,
-        )) {
-      _diagnostics.step('skip', {'reason': 'targetInVisibleSpread'});
-      return;
+    if (settings.settings.spreadEnabled) {
+      final pages = ref.read(visibleSpreadProvider(widget.bookId));
+      if (spreadShowsSession(pages, session) && spreadContains(pages, target)) {
+        // 新朗读位置已在眼前。撤销还没完成的旧追页，保留这两个纸面。
+        ref
+            .read(readerSessionProvider(widget.bookId).notifier)
+            .cancelSpeechFollow();
+        _diagnostics.step('skip', {'reason': 'targetInVisibleSpread'});
+        return;
+      }
     }
     unawaited(
       ref

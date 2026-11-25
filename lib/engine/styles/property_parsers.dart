@@ -85,15 +85,25 @@ abstract final class StyleParser {
     if (text.isEmpty) return null;
     if (text == 'auto') return allowAuto ? const AutoLength() : null;
     if (text == '0') return const PxLength(0);
-    final quantity = _quantity(text);
+    final quantity = _quantity(text, lengths: true);
     if (quantity == null) return null;
     return switch (quantity.unit) {
       'em' => EmLength(quantity.value),
+      'ch' => ChLength(quantity.value),
       'rem' => RemLength(quantity.value),
       '%' => PercentLength(quantity.value / 100),
       'px' => PxLength(quantity.value),
       'pt' => PtLength(quantity.value),
-      _ => EmLength(quantity.value),
+      'in' => PxLength(quantity.value * 96),
+      'pc' => PxLength(quantity.value * 16),
+      'cm' => PxLength(quantity.value * 96 / 2.54),
+      'mm' => PxLength(quantity.value * 96 / 25.4),
+      'q' => PxLength(quantity.value * 96 / 101.6),
+      'vw' ||
+      'vh' ||
+      'vmin' ||
+      'vmax' => ViewportLength(quantity.value, quantity.unit),
+      _ => quantity.value == 0 ? const PxLength(0) : EmLength(quantity.value),
     };
   }
 
@@ -132,7 +142,9 @@ abstract final class StyleParser {
     final text = _normalize(raw);
     if (text.isEmpty) return null;
     if (text == 'currentcolor') return ColorValue.current;
-    if (text == 'transparent') return const ColorValue(0x00000000, source: 'transparent');
+    if (text == 'transparent') {
+      return const ColorValue(0x00000000, source: 'transparent');
+    }
     if (text == 'inherit' || text == 'initial' || text == 'unset') return null;
     if (text.startsWith('#')) return _hexColor(text);
     if (text.startsWith('rgb')) return _rgbColor(text);
@@ -165,7 +177,8 @@ abstract final class StyleParser {
       '%' => RelativeFontSize(_clampFont(quantity.value / 100)),
       'rem' => RemFontSize(_clampFont(quantity.value)),
       'px' => quantity.value > 0 ? AbsoluteFontSize(quantity.value) : null,
-      'pt' => quantity.value > 0 ? AbsoluteFontSize(quantity.value * 4 / 3) : null,
+      'pt' =>
+        quantity.value > 0 ? AbsoluteFontSize(quantity.value * 4 / 3) : null,
       _ => null,
     };
   }
@@ -181,7 +194,9 @@ abstract final class StyleParser {
     }
     final quantity = _quantity(text);
     if (quantity != null && quantity.unit == '%') {
-      return quantity.value > 0 ? PercentLineHeight(quantity.value / 100) : null;
+      return quantity.value > 0
+          ? PercentLineHeight(quantity.value / 100)
+          : null;
     }
     final length = StyleParser.length(text);
     return length == null ? null : LengthLineHeight(length);
@@ -357,7 +372,8 @@ abstract final class StyleParser {
       caseSensitive: false,
     ).firstMatch(text);
     if (match == null) return null;
-    final value = (match.group(1) ?? match.group(2) ?? match.group(3) ?? '').trim();
+    final value = (match.group(1) ?? match.group(2) ?? match.group(3) ?? '')
+        .trim();
     if (value.isEmpty) return null;
     if (value.startsWith('http://') ||
         value.startsWith('https://') ||
@@ -391,9 +407,14 @@ abstract final class StyleParser {
 
   /// 拆出「数字 + 单位」。`calc()`、`min()` 等函数在这里返回 null，
   /// 表示我们不会猜它的结果。
-  static ({double value, String unit})? _quantity(String token) {
+  static ({double value, String unit})? _quantity(
+    String token, {
+    bool lengths = false,
+  }) {
     final match = RegExp(
-      r'^([+-]?(?:\d+\.?\d*|\.\d+))\s*(em|rem|%|px|pt)?$',
+      lengths
+          ? r'^([+-]?(?:\d+\.?\d*|\.\d+))(em|rem|%|px|pt|in|pc|cm|mm|q|vw|vh|vmin|vmax)?$'
+          : r'^([+-]?(?:\d+\.?\d*|\.\d+))\s*(em|rem|%|px|pt)?$',
     ).firstMatch(token);
     if (match == null) return null;
     final value = double.tryParse(match.group(1)!);
@@ -479,6 +500,15 @@ abstract final class StyleParser {
 
   static ColorValue? _hexColor(String text) {
     final hex = text.substring(1);
+    if (hex.length == 4) {
+      final rgba = int.tryParse(
+        hex.split('').map((c) => c + c).join(),
+        radix: 16,
+      );
+      return rgba == null
+          ? null
+          : ColorValue(((rgba & 255) << 24) | (rgba >> 8), source: text);
+    }
     if (hex.length == 3) {
       final r = int.tryParse(hex[0] * 2, radix: 16);
       final g = int.tryParse(hex[1] * 2, radix: 16);
@@ -488,7 +518,9 @@ abstract final class StyleParser {
     }
     if (hex.length == 6) {
       final value = int.tryParse(hex, radix: 16);
-      return value == null ? null : ColorValue(0xFF000000 | value, source: text);
+      return value == null
+          ? null
+          : ColorValue(0xFF000000 | value, source: text);
     }
     // CSS 的 #rrggbbaa：前 6 位是颜色，后 2 位是透明度。
     if (hex.length == 8) {

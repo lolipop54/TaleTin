@@ -10,6 +10,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/gt_tokens.dart';
 import '../../../core/widgets/book_cover.dart';
 import '../../../core/widgets/book_cover_resources.dart';
+import '../../../core/widgets/edge_to_edge_sheet.dart';
 import '../../../core/widgets/gt_button.dart';
 import 'shelf_action_button.dart';
 
@@ -43,17 +44,18 @@ Future<void> showBookDetailsSheet(
     context: context,
     useRootNavigator: true,
     isScrollControlled: true,
-    useSafeArea: true,
     showDragHandle: false,
     shape: const RoundedRectangleBorder(),
     backgroundColor: context.gtColors.surface,
     sheetAnimationStyle: MediaQuery.disableAnimationsOf(context)
         ? AnimationStyle.noAnimation
         : null,
-    builder: (_) => _BookDetailsSheet(
-      book: book,
-      coverPath: coverPath,
-      repository: repository,
+    builder: (_) => EdgeToEdgeSheet(
+      child: _BookDetailsSheet(
+        book: book,
+        coverPath: coverPath,
+        repository: repository,
+      ),
     ),
   );
 }

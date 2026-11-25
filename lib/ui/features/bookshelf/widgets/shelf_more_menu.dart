@@ -7,7 +7,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/gt_tokens.dart';
 import '../../../core/widgets/gt_icon.dart';
 import '../view_models/bookshelf_view_model.dart';
-import 'shelf_action_button.dart';
+import '../../../core/widgets/gt_round_action_button.dart';
 
 /// 排序与布局共用一个弹出菜单；排序沿用保存成功后才更新书架的规则。
 class ShelfMoreMenu extends ConsumerWidget {
@@ -90,7 +90,7 @@ class ShelfMoreMenu extends ConsumerWidget {
           ],
         ),
       ],
-      builder: (context, controller, _) => ShelfActionButton(
+      builder: (context, controller, _) => GtRoundActionButton(
         key: const ValueKey('shelf-more'),
         tooltip: '更多',
         icon: GtIcons.moreVertical,

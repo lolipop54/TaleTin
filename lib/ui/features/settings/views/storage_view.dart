@@ -9,6 +9,7 @@ import '../../../core/widgets/book_loading.dart';
 import '../../../core/widgets/frame_fade.dart';
 
 import '../view_models/storage_view_model.dart';
+import '../widgets/settings_action.dart';
 
 class StorageView extends ConsumerStatefulWidget {
   const StorageView({super.key});
@@ -46,10 +47,11 @@ class _StorageState extends ConsumerState<StorageView> {
   Widget build(BuildContext context) {
     final state = ref.watch(storageUsageProvider), data = state.value;
     final installed = data?.installed;
+    final windows = data?.windowsProgram;
     // 重试时 Riverpod 会保留上一次异常，但新的统计已经在进行，显示计算占位。
     final failed = state.hasError && !state.isLoading;
     return Scaffold(
-      appBar: GtAppBar(title: const Text('存储与缓存')),
+      appBar: GtAppBar.settings(title: const Text('存储与缓存')),
       body: SafeArea(
         // 页面立即打开，计算期间保持完整页面尺寸，结果就绪后再淡化交接。
         child: SizedBox.expand(
@@ -76,8 +78,21 @@ class _StorageState extends ConsumerState<StorageView> {
                         '已统计占用 ${storageSize(data.totalBytes)}',
                         style: Theme.of(context).textTheme.titleLarge,
                       ),
-                      const Text('按安装包和应用管理的文件大小统计。'),
+                      Text(
+                        windows == null
+                            ? '按安装包和应用管理的文件大小统计。'
+                            : '按应用目录和应用管理的文件大小统计。',
+                      ),
                       const SizedBox(height: 16),
+                      if (windows != null)
+                        ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('应用目录'),
+                          subtitle: Text(
+                            '含内置字体 ${storageSize(windows.bundledFontBytes)}',
+                          ),
+                          trailing: Text(storageSize(windows.directoryBytes)),
+                        ),
                       if (installed != null) ...[
                         ListTile(
                           contentPadding: EdgeInsets.zero,
@@ -112,16 +127,18 @@ class _StorageState extends ConsumerState<StorageView> {
                         trailing: Text(storageSize(data.clearableBytes)),
                       ),
                       const SizedBox(height: 16),
-                      GtButton.filled(
-                        onPressed: busy || data.clearableBytes == 0
-                            ? null
-                            : () => run(true),
-                        child: Text(busy ? '正在处理…' : '清理缓存'),
-                      ),
-                      GtButton(
-                        onPressed: busy ? null : () => run(false),
-                        child: const Text('重新统计'),
-                      ),
+                      settingsActions(context, [
+                        GtButton.filled(
+                          onPressed: busy || data.clearableBytes == 0
+                              ? null
+                              : () => run(true),
+                          child: Text(busy ? '正在处理…' : '清理缓存'),
+                        ),
+                        GtButton(
+                          onPressed: busy ? null : () => run(false),
+                          child: const Text('重新统计'),
+                        ),
+                      ]),
                     ],
                   ),
           ),

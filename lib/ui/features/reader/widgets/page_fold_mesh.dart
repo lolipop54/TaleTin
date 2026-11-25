@@ -2,6 +2,13 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui';
 
+import 'page_ink.dart';
+
+/// 正面与背面共用一个半圆柱。翻页纹理和独立页脚必须落到相同的弧面位置。
+const foldStripCount = 24;
+double projectedFoldDistance(double distance, double radius) =>
+    -radius + 2 * radius / math.pi * math.sin(math.pi * (distance + radius) / (2 * radius));
+
 /// 保留原来的 24 条卷曲带，将逐条裁切整页改成批量绘制三角形。
 /// 先画正面再画背面，各自叠加原有明暗，避免背面被正面的阴影染色。
 void paintFoldMesh(
@@ -13,8 +20,22 @@ void paintFoldMesh(
   Offset normal,
   double radius, {
   Image? backImage,
+  LeafInk? frontInk,
+  LeafInk? backInk,
 }) {
   if (radius < 0.001) return;
+  // 手指停住只刷新页脚时，离折痕很远的小窗口可以直接略过整个网格。
+  final clipBounds = canvas.getLocalClipBounds();
+  final center = clipBounds.center - midpoint;
+  final d = center.dx * normal.dx + center.dy * normal.dy;
+  final extent =
+      (clipBounds.width * normal.dx.abs() +
+          clipBounds.height * normal.dy.abs()) /
+      2;
+  if (d + extent < -radius - 1 ||
+      d - extent > projectedFoldDistance(0, radius) + 1) {
+    return;
+  }
   final shader = ImageShader(
     image,
     TileMode.clamp,
@@ -25,9 +46,6 @@ void paintFoldMesh(
   final texture = Paint()..shader = shader;
   double distance(Offset p) =>
       (p.dx - midpoint.dx) * normal.dx + (p.dy - midpoint.dy) * normal.dy;
-  double project(double d) =>
-      -radius +
-      2 * radius / math.pi * math.sin(math.pi * (d + radius) / (2 * radius));
   List<Offset> clip(List<Offset> points, double edge, bool greater) {
     final result = <Offset>[];
     for (var i = 0; i < points.length; i++) {
@@ -74,9 +92,9 @@ void paintFoldMesh(
         : (Paint()..shader = backShader);
     final positions = <Offset>[], coordinates = <Offset>[];
     final colors = <Color>[];
-    for (var i = side * 12; i < (side + 1) * 12; i++) {
-      final a = -radius + 2 * radius * i / 24;
-      final b = -radius + 2 * radius * (i + 1) / 24;
+    for (var i = side * (foldStripCount ~/ 2); i < (side + 1) * (foldStripCount ~/ 2); i++) {
+      final a = -radius + 2 * radius * i / foldStripCount;
+      final b = -radius + 2 * radius * (i + 1) / foldStripCount;
       final rect = Offset.zero & size;
       final points = clip(
         clip(
@@ -87,8 +105,9 @@ void paintFoldMesh(
         b,
         false,
       );
-      final scale = (project(b) - project(a)) / (b - a);
-      final bend = math.sin(math.pi * (i + 0.5) / 24);
+      final start = projectedFoldDistance(a, radius);
+      final scale = (projectedFoldDistance(b, radius) - start) / (b - a);
+      final bend = math.sin(math.pi * (i + 0.5) / foldStripCount);
       final shade = side == 0
           ? const Color(0xFF000000).withValues(alpha: bend * 0.24)
           : Color.alphaBlend(
@@ -99,7 +118,7 @@ void paintFoldMesh(
       for (var j = 1; j + 1 < points.length; j++) {
         for (final p in [points[0], points[j], points[j + 1]]) {
           final d = distance(p);
-          positions.add(p + normal * (project(a) + (d - a) * scale - d));
+          positions.add(p + normal * (start + (d - a) * scale - d));
           coordinates.add(
             Offset(
               p.dx * selectedImage.width / size.width,
@@ -121,6 +140,23 @@ void paintFoldMesh(
     );
     final shading = Vertices(VertexMode.triangles, positions, colors: colors);
     canvas.drawVertices(page, BlendMode.src, sideTexture);
+    final ink = side == 0 ? frontInk : backInk;
+    if (ink != null) {
+      final area = ink.bounds;
+      final d = distance(area.center);
+      final extent =
+          (normal.dx.abs() * area.width + normal.dy.abs() * area.height) / 2;
+      if (d + extent >= (side == 0 ? -radius : 0) &&
+          d - extent <= (side == 0 ? 0 : radius)) {
+        // 同一批顶点依次取正文和局部透明笔迹，最后统一画纸背透色和弯折明暗。
+        final inkShader = ink.shader(
+          Size(selectedImage.width.toDouble(), selectedImage.height.toDouble()),
+          size,
+        );
+        canvas.drawVertices(page, BlendMode.src, Paint()..shader = inkShader);
+        inkShader.dispose();
+      }
+    }
     canvas.drawVertices(shading, BlendMode.dst, Paint());
     page.dispose();
     shading.dispose();

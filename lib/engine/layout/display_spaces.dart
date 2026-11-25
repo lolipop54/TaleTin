@@ -14,8 +14,9 @@ Set<int> bookTextSymbolOffsets(String text, int from) => {
 List<TextRun> splitDisplayRuns(
   List<TextRun> runs,
   Iterable<int> isolatedOffsets,
-  int from,
-) {
+  int from, {
+  Map<int, int> nonBreakingSpaces = const {},
+}) {
   if (isolatedOffsets.isEmpty) return runs;
   final result = <TextRun>[];
   var cursor = from;
@@ -31,7 +32,11 @@ List<TextRun> splitDisplayRuns(
       result.add(
         TextRun.fromJson({
           ...run.toJson(),
-          'text': run.text.substring(cuts[i - 1] - cursor, cuts[i] - cursor),
+          'text':
+              nonBreakingSpaces.containsKey(cuts[i - 1]) &&
+                  run.text.codeUnitAt(cuts[i - 1] - cursor) == 32
+              ? '\u00a0'
+              : run.text.substring(cuts[i - 1] - cursor, cuts[i] - cursor),
         }),
       );
     }

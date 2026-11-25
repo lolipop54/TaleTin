@@ -1,3 +1,5 @@
+import 'dart:ui' as ui;
+
 import 'package:flutter/painting.dart';
 
 import 'page_canvas.dart';
@@ -21,7 +23,17 @@ class PreparedPageCache {
     page.formulaColor,
   );
 
-  int get bytes => _pages.values.fold(0, (sum, page) => sum + page.imageBytes);
+  int get bytes {
+    final counted = <String, List<ui.Image>>{};
+    return _pages.values.fold(
+      0,
+      (sum, page) => sum + page.countImageBytes(counted),
+    );
+  }
+
+  /// 超预算而未保留材料时，仍按书页本身的图片声明决定是否预绘。
+  bool hasBookImages(PageCanvas page, ImageConfiguration configuration) =>
+      _pages[_key(page, configuration)]?.hasBookImages ?? PreparedPage.needsImages(page);
 
   void retain(List<PageCanvas> pages, ImageConfiguration configuration) {
     _wanted = {for (final page in pages) _key(page, configuration)};

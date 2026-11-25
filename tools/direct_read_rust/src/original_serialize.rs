@@ -1,4 +1,4 @@
-// Copyright (c) 2026 GT Reader contributors. MIT license, see LICENSE.
+// Copyright (c) 2026 GT Reader contributors. GPL-3.0-only, see LICENSE.
 use crate::dom::{Dom, tag};
 
 fn escape(out: &mut String, text: &str, attribute: bool) {

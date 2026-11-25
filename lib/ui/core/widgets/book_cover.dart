@@ -1,7 +1,9 @@
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 
 import '../../../domain/models/book.dart';
 import '../../../domain/models/book_cover_choice.dart';
@@ -32,6 +34,7 @@ class BookCover extends StatelessWidget {
     this.format,
     this.pinned = false,
     this.radius = GtRadius.cover,
+    this.displayWidth,
   });
 
   final String bookId;
@@ -52,153 +55,184 @@ class BookCover extends StatelessWidget {
     int width, {
     bool custom = false,
   }) => ResizeImage(
-    FileImage(File(path)),
+    _fileImage(path, custom: custom),
     width: width,
     height: custom ? (width / GtSize.coverAspectRatio).ceil() : null,
     policy: ResizeImagePolicy.fit,
   );
+
+  static FileImage _fileImage(String path, {required bool custom}) {
+    final file = File(path);
+    return custom && Platform.isWindows
+        ? _DeletableCoverImage(file)
+        : FileImage(file);
+  }
 
   /// 书架传入格式；阅读记录等微型封面省略底部标识。
   final BookFormat? format;
   final bool pinned;
   final double radius;
 
+  /// 按固定宽高比显示的书架封面，直接复用网格列宽或列表缩略图宽。
+  final double? displayWidth;
+
   @override
   Widget build(BuildContext context) {
-    final spec = CoverSpec.of(bookId);
+    final width = displayWidth;
     return AspectRatio(
       aspectRatio: GtSize.coverAspectRatio,
       child: ClipRRect(
         borderRadius: BorderRadius.circular(radius),
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final w = constraints.maxWidth;
-            final labelPadding = (w * 0.05).clamp(4.0, 6.0);
-            final labelStyle = DefaultTextStyle.of(context).style.copyWith(
-              color: Colors.white,
-              fontSize: (w * 0.095).clamp(9.0, 11.0),
-              height: 1,
-              fontWeight: FontWeight.w600,
-              letterSpacing: 0.4,
-            );
-            final path = imagePath;
-            final Widget cover;
-            if (preset case final preset?) {
-              cover = PresetBookCover(
-                preset: preset,
-                title: title,
-                author: author,
-              );
-            } else if (imageBytes case final bytes?) {
-              cover = Image.memory(
-                bytes,
-                fit: BoxFit.fill,
-                gaplessPlayback: true,
-                frameBuilder: _imageFrame,
-                cacheWidth: (w * MediaQuery.devicePixelRatioOf(context))
-                    .round(),
-                errorBuilder: (context, error, stack) => _placeholder(w, spec),
-              );
-            } else if (path != null) {
-              // 只按格子宽度解码，避免大封面图占满内存
-              final cacheWidth = (w * MediaQuery.devicePixelRatioOf(context))
-                  .round();
-              cover = Image(
-                image: imageProvider(
-                  path,
-                  cacheWidth.clamp(1, 4096),
-                  custom: showImageText,
-                ),
-                gaplessPlayback: true,
-                frameBuilder: _imageFrame,
-                // 按格子尺寸拉伸填满，不裁切图片中间（宁可轻微变形也不丢内容）
-                fit: BoxFit.fill,
-                errorBuilder: (context, error, stack) => _placeholder(w, spec),
-              );
-            } else {
-              cover = _placeholder(w, spec);
-            }
-            return Stack(
-              fit: StackFit.expand,
-              children: [
-                cover,
-                if (pinned)
-                  Positioned(
-                    top: GtSpacing.s1,
-                    left: GtSpacing.s1,
-                    child: _PinBadge(size: (w * .24).clamp(18.0, 24.0)),
-                  ),
-                if (format case final format?)
-                  Positioned(
-                    right: 0,
-                    bottom: 0,
-                    width:
-                        CoverLabelMetrics.width(labelStyle) + labelPadding * 2,
-                    // 紧贴右下角，只给对角两端圆角；标签不接收点击或长按。
-                    child: IgnorePointer(
-                      child: DecoratedBox(
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF9B9B96),
-                          borderRadius: BorderRadius.only(
-                            topLeft: Radius.circular(radius),
-                            bottomRight: Radius.circular(radius),
-                          ),
-                        ),
-                        child: Padding(
-                          padding: EdgeInsets.symmetric(
-                            horizontal: labelPadding,
-                            vertical: 2,
-                          ),
-                          child: Text(
-                            format.label,
-                            maxLines: 1,
-                            textAlign: TextAlign.center,
-                            // 与封面文字一样按封面尺寸缩放，避免小封面标签溢出。
-                            textScaler: TextScaler.noScaling,
-                            style: labelStyle,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-              ],
-            );
-          },
-        ),
+        child: width == null
+            ? LayoutBuilder(
+                builder: (context, box) =>
+                    _face(context, box.maxWidth, box.maxHeight),
+              )
+            : _face(context, width, width / GtSize.coverAspectRatio),
       ),
     );
   }
 
-  Widget _imageFrame(
-    BuildContext context,
-    Widget child,
-    int? frame,
-    bool synchronous,
-  ) {
-    if (!showImageText || (!synchronous && frame == null)) return child;
-    return LayoutBuilder(
-      builder: (context, constraints) => Stack(
-        fit: StackFit.expand,
-        children: [
-          child,
-          // 沿用默认封面的居中排版；轻阴影保证浅色照片上的白字仍可辨认。
-          _centeredBlock(
-            constraints.maxWidth,
-            const CoverSpec(
-              art: CoverArt.geometric,
-              background: Colors.transparent,
-              ink: Colors.white,
-              titleColor: Colors.white,
-              authorColor: Colors.white,
-            ),
-            atBottom: false,
-            shadows: const [
-              Shadow(color: Colors.black, blurRadius: 3, offset: Offset(0, 1)),
-              Shadow(color: Colors.black54, blurRadius: 1),
-            ],
+  Widget _face(BuildContext context, double w, double h) {
+    final spec = CoverSpec.of(bookId);
+    final density = MediaQuery.devicePixelRatioOf(context);
+    final windows = defaultTargetPlatform == TargetPlatform.windows;
+    final androidShelf =
+        format != null && defaultTargetPlatform == TargetPlatform.android;
+    final sizeToShelf = androidShelf || (format != null && windows);
+    // 手机直接解码到显示宽高。Windows 按八像素取整，小幅拖动窗口时仍可复用。
+    int pixels(double extent) => windows
+        ? ((extent * density / 8).ceil() * 8).clamp(8, 4096)
+        : (extent * density).round().clamp(1, 4096);
+    ImageProvider shelfImage(ImageProvider source) => ResizeImage(
+      source,
+      width: pixels(w),
+      height: pixels(h),
+      allowUpscaling: false,
+    );
+    final labelPadding = (w * 0.05).clamp(4.0, 6.0);
+    final labelStyle = DefaultTextStyle.of(context).style.copyWith(
+      color: Colors.white,
+      fontSize: (w * 0.095).clamp(9.0, 11.0),
+      height: 1,
+      fontWeight: FontWeight.w600,
+      letterSpacing: 0.4,
+    );
+    final path = imagePath;
+    final Widget cover;
+    if (preset case final preset?) {
+      cover = PresetBookCover(preset: preset, title: title, author: author);
+    } else if (imageBytes case final bytes?) {
+      cover = Image(
+        image: sizeToShelf
+            ? shelfImage(MemoryImage(bytes))
+            : ResizeImage.resizeIfNeeded(
+                (w * density).round(),
+                null,
+                MemoryImage(bytes),
+              ),
+        fit: BoxFit.fill,
+        // 手机缩略图已经是显示像素或更小，双线性采样即可平滑亚像素滚动。
+        filterQuality: androidShelf ? FilterQuality.low : FilterQuality.medium,
+        gaplessPlayback: true,
+        frameBuilder: showImageText
+            ? (context, child, frame, synchronous) =>
+                  _imageFrame(w, child, frame, synchronous)
+            : null,
+        errorBuilder: (context, error, stack) => _placeholder(w, spec),
+      );
+    } else if (path != null) {
+      final cacheWidth = (w * density).round();
+      cover = Image(
+        image: sizeToShelf
+            ? shelfImage(_fileImage(path, custom: showImageText))
+            : imageProvider(
+                path,
+                cacheWidth.clamp(1, 4096),
+                custom: showImageText,
+              ),
+        gaplessPlayback: true,
+        filterQuality: androidShelf ? FilterQuality.low : FilterQuality.medium,
+        frameBuilder: showImageText
+            ? (context, child, frame, synchronous) =>
+                  _imageFrame(w, child, frame, synchronous)
+            : null,
+        // 按格子尺寸拉伸填满，不裁切图片中间（宁可轻微变形也不丢内容）
+        fit: BoxFit.fill,
+        errorBuilder: (context, error, stack) => _placeholder(w, spec),
+      );
+    } else {
+      cover = _placeholder(w, spec);
+    }
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        cover,
+        if (pinned)
+          Positioned(
+            top: GtSpacing.s1,
+            left: GtSpacing.s1,
+            child: _PinBadge(size: (w * .24).clamp(18.0, 24.0)),
           ),
-        ],
-      ),
+        if (format case final format?)
+          Positioned(
+            right: 0,
+            bottom: 0,
+            width: CoverLabelMetrics.width(labelStyle) + labelPadding * 2,
+            // 紧贴右下角，只给对角两端圆角；标签不接收点击或长按。
+            child: IgnorePointer(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: const Color(0xFF9B9B96),
+                  borderRadius: BorderRadius.only(
+                    topLeft: Radius.circular(radius),
+                    bottomRight: Radius.circular(radius),
+                  ),
+                ),
+                child: Padding(
+                  padding: EdgeInsets.symmetric(
+                    horizontal: labelPadding,
+                    vertical: 2,
+                  ),
+                  child: Text(
+                    format.label,
+                    maxLines: 1,
+                    textAlign: TextAlign.center,
+                    // 与封面文字一样按封面尺寸缩放，避免小封面标签溢出。
+                    textScaler: TextScaler.noScaling,
+                    style: labelStyle,
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _imageFrame(double width, Widget child, int? frame, bool synchronous) {
+    if (!synchronous && frame == null) return child;
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        child,
+        // 沿用默认封面的居中排版；轻阴影保证浅色照片上的白字仍可辨认。
+        _centeredBlock(
+          width,
+          const CoverSpec(
+            art: CoverArt.geometric,
+            background: Colors.transparent,
+            ink: Colors.white,
+            titleColor: Colors.white,
+            authorColor: Colors.white,
+          ),
+          atBottom: false,
+          shadows: const [
+            Shadow(color: Colors.black, blurRadius: 3, offset: Offset(0, 1)),
+            Shadow(color: Colors.black54, blurRadius: 1),
+          ],
+        ),
+      ],
     );
   }
 
@@ -357,6 +391,24 @@ class BookCover extends StatelessWidget {
           ),
       ],
     );
+  }
+}
+
+// Windows 的文件映射可能阻止删除正在显示的封面。读完图片字节后即可关闭文件。
+class _DeletableCoverImage extends FileImage {
+  const _DeletableCoverImage(super.file);
+
+  @override
+  ImageStreamCompleter loadImage(FileImage key, ImageDecoderCallback decode) =>
+      MultiFrameImageStreamCompleter(
+        codec: _decode(key.file, decode),
+        scale: key.scale,
+        debugLabel: key.file.path,
+      );
+
+  Future<ui.Codec> _decode(File file, ImageDecoderCallback decode) async {
+    final bytes = await file.readAsBytes();
+    return decode(await ui.ImmutableBuffer.fromUint8List(bytes));
   }
 }
 

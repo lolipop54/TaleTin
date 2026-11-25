@@ -73,6 +73,19 @@ impl Builder {
         if ignored(tag) {
             return;
         }
+        // 像 div 这样的容器在遇到下一块时才提交文字。它后面的同级图片
+        // 属于新的一行，不能粘在上一个人物的简介末尾变成行内图。
+        if tag == "img"
+            && !self.runs.is_empty()
+            && let Some((parent, index)) = parent
+            && parent.children.borrow()[..index]
+                .iter()
+                .rev()
+                .find(|s| s.name.is_some() || !s.comment && !s.text.borrow().trim().is_empty())
+                .is_some_and(|s| boundary(crate::dom::tag(s)))
+        {
+            self.flush();
+        }
         if tag == "table" {
             if self.engine.is_some() {
                 self.computed_of(n);
@@ -291,6 +304,11 @@ impl Builder {
                 self.flush();
                 self.lists.push(ListState {
                     ordered: tag == "ol",
+                    step: if tag == "ol" && attr(n, "reversed").is_some() {
+                        -1
+                    } else {
+                        1
+                    },
                     next: if tag == "ol" { ordered_start(n) } else { 1 },
                     list_style: props.list_style,
                 });
@@ -305,12 +323,12 @@ impl Builder {
                         let value =
                             match attr(n, "value").and_then(|v| v.trim().parse::<i64>().ok()) {
                                 Some(value) => {
-                                    list.next = value + 1;
+                                    list.next = value.saturating_add(list.step);
                                     value
                                 }
                                 None => {
                                     let value = list.next;
-                                    list.next += 1;
+                                    list.next = value.saturating_add(list.step);
                                     value
                                 }
                             };
@@ -322,11 +340,16 @@ impl Builder {
                 let nest = self.lists.len().saturating_sub(1) as u32 + self.quote_depth;
                 if self.source.enabled {
                     if let Some(&id) = self.element_stack.last() {
-                        let count = self.source.elements[id].parent.map(|parent| {
-                            self.source.elements[parent].children.iter().filter(|&&child| {
-                                self.source.elements[child].tag == "li"
-                            }).count() as i64
-                        }).unwrap_or(1);
+                        let count = self.source.elements[id]
+                            .parent
+                            .map(|parent| {
+                                self.source.elements[parent]
+                                    .children
+                                    .iter()
+                                    .filter(|&&child| self.source.elements[child].tag == "li")
+                                    .count() as i64
+                            })
+                            .unwrap_or(1);
                         // 只补显示资料；嵌套 p 的持久正文块号、类型及文字不变。
                         self.source.elements[id].list_ordinal = Some(ordinal.unwrap_or(count));
                     }

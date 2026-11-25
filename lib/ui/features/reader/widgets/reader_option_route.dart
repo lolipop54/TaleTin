@@ -10,6 +10,7 @@ import 'reader_panel_motion.dart';
 import 'reader_sheet.dart';
 import 'reader_toolbar.dart';
 import 'reader_control_theme.dart';
+import 'reader_desktop_layout.dart';
 
 /// 音色、定时和字体使用同一个上滑位置；根导航只负责当前子层的返回。
 Future<T?> showReaderOption<T>(
@@ -24,6 +25,7 @@ Future<T?> showReaderOption<T>(
   final vm = container.read(readerProvider.notifier);
   final parent = container.read(readerProvider).panel;
   final reduced = MediaQuery.disableAnimationsOf(context);
+  final desktop = readerUsesDesktopPanels;
   ReaderPanel? nextPanel;
   var restored = false;
   late final ReaderOptionController controller;
@@ -72,11 +74,15 @@ Future<T?> showReaderOption<T>(
                       left: 0,
                       right: 0,
                       top: 0,
-                      bottom: readerPanelBottom(context),
+                      bottom: desktop ? 0 : readerPanelBottom(context),
                       child: GestureDetector(
                         behavior: HitTestBehavior.opaque,
                         onTap: controller.close,
-                        child: Container(color: ReaderSheet.scrimOf(context)),
+                        child: ColoredBox(
+                          color: desktop
+                              ? Colors.transparent
+                              : ReaderSheet.scrimOf(context),
+                        ),
                       ),
                     ),
                     ReaderPanelViewport(
@@ -85,7 +91,9 @@ Future<T?> showReaderOption<T>(
                         child: SlideTransition(
                           position:
                               Tween(
-                                begin: const Offset(0, 1),
+                                begin: desktop
+                                    ? const Offset(.06, 0)
+                                    : const Offset(0, 1),
                                 end: Offset.zero,
                               ).animate(
                                 CurvedAnimation(
@@ -95,43 +103,70 @@ Future<T?> showReaderOption<T>(
                                 ),
                               ),
                           child: Builder(
-                            builder: (context) => shrinkWrap
-                                ? builder(context)
-                                : SizedBox(
-                                    height:
-                                        MediaQuery.sizeOf(context).height * .78,
-                                    child: builder(context),
-                                  ),
+                            builder: (context) {
+                              final panel = shrinkWrap
+                                  ? builder(context)
+                                  : SizedBox(
+                                      height:
+                                          MediaQuery.sizeOf(context).height *
+                                          (desktop ? 1 : .78),
+                                      child: builder(context),
+                                    );
+                              return ReaderPanelSurface(child: panel);
+                            },
                           ),
                         ),
                       ),
                     ),
                     if (bookId != null)
                       Positioned(
-                        left: 0,
-                        right: 0,
-                        bottom: 0,
+                        left: desktop ? null : 0,
+                        right: desktop ? 12 : 0,
+                        top: desktop ? 0 : null,
+                        bottom: desktop ? null : 0,
                         child: Consumer(
                           builder: (context, ref, _) {
                             final theme = ref
                                 .watch(readerSettingsProvider(bookId))
                                 .value!
                                 .theme;
+                            final toolbar = ReaderToolbar(
+                              showListening: !ref.watch(
+                                pdfModeProvider(bookId),
+                              ),
+                              theme: theme,
+                              blocked: parent,
+                              selected: parent,
+                              onSelect: controller.busy
+                                  ? null
+                                  : controller.close,
+                            );
+                            if (desktop) {
+                              return SafeArea(
+                                left: false,
+                                right: true,
+                                bottom: false,
+                                child: SizedBox(
+                                  // 工具栏和顶栏内区对齐，顶栏底部的分隔线不参与居中。
+                                  height:
+                                      readerDesktopHeaderHeight -
+                                      readerDesktopHeaderBottomBorder,
+                                  child: Center(
+                                    widthFactor: 1,
+                                    child: ColoredBox(
+                                      color: theme.background,
+                                      child: toolbar,
+                                    ),
+                                  ),
+                                ),
+                              );
+                            }
                             return ColoredBox(
                               color: theme.background,
                               child: SafeArea(
                                 top: false,
                                 maintainBottomViewPadding: true,
-                                child: ReaderToolbar(
-                                  showListening: !ref.watch(
-                                    pdfModeProvider(bookId),
-                                  ),
-                                  theme: theme,
-                                  blocked: parent,
-                                  onSelect: controller.busy
-                                      ? null
-                                      : controller.close,
-                                ),
+                                child: toolbar,
                               ),
                             );
                           },

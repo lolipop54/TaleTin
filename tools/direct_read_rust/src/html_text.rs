@@ -26,6 +26,21 @@ impl Builder {
             ))
         };
         let normalized = collapse(&clean);
+        // 格内只有空白时正文会裁掉它。记录所属元素，让显示层区别 nbsp、
+        // white-space:pre 和普通折叠空白，同时保留原文块号。
+        if self.source.enabled
+            && !raw.is_empty()
+            && normalized.trim().is_empty()
+            && self.element_stack.iter().any(|&i| {
+                self.source.elements[i].tag == "td" || self.source.elements[i].tag == "th"
+            })
+            && let Some(&id) = self.element_stack.last()
+        {
+            let significant = raw
+                .chars()
+                .any(|c| !matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0c'));
+            *self.source.cell_space_nodes.entry(id).or_default() |= significant;
+        }
         if normalized.is_empty() || (normalized == " " && self.runs.is_empty()) {
             return;
         }
@@ -74,8 +89,8 @@ impl Builder {
         }
         if self.source.enabled && !text.is_empty() {
             let offset = self.runs.iter().map(|r| units(&r.text)).sum::<usize>();
-            // NBSP 是作者放置的留白；旧正文仍折叠，只另记显示宽度。
-            if raw.contains('\u{a0}') {
+            // 不换行空格及全角空格可用于有意留白，正文仍按原规则折叠。
+            if raw.contains(['\u{a0}', '\u{3000}']) {
                 let chars: Vec<char> = raw.chars().collect();
                 let mut i = 0;
                 let mut position: usize = 0;
@@ -86,9 +101,14 @@ impl Builder {
                             i += 1;
                         }
                         let group = &chars[begin..i];
-                        if group.contains(&'\u{a0}') && group.len() > 1 && position >= absorbed {
-                            self.pending_spaces
-                                .push((offset + position - absorbed, group.len()));
+                        let wide = group.iter().filter(|&&c| c == '\u{3000}').count();
+                        if position >= absorbed && (wide > 0 || group.contains(&'\u{a0}')) {
+                            self.pending_spaces.push((
+                                offset + position - absorbed,
+                                group.len(),
+                                wide,
+                                group.iter().all(|&c| c == '\u{a0}'),
+                            ));
                         }
                         position += 1;
                     } else {
@@ -329,16 +349,27 @@ impl Builder {
         }
         let runs = kept;
         let final_length = runs.iter().map(|r| units(&r.text)).sum::<usize>();
-        for (raw, count) in spaces {
+        for (raw, count, wide, non_breaking) in spaces {
             let at = block_offset(raw, &raw_lengths, &kept_index, &kept_leading, &runs);
             let end = block_offset(raw + 1, &raw_lengths, &kept_index, &kept_leading, &runs);
-            if end > at {
+            if wide > 0 && at > 0 && at < final_length {
+                // 独立样式的空白 run 可能被整个裁掉；仍在相邻文字之间保留留白。
+                self.source.wide_spaces.push([self.blocks.len(), at, wide]);
+            } else if wide == 0 && count > 1 && end > at {
                 self.source.spaces.push([self.blocks.len(), at, count]);
+            }
+            if non_breaking && end > at {
+                self.source
+                    .non_breaking_spaces
+                    .push([self.blocks.len(), at, count]);
             }
         }
         for (id, raw_offset) in std::mem::take(&mut self.source_anchors) {
             let offset = block_offset(raw_offset, &raw_lengths, &kept_index, &kept_leading, &runs);
-            let after = offset > 0 && offset == final_length;
+            // 段末的 br 即使正文占位已被裁掉，仍结束本段的一行。保留它的
+            // 段内位置，才不会把连续 br 的空行算进下一段或丢在章节末尾。
+            let after =
+                offset > 0 && offset == final_length && self.source.elements[id].tag != "br";
             self.source.set_anchor(
                 id,
                 self.blocks.len() + usize::from(after),
@@ -523,6 +554,9 @@ impl Builder {
                 }
                 if let Some(alt) = image.block.get("alt") {
                     value["a"] = alt.clone();
+                }
+                if let Some(flag) = image.block.get("altIsFootnote") {
+                    value["altIsFootnote"] = flag.clone();
                 }
                 if let Some(link) = image.block.get("noteLink") {
                     value["nl"] = link.clone();

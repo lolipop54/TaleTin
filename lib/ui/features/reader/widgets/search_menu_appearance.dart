@@ -26,7 +26,7 @@ class SearchMenuAppearance {
     Offset(134, 41),
     Offset(154, 23),
   ];
-  static const labels = ['上一个搜索结果', '回到搜索前位置', '下一个搜索结果', '取消搜索导航'];
+  static const labels = ['上一个搜索结果', '返回全文搜索', '下一个搜索结果', '取消搜索导航'];
   double get menuWidth => returnProgress ? 142 : width;
   Rect get menuBody =>
       returnProgress ? const Rect.fromLTWH(6, 22, 130, 40) : body;

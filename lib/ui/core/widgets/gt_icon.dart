@@ -34,6 +34,7 @@ abstract final class GtIcons {
   static const toc = 'toc';
   // 阅读控制
   static const bookmarkFilled = 'bookmark-filled';
+  static const readerSearch = 'reader-search';
   static const brightness = 'brightness';
   static const headphones = 'headphones';
   static const autoRead = 'auto-read';

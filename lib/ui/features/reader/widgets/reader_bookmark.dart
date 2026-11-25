@@ -60,8 +60,7 @@ final currentBookmarkProvider = Provider.autoDispose.family<Bookmark?, String>((
   final marks = ref.watch(bookmarksProvider(id)).value ?? const <Bookmark>[];
   final original = ref.watch(originalPageBookmarksProvider(id));
   final spread =
-      ref.watch(readerSettingsProvider(id)).value?.settings.spreadEnabled ==
-          true
+      session.layout?.options.settings.spreadEnabled == true && !session.scrolling
       ? ref.watch(visibleSpreadProvider(id))
       : const <SpreadPageRef>[];
   for (final mark in marks) {
@@ -105,9 +104,9 @@ Future<void> toggleReaderBookmark(WidgetRef ref, String id) async {
       'id': mark.id,
       'locator': bookmarkTraceLocator(mark.locator),
     });
-    final spread =
-        ref.read(readerSettingsProvider(id)).value?.settings.spreadEnabled ==
-        true;
+    final spread = session.isOriginal
+        ? ref.read(readerSettingsProvider(id)).value?.settings.spreadEnabled == true
+        : session.layout?.options.settings.spreadEnabled == true && !session.scrolling;
     final visible = ref.read(visibleSpreadProvider(id));
     final original = ref.read(originalPageBookmarksProvider(id));
     // 横屏前左右两页可能各有历史书签；共用条带取消时一并移除这组可见书签。
@@ -153,6 +152,23 @@ Future<void> toggleReaderBookmark(WidgetRef ref, String id) async {
       'locator': bookmarkTraceLocator(locator),
     });
   }
+}
+
+/// 下拉时手势层接管条带，纸面直接显示条带底下的真实图文。
+class BookmarkPullScope extends InheritedWidget {
+  const BookmarkPullScope({
+    super.key,
+    required this.active,
+    required super.child,
+  });
+  final bool active;
+  static bool activeOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<BookmarkPullScope>()?.active ??
+      false;
+
+  @override
+  bool updateShouldNotify(BookmarkPullScope oldWidget) =>
+      active != oldWidget.active;
 }
 
 /// 分页时垂直手势与横向翻页在同一个手势竞技场竞争；滚动不注册下拉手势。
@@ -294,6 +310,10 @@ class _BookmarkLayerState extends ConsumerState<ReaderBookmarkLayer>
         _pendingPage ==
         (anchor?.chapterId, anchor?.blockId, anchor?.utf16Offset);
     final pending = _awaitingRibbon && samePage;
+    final simplified =
+        session != null &&
+        !session.isOriginal &&
+        !ref.watch(pdfModeProvider(widget.bookId));
     final original = ref.watch(originalPageBookmarksProvider(widget.bookId));
     // 只有网页原书需要等待DOM回报；PDF书签直接画在原页画布上。
     // 否则PDF会一直等待不存在的DOM信号，过渡条带也无法结束。
@@ -393,9 +413,12 @@ class _BookmarkLayerState extends ConsumerState<ReaderBookmarkLayer>
                     );
                     return Stack(
                       children: [
-                        widget.child,
+                        BookmarkPullScope(
+                          active: simplified && (pulling || pending),
+                          child: widget.child,
+                        ),
                         // 拖动时条带留在背后的提示区，不能跟着纸面再出现一条。
-                        if (pulling || pending)
+                        if (!simplified && painted && (pulling || pending))
                           Positioned(
                             top: widget.topInset,
                             right: _ribbonRight - 3,

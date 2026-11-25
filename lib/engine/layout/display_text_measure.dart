@@ -52,16 +52,20 @@ extension _DisplayTextMeasurement on BlockMeasurer {
   /// 多段显示范围可有不同宽度，合并后仍用同一块的字符坐标。
   MeasuredBlock _mergeDisplayText(
     ContentBlock block,
-    List<MeasuredBlock> parts,
-  ) {
+    List<MeasuredBlock> parts, {
+    Map<MeasuredBlock, int> lineLimits = const {},
+    MeasuredBlock? wholeParagraph,
+    List<({double left, double right})>? floatIntervals,
+  }) {
     final runs = <TextRun>[], styles = <TextStyle>[];
     final lines = <MeasuredLine>[];
     final images = <InlineImagePlacement>[];
     final boxes = <InlineBoxPlacement>[];
     final frames = <ContainerBoxFrame>[];
     var cursor = 0, height = 0.0;
-    for (final part in parts) {
+    for (final (index, part) in parts.indexed) {
       final lineBase = lines.length;
+      final count = lineLimits[part] ?? part.lines.length;
       if (part.isDecoration && part.height > 0) {
         // 空盒子有显示高度，没有正文字符；零长度行保持所有原文偏移连续。
         lines.add(
@@ -70,10 +74,11 @@ extension _DisplayTextMeasurement on BlockMeasurer {
             end: cursor,
             height: part.height,
             width: 0,
+            floatInterval: floatIntervals?[index],
           ),
         );
       }
-      for (var i = 0; i < part.lines.length; i++) {
+      for (var i = 0; i < count; i++) {
         final line = part.lines[i];
         final left = part.inset + part.horizontalOffset(i, part.layoutWidth!);
         final segments = line.segments.isNotEmpty
@@ -103,6 +108,8 @@ extension _DisplayTextMeasurement on BlockMeasurer {
             hardBreak: line.hardBreak || i == part.lines.length - 1,
             hyphenated: line.hyphenated,
             textTop: line.textTop + top,
+            stacked: line.stacked,
+            floatInterval: floatIntervals?[index],
             segments: [
               for (final s in segments)
                 MeasuredSegment(
@@ -120,6 +127,7 @@ extension _DisplayTextMeasurement on BlockMeasurer {
         );
       }
       for (final image in part.inlineImages) {
+        if (image.line >= count) continue;
         images.add(
           InlineImagePlacement(
             offset: cursor + image.offset,
@@ -132,12 +140,15 @@ extension _DisplayTextMeasurement on BlockMeasurer {
             size: image.size,
             resourcePath: image.resourcePath,
             alt: image.alt,
+            imageFit: image.imageFit,
             formula: image.formula?.shifted(cursor),
             noteLink: image.noteLink,
+            altIsFootnote: image.altIsFootnote,
           ),
         );
       }
       for (final b in part.inlineBoxes) {
+        if (b.line >= count) continue;
         boxes.add(
           InlineBoxPlacement(
             span: InlineBoxSpan(
@@ -169,7 +180,7 @@ extension _DisplayTextMeasurement on BlockMeasurer {
             elementId: f.elementId,
             box: f.box,
             first: f.first,
-            last: f.last,
+            last: f.last && count == part.lines.length,
             left: f.left,
             width: f.width,
             top: f.top,
@@ -179,19 +190,27 @@ extension _DisplayTextMeasurement on BlockMeasurer {
           ),
         );
       }
-      runs.addAll(part.runs);
-      styles.addAll(part.runStyles);
-      cursor += part.text.length;
-      height += part.height;
+      if (wholeParagraph == null) {
+        runs.addAll(part.runs);
+        styles.addAll(part.runStyles);
+      }
+      cursor += count == part.lines.length
+          ? part.text.length
+          : part.lines[count - 1].end;
+      height += count == part.lines.length
+          ? part.height
+          : part.bodyTop +
+                part.lines.take(count).fold(0.0, (n, l) => n + l.height);
     }
     final first = parts.first;
     return MeasuredBlock(
       blockId: block.id,
       kind: block.kind,
       level: block.level,
-      text: parts.map((p) => p.text).join(),
-      runs: runs,
-      runStyles: styles,
+      text: wholeParagraph?.text ?? parts.map((p) => p.text).join(),
+      runs: wholeParagraph?.runs ?? runs,
+      textStyle: wholeParagraph?.textStyle ?? first.textStyle,
+      runStyles: wholeParagraph?.runStyles ?? styles,
       lines: lines,
       height: height,
       layoutWidth: options.contentWidth,
@@ -201,51 +220,13 @@ extension _DisplayTextMeasurement on BlockMeasurer {
       markerInset: first.markerInset,
       marginTop: first.marginTop,
       marginBottom: parts.last.marginBottom,
+      flowMargins: first.flowMargins != null || parts.last.flowMargins != null
+          ? BlockMargins(first.leadingMargin, parts.last.trailingMargin)
+          : null,
       containerBoxes: frames,
       inlineImages: images,
       inlineBoxes: boxes,
     );
-  }
-}
-
-extension FloatTextMeasurement on BlockMeasurer {
-  MeasuredBlock wrapBesideFloat(
-    ContentBlock block,
-    BlockMeasurer fullWidth,
-    double heightBeside, {
-    required bool withIndent,
-  }) {
-    final narrow = measure(block, withIndent: withIndent);
-    if (narrow.height <= heightBeside || narrow.lines.length < 2) return narrow;
-    var y = narrow.bodyTop;
-    for (var i = 0; i + 1 < narrow.lines.length; i++) {
-      y += narrow.lines[i].height;
-      if (y < heightBeside - .1) continue;
-      final end = narrow.lines[i].end - narrow.displayPrefixLength;
-      // 同一偏移也可能有图片。只在图片会自然落入后半段的行界处重排。
-      if (end <= 0 ||
-          end >= block.runLength ||
-          narrow.inlineImages.any(
-            (p) => p.line <= i && p.offset - narrow.displayPrefixLength == end,
-          )) {
-        continue;
-      }
-      final head = _measureText(
-        _sliceDisplayBlock(block, 0, end),
-        withIndent: withIndent,
-      );
-      if (head.lines.length != i + 1 ||
-          head.height - head.bodyBottom < heightBeside - .1) {
-        continue;
-      }
-      final tail = fullWidth._measureText(
-        _sliceDisplayBlock(block, end, block.runLength),
-        withIndent: false,
-        sourceOffset: end,
-      );
-      return _mergeDisplayText(block, [head, tail]);
-    }
-    return narrow;
   }
 }
 

@@ -19,6 +19,7 @@ import '../../domain/repositories/chapter_content_repository.dart';
 import '../../engine/layout/english_hyphenation.dart';
 import '../../engine/normalization/text_decoding.dart';
 import '../../engine/parsers/epub/epub_archive.dart';
+import '../../core/io/publication_cache_path.dart';
 import '../../engine/parsers/epub/epub_sanitizer.dart';
 import '../../engine/parsers/epub/epub_source_reader.dart';
 import '../../engine/parsers/epub/xhtml_blocks.dart';
@@ -138,8 +139,15 @@ class EpubSourceWorker {
   Future<String?> document(String entry) async =>
       await _request('document', entry) as String?;
 
-  Future<({Uint8List bytes, String digest})?> fontResource(String entry) async {
+  Future<({Uint8List bytes, String digest})?> fontResource(
+    String entry, {
+    required void Function() onAbsent,
+  }) async {
     final result = await _request('font_resource', entry);
+    if (result == false) {
+      onAbsent();
+      return null;
+    }
     if (result == null) return null;
     final (data, digest) = result as (TransferableTypedData, String);
     return (bytes: data.materialize().asUint8List(), digest: digest);
@@ -316,7 +324,12 @@ Future<void> _run(_Start start) async {
               );
             }
           case 'font_resource':
-            final bytes = await store.load(entry!);
+            // 只有完整归档确认没有的条目才可记住；读取失败仍允许下次重试。
+            if (!reader!.containsEntry(entry!)) {
+              result = false;
+              break;
+            }
+            final bytes = await store.load(entry);
             if (bytes != null) {
               result = (
                 TransferableTypedData.fromList([bytes]),
@@ -410,18 +423,9 @@ class _Resources {
 
   File _cached(String entry) => File(
     cache != null && !_chapters.contains(entry)
-        ? p.join(cache!.directory, 'assets', entry)
-        : p.join(originalDirectory, entry),
+        ? p.join(cache!.directory, 'assets', publicationCachePath(entry))
+        : p.join(originalDirectory, publicationCachePath(entry)),
   );
-
-  String get _previousDirectory => p.joinAll([
-    start.cacheRoot,
-    'original',
-    start.bookId,
-    '${start.version}',
-    ?sourceDigest,
-    start.dictionary == null ? 'source1' : 'hyphen1',
-  ]);
 
   void _track(String entry, Uint8List bytes) {
     final store = cache;
@@ -526,8 +530,6 @@ class _Resources {
         final cached = _cached(entry);
         try {
           if (cached.existsSync()) return cached.readAsBytesSync();
-          final previous = File(p.join(_previousDirectory, entry));
-          if (previous.existsSync()) return previous.readAsBytesSync();
         } on FileSystemException {
           /* Rebuild a reclaimed entry below. */
         }
@@ -541,26 +543,17 @@ class _Resources {
           'content',
           '${start.version}',
           'res',
-          entry,
+          publicationCachePath(entry),
         ),
       );
       final cached = _cached(entry);
-      if (await imported.exists()) {
+      if ((cache == null || persistentImages.contains(entry)) && await imported.exists()) {
         try {
-          if (cache != null &&
-              !persistentImages.contains(entry) &&
-              !_chapters.contains(entry)) {
-            cache!.adopt(imported, cached);
-          } else {
-            trace?.details['hit'] = 'imported';
-            return await imported.readAsBytes();
-          }
+          trace?.details['hit'] = 'imported';
+          return await imported.readAsBytes();
         } on FileSystemException {
-          // 简化会话可能同时把旧图片接到共享目录；继续从共享文件或原书读取。
+          // 导入资源已不可读时，从归档重新读取。
         }
-      }
-      if (cache != null && !cached.existsSync()) {
-        cache!.adopt(File(p.join(_previousDirectory, entry)), cached);
       }
       cache?.preparing(cached);
       if (await cached.exists()) {

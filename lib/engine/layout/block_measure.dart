@@ -9,26 +9,37 @@ library;
 import 'dart:math' as math;
 
 import 'package:flutter/painting.dart';
+import 'package:characters/characters.dart';
 
 import '../../core/diagnostics/app_errors.dart';
 import 'math_typesetting.dart';
 import 'math_formula.dart';
+import 'book_language.dart';
 import 'fixed_indent.dart';
+import 'measured_paragraphs.dart';
+import 'float_line_space.dart';
 
 import '../../domain/models/book_document.dart';
+import '../../domain/models/display_source_index.dart';
 import '../../domain/models/reading_settings.dart';
 import '../styles/style_table.dart';
 import '../styles/computed_style.dart';
 import '../styles/style_box_value.dart';
 import '../styles/style_value.dart';
 import 'resolve_block_box.dart';
+import 'table_layout.dart' show measureEmptyGrid;
 import 'block_style_resolver.dart';
 import 'display_tree.dart';
+import 'display_role.dart';
 import 'display_semantics.dart';
 import 'display_link_semantics.dart';
 import 'display_spaces.dart';
 import 'display_position.dart';
 import 'display_box_layout.dart';
+import 'book_image_fit.dart';
+import 'gallery_layout.dart';
+import 'line_text_geometry.dart';
+import 'box_size_resolver.dart';
 import 'layout_options.dart';
 import 'measured_block.dart';
 import 'english_hyphenation.dart';
@@ -37,18 +48,28 @@ import 'edge_aligned_text_painter.dart';
 import 'block_measurement_cache.dart';
 import 'run_style_resolver.dart';
 import 'ruby_source.dart';
+import 'vertical_margins.dart';
 
 part 'inline_text_measure.dart';
+part 'inline_text_wrapping.dart';
+part 'inline_line_spacing.dart';
+
+part 'inline_composed_rows.dart';
+part 'inline_text_box.dart';
 part 'block_box_measure.dart';
 part 'block_inset_measure.dart';
 part 'divider_measure.dart';
 part 'code_block_measure.dart';
+part 'readable_text_gap.dart';
 part 'display_empty_measure.dart';
 part 'text_block_measure.dart';
 part 'display_text_measure.dart';
 part 'math_block_measure.dart';
 part 'hyphen_line_fit.dart';
 part 'inline_image_measure.dart';
+part 'image_wrapper_measure.dart';
+part 'block_image_measure.dart';
+part 'float_text_measure.dart';
 
 class BlockMeasurer {
   BlockMeasurer(
@@ -57,18 +78,28 @@ class BlockMeasurer {
     this.displayTree,
     this.formulaTree,
     this.flatNest = false,
+    this.authorTableCell = false,
     this.tableBody = false,
-    this.floatInsets,
+    this.normalFlow = true,
+    this.paginated = true,
+    this.outOfFlow = const {},
+    this.floatLineEdges,
+    this.floatContentWidth,
+    this.paragraphs,
     BlockMeasurementCache? cache,
   }) : _cache = cache ?? BlockMeasurementCache();
   final BlockMeasurementCache _cache;
+  final MeasuredParagraphs? paragraphs;
   Future<void>? _mathPreparation;
   Map<int, Set<int>>? _displayFormulaStarts;
   // 一个测量器的排版参数固定；长章反复使用相同样式，不必逐段重新构造。
   final _styles = <Object, TextStyle>{};
+  final _listWidths = <int, double>{};
+  final _markerWidths = <(String, TextStyle), double>{};
   int cacheHits = 0, measuredBlocks = 0;
 
   final LayoutOptions options;
+  late final _readableTextGap = _ReadableTextGap(options);
 
   /// 这一章的样式表；块按 `styleId` 从它取样式，没有表时按默认样式排版。
   final StyleTable? styleTable;
@@ -83,9 +114,16 @@ class BlockMeasurer {
   /// 嵌套缩进，否则每格文字可用宽度会少掉两字，宽词被过早拆行。
   final bool flatNest;
 
+  /// 精排表格用书内字号测图文和以 em 为单位的格内尺寸。
+  final bool authorTableCell;
+
   /// 普通表格单元格正文沿用阅读器两端对齐，表头仍遵守作者对齐。
   final bool tableBody;
-  final ({int parentId, double left, double right})? floatInsets;
+  final bool normalFlow;
+  final bool paginated;
+  final Set<int> outOfFlow;
+  final ({double left, double right})? floatLineEdges;
+  final ({int elementId, double width})? floatContentWidth;
 
   /// 章题装饰块使用的块 ID：它不是正文块，正文拼接校验时跳过。
   static const String titleBlockId = '__chapter_title__';
@@ -108,6 +146,8 @@ class BlockMeasurer {
       block,
       styleTable,
       options.contentSize,
+      options.paperInset,
+      options.paperBottomInset,
       options.textScaler,
       s.fontFamily,
       s.useBookFontsInSimplified,
@@ -120,8 +160,12 @@ class BlockMeasurer {
       withIndent,
       asChapterTitle,
       flatNest,
+      authorTableCell,
       tableBody,
-      floatInsets,
+      normalFlow,
+      paginated,
+      floatLineEdges,
+      floatContentWidth,
       EnglishHyphenation.isPrepared,
       sourceOffset,
       displayTree?.formulas.length ?? 0,
@@ -137,6 +181,29 @@ class BlockMeasurer {
       asChapterTitle: asChapterTitle,
       sourceOffset: sourceOffset,
     );
+    final tree = displayTree;
+    final index = tree?.blockIndexById[block.id];
+    final legend = tree?.legends[index];
+    if (legend != null && result.lines.isNotEmpty) {
+      final style = styleTable?[legend.element.styleId ?? 0];
+      final available = result.layoutWidth ?? options.contentWidth;
+      final width = style?.size.width == null
+          ? result.lines
+                .fold<double>(0, (v, l) => math.max(v, l.left + l.width))
+                .clamp(1.0, available)
+          : available;
+      final margin = style?.block.margin;
+      final offset = margin?.left?.isAuto == true
+          ? (available - width) / (margin?.right?.isAuto == true ? 2 : 1)
+          : 0;
+      result = result.withBoxEdges(
+        first: result.boxFirst,
+        last: result.boxLast,
+        contentInset: result.inset + offset,
+        contentWidth: width,
+        legendFieldset: legend.parent!.element.id,
+      );
+    }
     final pageTop = DisplayPosition.topOf(
       _styleOf(block).computed,
       options,
@@ -214,8 +281,16 @@ class BlockMeasurer {
   /// 返回的是显示副本，`styleId`、链接和脚注标记原样保留；没有样式表的旧正文
   /// 仍按片段自带字段显示（见 [ResolvedRunStyle.of]）。
   List<TextRun> _resolveRuns(List<TextRun> runs) => [
-    for (final run in runs) ResolvedRunStyle.of(run, styleTable).applyTo(run),
+    for (final run in runs) _runStyleOf(run).applyTo(run),
   ];
+
+  ResolvedRunStyle _runStyleOf(TextRun run) => ResolvedRunStyle.of(
+    run,
+    styleTable,
+    tableFontRoot: authorTableCell
+        ? options.settings.fontSize.toDouble()
+        : null,
+  );
 
   MeasuredBlock _measure(
     ContentBlock block, {
@@ -475,19 +550,28 @@ class BlockMeasurer {
   ///
   /// 取第 [index] 行的起始偏移。
   ///
-  /// 行起点用「该行垂直中点、水平最左」这一位置的字符位置来取；取到的位置必然
-  /// 落在字素簇边界上，并且与前一行结尾天然衔接，保证拼回来不漏字、不重复。
+  /// 用行内位置向排版引擎查询逻辑行首。双向文字的视觉左端可能是本行结尾。
   int _lineStartAt(
     TextPainter painter,
     List<LineMetrics> metrics,
     int index,
-    int fallback,
-  ) {
+    int fallback, {
+    bool simpleLtr = false,
+  }) {
     // 不累计行盒高度猜字形位置：混合字体的基线不同，应直接用该行真实基线。
     final y = metrics[index].baseline - metrics[index].ascent / 2;
-    final position = painter.getPositionForOffset(Offset(0, y));
-    // 防御：极端情况下拿到的位置不比上一行前进时，退回上一行行尾
-    return position.offset > fallback ? position.offset : fallback;
+    if (simpleLtr) {
+      return math.max(
+        fallback,
+        painter.getPositionForOffset(Offset(0, y)).offset,
+      );
+    }
+    final line = metrics[index];
+    final interior = painter.getPositionForOffset(
+      Offset(line.left + line.width / 2, y),
+    );
+    final start = painter.getLineBoundary(interior).start;
+    return math.max(fallback, start);
   }
 
   /// 把祖先容器换算成这一块上的外框，供背景、边框和圆角绘制。
@@ -505,77 +589,6 @@ class BlockMeasurer {
   /// 图片块按内容宽度等比缩放；超过一页正文高度时缩到能放进一页，不裁切
   /// （实现计划第 10 节决定 1）。
   ///
-  /// 图片如果落在书内的引用框／背景框里，左右内边距要缩小可用宽度，
-  /// 上下内边距计入块高度，盒子才会连续地包住图片。
-  MeasuredBlock _measureImage(ContentBlock block) {
-    final style = _styleOf(block);
-    final spacing = _insetOf(block, style);
-    final box = spacing.box;
-    final maxWidth = options.contentWidth - spacing.left - spacing.rightSpace;
-    final maxHeight =
-        options.contentHeight - (box?.insetTop ?? 0) - spacing.outerTop;
-    final containerBoxes = _containerFramesOf(spacing, maxWidth);
-    final bodyTop = (box?.insetTop ?? 0) + spacing.outerTop;
-    final bodyBottom = (box?.insetBottom ?? 0) + spacing.outerBottom;
-    final rawWidth = (block.resourceWidth ?? 0).toDouble();
-    final rawHeight = (block.resourceHeight ?? 0).toDouble();
-    // 尺寸嗅探失败时按 1:1 兜底（设计文档 6.2）
-    var width = rawWidth > 0 ? rawWidth : maxWidth;
-    var height = rawHeight > 0 ? rawHeight : width;
-
-    // 书里写了 width／max-width 就按书的来，但绝不能超过正文宽度。
-    final explicit = _imageLength(style.rawImageWidth, maxWidth);
-    final cap = _imageLength(style.rawImageMaxWidth, maxWidth);
-    // 像素多只代表源图清晰，不能覆盖作者给的百分比显示宽度。
-    // 否则同一插图换成高清资源后，会从 40% 等比例突然变成满宽。
-    if (explicit != null && explicit > 0) {
-      final ratio = rawWidth > 0 ? explicit / rawWidth : 1.0;
-      width = explicit;
-      height = rawHeight > 0 ? rawHeight * ratio : explicit;
-    }
-    if (cap != null && cap > 0 && width > cap) {
-      final ratio = cap / width;
-      width = cap;
-      height = height * ratio;
-    }
-
-    var scale = math.min(1.0, maxWidth / width);
-    if (height * scale > maxHeight) {
-      scale = math.min(scale, maxHeight / height);
-    }
-    final size = Size(width * scale, height * scale);
-    return MeasuredBlock(
-      blockId: block.id,
-      kind: BlockKind.image,
-      imageSize: size,
-      resourcePath: block.resourcePath,
-      alt: block.alt,
-      noteLink: block.noteLink,
-      inset: spacing.left,
-      layoutWidth: maxWidth,
-      height: size.height + bodyTop + bodyBottom,
-      box: box,
-      boxId: block.boxId,
-      containerBoxes: containerBoxes,
-      bodyTop: bodyTop,
-      bodyBottom: bodyBottom,
-    );
-  }
-
-  /// 把图片的 `[数值, 单位]` 换算成像素。数值是单位的 1/100；
-  /// 单位 1 百分比（按正文宽度）、2 em（按正文字号）、3 px。
-  double? _imageLength(List<int>? spec, double contentWidth) {
-    if (spec == null || spec.length < 2) return null;
-    final value = spec[0].toDouble();
-    final pixels = switch (spec[1]) {
-      1 => contentWidth * value / 10000,
-      2 => options.settings.fontSize * value / 100,
-      3 => value / 100,
-      _ => 0.0,
-    };
-    return pixels > 0 ? pixels : null;
-  }
-
   /// 把缩进前缀加入 runs，让「块文本 == runs 拼接」始终成立。
   static List<TextRun> _withPrefix(
     List<TextRun> runs,
@@ -621,46 +634,22 @@ class BlockMeasurer {
     ];
   }
 
-  /// 块之间是否需要段距：表格外的所有文本块之间都补，图片与分隔线自带留白。
-  ///
-  /// 同一个盒子容器里的连续块不补段距：背景与左右边框要连成一整块。
-  double gapBefore(MeasuredBlock previous, MeasuredBlock current) {
-    // 新显示框的身份来自真实来源元素，直接文字、表格和空元素也能共用。
-    // 旧 boxId 只在没有显示树资料时负责兼容，不能把同一容器切出额外段距。
-    final shared = previous.containerBoxes.map((f) => f.elementId).toSet();
-    if (current.containerBoxes.any((f) => shared.contains(f.elementId))) {
-      return 0;
-    }
-    if (current.isDecoration && !current.isTitleDecoration) {
-      return math.max(previous.marginBottom, current.marginTop);
-    }
-    if (previous.isDecoration && previous.kind == BlockKind.divider) {
-      // hr 的高度和 CSS 外边距已进入测量，不再在线后叠一份阅读器段距。
-      return math.max(previous.marginBottom, current.marginTop);
-    }
-    if (previous.isDecoration && !previous.isTitleDecoration) {
-      final first = previous.decorationAtStart;
-      final base = first
-          ? 0.0
-          : (options.gapBefore(previous.kind, current.kind) ??
-                options.paragraphGap);
-      return math.max(base, math.max(previous.marginBottom, current.marginTop));
-    }
-    if (previous.boxId != null && previous.boxId == current.boxId) return 0;
-    if (current.kind == BlockKind.divider) return options.paragraphGap;
-    final base =
-        options.gapBefore(previous.kind, current.kind) ?? options.paragraphGap;
-    return math.max(base, math.max(previous.marginBottom, current.marginTop));
-  }
-
   /// 字号等参数变化后重新构造测量器（缓存键已包含全部参数，无需手动失效）
-  BlockMeasurer withOptions(LayoutOptions next) => BlockMeasurer(
+  BlockMeasurer withOptions(
+    LayoutOptions next, {
+    bool? normalFlow,
+    ({int elementId, double width})? floatContentWidth,
+  }) => BlockMeasurer(
     next,
     styleTable: styleTable,
     displayTree: displayTree,
     formulaTree: formulaTree,
     flatNest: flatNest,
+    authorTableCell: authorTableCell,
     tableBody: tableBody,
+    normalFlow: normalFlow ?? this.normalFlow,
+    floatContentWidth: floatContentWidth,
+    paginated: paginated,
     cache: _cache,
   );
 }

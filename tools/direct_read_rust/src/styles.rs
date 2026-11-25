@@ -1,4 +1,4 @@
-// Copyright (c) 2026 GT Reader contributors. MIT license, see LICENSE.
+// Copyright (c) 2026 GT Reader contributors. GPL-3.0-only, see LICENSE.
 // Book stylesheet matching for the simplified layout.
 //
 // The stylesheet is parsed once at import time by Dart into a whitelisted,

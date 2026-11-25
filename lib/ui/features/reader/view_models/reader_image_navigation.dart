@@ -11,14 +11,9 @@ extension ReaderImageNavigation on ReaderSessionNotifier {
         !current.scrolling &&
         current.layout?.options.settings.spreadEnabled == true) {
       final pages = _sessionRef.read(visibleSpreadProvider(bookId));
-      // 直接跳到已在右侧的图片会把它当成新的左页。只用与当前会话
-      // 对得上的画面来判断，避免把换页期间还显示的旧页当成当前页。
-      if (pages.isNotEmpty &&
-          pages.first.layout.samePageAs(
-            current.layout,
-            pages.first.pageIndex,
-            current.pageIndex,
-          ) &&
+      // 当前两页中已有这张图就保留原来的阅读位置。换页期间，
+      // 屏幕上还保留的旧画面不能算作新落点。
+      if (spreadShowsSession(pages, current) &&
           spreadContains(pages, locator)) {
         return;
       }
@@ -73,7 +68,7 @@ extension ReaderImageNavigation on ReaderSessionNotifier {
       }
     } else if (session.layout case final layout?
         when layout.options.settings.spreadEnabled) {
-      await _goToImageSpread(session, layout, locator, onStep);
+      await _goToImageSpread(locator, onStep);
     } else {
       onStep?.call('returnToSinglePage');
       await goToLocator(locator, manual: false);
@@ -83,21 +78,12 @@ extension ReaderImageNavigation on ReaderSessionNotifier {
   }
 
   Future<void> _goToImageSpread(
-    ReaderSession session,
-    ChapterLayout layout,
     Locator locator,
     void Function(String step, [SpreadPageRef? spreadLeft])? onStep,
   ) async {
-    cancelProgressNavigation();
-    final origin = (layout: layout, pageIndex: session.pageIndex);
     onStep?.call('findSpread');
-    final left = await _spreadLeftForImage(session, origin, locator);
-    if (!_sessionRef.mounted) return;
-    onStep?.call('commitSpread', left);
-    if (_visualPresenters.isEmpty) {
-      await commitSpreadPage(origin, left);
-      return;
-    }
+    await goToLocator(locator, manual: false);
+    if (!_sessionRef.mounted || _visualPresenters.isEmpty) return;
     final shown = Completer<void>();
     // 等双页和图片都上屏后再撤掉看图窗口，避免关掉时先露出旧页。
     final subscription = _sessionRef.listen(visibleSpreadProvider(bookId), (
@@ -106,17 +92,11 @@ extension ReaderImageNavigation on ReaderSessionNotifier {
     ) {
       if (!shown.isCompleted &&
           pages.isNotEmpty &&
-          left.layout.samePageAs(
-            pages.first.layout,
-            left.pageIndex,
-            pages.first.pageIndex,
-          ) &&
           spreadContains(pages, locator)) {
         shown.complete();
       }
     }, fireImmediately: true);
     try {
-      await commitSpreadPage(origin, left);
       onStep?.call('waitForVisibleSpread');
       await shown.future.timeout(const Duration(seconds: 10));
     } finally {

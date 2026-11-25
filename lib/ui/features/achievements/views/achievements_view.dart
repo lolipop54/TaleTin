@@ -1,4 +1,5 @@
 import 'package:taletin/ui/core/widgets/gt_button.dart';
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/material.dart';
 
 import '../../../../app/router/main_pages_ready.dart';
@@ -12,6 +13,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../view_models/statistics_providers.dart';
 import '../../../core/widgets/state_views.dart';
+import '../../../core/widgets/decorations.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/gt_tokens.dart';
 import '../widgets/calendar_card.dart';
@@ -111,22 +113,10 @@ class _AchievementsPage extends StatelessWidget {
                   child: const Text('更新失败，保留上次记录。点击重试'),
                 ),
               const SizedBox(height: GtSpacing.s4),
-              _buildOverview(context, colors),
-              const SizedBox(height: GtSpacing.s4),
-              // 概览与月历之间的分隔线（参考图 04）
-              Container(height: 1, color: colors.borderSubtle),
-              const SizedBox(height: GtSpacing.s4),
-              CalendarCard(
-                days: data.statistics.days,
-                dayIndex: data.summary(now).daysByDate,
-                today: now,
-                onDate: (date) => showReadingDay(context, data, now, date),
+              LayoutBuilder(
+                builder: (context, box) =>
+                    _statisticsLayout(context, colors, box.maxWidth),
               ),
-              const SizedBox(height: GtSpacing.s5),
-              Container(height: 1, color: colors.borderSubtle),
-              const SizedBox(height: GtSpacing.s4),
-              _buildRecords(context, colors),
-              const SizedBox(height: GtSpacing.s5),
               AchievementWall(data: achievements),
             ],
           ),
@@ -135,23 +125,82 @@ class _AchievementsPage extends StatelessWidget {
     );
   }
 
-  /// 页头：蓝色竖条 + 大标题 + 副标题 + 右侧竖排落款。
+  Widget _statisticsLayout(
+    BuildContext context,
+    GtColors colors,
+    double width,
+  ) {
+    final textScale = MediaQuery.textScalerOf(context).scale(1);
+    final wide = switch (defaultTargetPlatform) {
+      TargetPlatform.windows =>
+        width >= GtSize.desktopTwoColumnMinWidth * textScale,
+      TargetPlatform.android =>
+        MediaQuery.orientationOf(context) == Orientation.landscape &&
+            width >= GtSize.mobileStatisticsTwoColumnMinWidth * textScale,
+      _ => false,
+    };
+    const gap = GtSpacing.s5;
+    final leftWidth = wide ? (width - gap) * .41 : width;
+    final divider = Container(height: 1, color: colors.borderSubtle);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // 两种宽度共用 Wrap 的两个子节点，换行时保留正在看的月份与日期。
+        Wrap(
+          spacing: gap,
+          runSpacing: GtSpacing.s4,
+          children: [
+            SizedBox(
+              width: leftWidth,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (wide) const SizedBox(height: GtSpacing.s4),
+                  _buildOverview(context, colors, wide),
+                  SizedBox(height: wide ? GtSpacing.s6 : GtSpacing.s4),
+                  divider,
+                  if (wide) ...[
+                    const SizedBox(height: GtSpacing.s4),
+                    _buildRecords(context, colors, wide),
+                  ],
+                ],
+              ),
+            ),
+            SizedBox(
+              width: wide ? width - leftWidth - gap : width,
+              child: CalendarCard(
+                days: data.statistics.days,
+                dayIndex: data.summary(now).daysByDate,
+                today: now,
+                onDate: (date) => showReadingDay(context, data, now, date),
+              ),
+            ),
+          ],
+        ),
+        SizedBox(height: wide ? GtSpacing.s6 : gap),
+        divider,
+        SizedBox(height: wide ? GtSpacing.s5 : GtSpacing.s4),
+        if (!wide) ...[
+          _buildRecords(context, colors, wide),
+          const SizedBox(height: gap),
+        ],
+      ],
+    );
+  }
+
+  /// 成就标题与副标题左对齐，右侧保留两行落款。
   Widget _buildHeader(BuildContext context, GtColors colors) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Container(
-          width: 5,
-          height: 44,
-          margin: const EdgeInsets.only(right: GtSpacing.s3, top: 6),
-          color: colors.actionPrimary,
-        ),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
+              FoldCornerHeading(
                 '成就',
+                pageTitle: true,
                 style: GtText.pageTitle(colors.textPrimary)
                     .copyWith(fontSize: 25),
               ),
@@ -187,18 +236,37 @@ class _AchievementsPage extends StatelessWidget {
   }
 
   /// 概览：今日 / 本周 / 累计 / 连续。
-  Widget _buildOverview(BuildContext context, GtColors colors) {
+  Widget _buildOverview(BuildContext context, GtColors colors, bool twoRows) {
     final s = data.overviewSummary(now);
-    return Row(
+    return _metricRows(context, colors, twoRows, [
+      _metric(context, '今日', readingDuration(s.todayMs)),
+      _metric(context, '本周', readingDuration(s.weekMs)),
+      _metric(context, '累计', readingDuration(s.totalMs)),
+      _metric(context, '连续', '${s.streak}天'),
+    ]);
+  }
+
+  Widget _metricRows(
+    BuildContext context,
+    GtColors colors,
+    bool twoRows,
+    List<Widget> items,
+  ) {
+    Widget row(Iterable<Widget> values) => Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _metric(context, '今日', readingDuration(s.todayMs)),
-        _verticalDivider(context, colors),
-        _metric(context, '本周', readingDuration(s.weekMs)),
-        _verticalDivider(context, colors),
-        _metric(context, '累计', readingDuration(s.totalMs)),
-        _verticalDivider(context, colors),
-        _metric(context, '连续', '${s.streak}天'),
+        for (final (index, item) in values.indexed) ...[
+          if (index > 0) _verticalDivider(context, colors),
+          item,
+        ],
+      ],
+    );
+    if (!twoRows) return row(items);
+    return Column(
+      children: [
+        row(items.take(2)),
+        const SizedBox(height: GtSpacing.s8),
+        row(items.skip(2)),
       ],
     );
   }
@@ -239,7 +307,7 @@ class _AchievementsPage extends StatelessWidget {
   );
 
   /// 阅读记录概览，已移除独立详情与跨书笔记入口。
-  Widget _buildRecords(BuildContext context, GtColors colors) {
+  Widget _buildRecords(BuildContext context, GtColors colors, bool twoRows) {
     final r = data.summary(now);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -249,54 +317,44 @@ class _AchievementsPage extends StatelessWidget {
           style: GtText.sectionTitle(colors.textPrimary)
               .copyWith(fontSize: 21, fontWeight: FontWeight.w700),
         ),
-        const SizedBox(height: GtSpacing.s4),
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _record(context, '已读书籍', '$completedCount本'),
-            _verticalDivider(context, colors),
-            _record(
-              context,
-              '单次最长',
-              readingDuration(r.longestSession?.activeMs ?? 0),
-            ),
-            _verticalDivider(context, colors),
-            _record(
-              context,
-              '单日最多',
-              readingDuration(r.longestDay?.totalMs ?? 0),
-            ),
-            _verticalDivider(context, colors),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    '最晚阅读',
-                    style: GtText.caption(colors.textSecondary)
-                        .copyWith(fontSize: 13),
-                  ),
-                  const SizedBox(height: GtSpacing.s1),
-                  // 日期与时间两行，字号放大时整体缩放，避免被裁掉
-                  FittedBox(
-                    fit: BoxFit.scaleDown,
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      latestReadingLabel(r.latest),
-                      maxLines: 2,
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                        height: 1.32,
-                        color: colors.actionPrimary,
-                      ),
+        SizedBox(height: twoRows ? GtSpacing.s8 : GtSpacing.s4),
+        _metricRows(context, colors, twoRows, [
+          _record(context, '已读书籍', '$completedCount本'),
+          _record(
+            context,
+            '单次最长',
+            readingDuration(r.longestSession?.activeMs ?? 0),
+          ),
+          _record(context, '单日最多', readingDuration(r.longestDay?.totalMs ?? 0)),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '最晚阅读',
+                  style: GtText.caption(colors.textSecondary)
+                      .copyWith(fontSize: 13),
+                ),
+                const SizedBox(height: GtSpacing.s1),
+                // 日期与时间两行，字号放大时整体缩放，避免被裁掉
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    latestReadingLabel(r.latest),
+                    maxLines: 2,
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                      height: 1.32,
+                      color: colors.actionPrimary,
                     ),
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
-          ],
-        ),
+          ),
+        ]),
       ],
     );
   }

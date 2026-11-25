@@ -1,12 +1,17 @@
 import 'dart:math' as math;
 
 import 'package:flutter/painting.dart';
+import 'package:direct_read_rust/line_breaks.dart';
 
 import '../../domain/models/book_document.dart';
 import '../../domain/models/content_table.dart';
+import '../styles/computed_style.dart';
 import '../styles/style_table.dart';
+import '../styles/style_box_value.dart';
 import '../styles/style_value.dart';
+import '../styles/tag_defaults.dart';
 import 'block_measure.dart';
+import 'box_size_resolver.dart';
 import 'display_tree.dart';
 import 'table_container_layout.dart';
 import 'block_measurement_cache.dart';
@@ -14,6 +19,19 @@ import 'layout_options.dart';
 import 'measured_block.dart';
 import 'chapter_paginator.dart';
 import 'parallel_flow_slices.dart';
+import 'prose_line_breaks.dart';
+import 'vertical_margins.dart';
+import 'display_box_layout.dart';
+import 'resolve_block_box.dart';
+import 'collapsed_table_borders.dart';
+
+part 'styled_table_layout.dart';
+part 'table_column_layout.dart';
+part 'table_character_alignment.dart';
+part 'table_row_layout.dart';
+part 'table_caption_layout.dart';
+part 'table_grid_borders.dart';
+part 'table_content_piece.dart';
 
 /// 单元格仍由原有文字测量器测量；只改变宽度、字号和二维位置。
 /// 同一张表使用统一行带，跨页按行带切开，不裁断文字。
@@ -82,15 +100,29 @@ List<MeasuredBlock> measureTable(
   List<ContentBlock>? order,
 }) {
   final id = table.blockIds.first;
+  final display = _headerFirst(_tableForDisplay(table, displayTree));
+  table = display.table;
+  if (table.blockIds.isEmpty) return [];
   // 表格外面可能套着引用块：背景、左边框和内边距都属于这个盒子，
   // 表格内容要缩进到盒子内边距里，宽度也要相应减掉。
   final containers = TableContainerLayout.build(
-    id,
+    table.blockIds.first,
     displayTree,
     styleTable,
     options,
     lastBlockId: table.blockIds.last,
   );
+  final styled = _measureStyledTable(
+    table,
+    source,
+    options,
+    containers,
+    styleTable,
+    displayTree,
+    cache,
+    display,
+  );
+  if (styled != null) return styled;
   final box = displayTree?.authoritative == true
       ? null
       : BlockBox.fromRaw(table.box, options.settings.fontSize.toDouble());
@@ -244,12 +276,210 @@ List<MeasuredBlock> measureTable(
   return result;
 }
 
+typedef _DisplayTable = ({
+  ContentTable table,
+  DisplayNode? element,
+  List<DisplayNode> rows,
+  Map<ContentTableCell, DisplayNode> cells,
+});
+
+/// CSS 把首个 header-group 放到普通行之前。只换显示行号，保留单元格
+/// 和块的来源顺序，因此原文搜索、摘录和已保存的位置沿用原来的块号。
+_DisplayTable _headerFirst(_DisplayTable display) {
+  final rows = display.rows;
+  final start = rows.indexWhere(
+    (r) => r.parent?.display == DisplaySpec.tableHeaderGroup,
+  );
+  if (start <= 0 || rows.length != display.table.rows) return display;
+  var end = start + 1;
+  while (end < rows.length && rows[end].parent == rows[start].parent) {
+    end++;
+  }
+  final reordered = <ContentTableCell, DisplayNode>{};
+  for (final entry in display.cells.entries) {
+    final c = entry.key;
+    final row = c.row < start
+        ? c.row + end - start
+        : c.row < end
+        ? c.row - start
+        : c.row;
+    reordered[ContentTableCell(
+          blocks: c.blocks,
+          row: row,
+          column: c.column,
+          rowSpan: c.rowSpan,
+          columnSpan: c.columnSpan,
+          header: c.header,
+          alignChar: c.alignChar,
+          charOffset: c.charOffset,
+        )] =
+        entry.value;
+  }
+  final t = display.table;
+  return (
+    table: ContentTable(
+      reordered.keys.toList(),
+      t.columns,
+      t.rows,
+      box: t.box,
+      boxId: t.boxId,
+      columnWidths: t.columnWidths,
+      columnWeights: t.columnWeights,
+      columnNodes: t.columnNodes,
+      columnStyles: t.columnStyles,
+    ),
+    element: display.element,
+    rows: [
+      ...rows.getRange(start, end),
+      ...rows.take(start),
+      ...rows.skip(end),
+    ],
+    cells: reordered,
+  );
+}
+
+_DisplayTable _tableForDisplay(
+  ContentTable table,
+  DisplayTree? tree, [
+  DisplayNode? empty,
+]) {
+  final original = (
+    table: table,
+    element: null,
+    rows: const <DisplayNode>[],
+    cells: const <ContentTableCell, DisplayNode>{},
+  );
+  final start = tree?.blockIndexById[table.blockIds.firstOrNull];
+  if (tree == null || (empty == null && start == null)) return original;
+  final element =
+      empty?.element ??
+      tree.source
+          ?.chainOfBlock(start!)
+          .where((element) => element.role == 'table')
+          .firstOrNull;
+  if (element == null) return original;
+  final root = tree.nodes[element.id];
+  final rows = <DisplayNode>[];
+  final cells = <DisplayNode>[];
+  void visit(DisplayNode node) {
+    for (final child in node.children) {
+      switch (child.element.role) {
+        case 'table':
+          continue;
+        case 'row':
+          rows.add(child);
+          visit(child);
+        case 'cell':
+          cells.add(child);
+        default:
+          visit(child);
+      }
+    }
+  }
+
+  visit(root);
+  if (cells.length != table.cells.length) return original;
+  bool hidden(DisplayNode node) =>
+      tree.hiddenElements.contains(node.element.id);
+  if (!rows.any(hidden) && !cells.any(hidden)) {
+    return (
+      table: table,
+      element: root,
+      rows: rows,
+      cells: {for (final (i, cell) in table.cells.indexed) cell: cells[i]},
+    );
+  }
+
+  // 只重算画面中的行列。被隐藏的格子和行不再占位，正文块和原表格留给定位。
+  final rowOffsets = [0];
+  for (var i = 0; i < table.rows; i++) {
+    rowOffsets.add(
+      rowOffsets.last + (i < rows.length && hidden(rows[i]) ? 0 : 1),
+    );
+  }
+  final occupiedUntil = <int, int>{};
+  final visibleCells = <ContentTableCell, DisplayNode>{};
+  var columns = 0;
+  for (final (i, old) in table.cells.indexed) {
+    if (hidden(cells[i])) continue;
+    final row = rowOffsets[old.row];
+    final end = rowOffsets[old.row + old.rowSpan];
+    if (end <= row) continue;
+    var column = 0;
+    while (Iterable<int>.generate(
+      old.columnSpan,
+      (i) => column + i,
+    ).any((col) => (occupiedUntil[col] ?? 0) > row)) {
+      column++;
+    }
+    for (var c = column; c < column + old.columnSpan; c++) {
+      occupiedUntil[c] = end;
+    }
+    columns = math.max(columns, column + old.columnSpan);
+    visibleCells[ContentTableCell(
+          blocks: old.blocks,
+          row: row,
+          column: column,
+          rowSpan: end - row,
+          columnSpan: old.columnSpan,
+          header: old.header,
+          alignChar: old.alignChar,
+          charOffset: old.charOffset,
+        )] =
+        cells[i];
+  }
+  return (
+    table: ContentTable(
+      visibleCells.keys.toList(),
+      columns,
+      rowOffsets.last,
+      box: table.box,
+      boxId: table.boxId,
+      columnWidths: table.columnWidths,
+      columnWeights: table.columnWeights,
+      columnNodes: table.columnNodes,
+      columnStyles: table.columnStyles,
+    ),
+    element: root,
+    rows: rows.where((row) => !hidden(row)).toList(),
+    cells: visibleCells,
+  );
+}
+
 double tableHeight(List<MeasuredBlock> blocks) =>
-    blocks.fold<double>(
-      0.0,
-      (height, block) => math.max(height, block.tableBounds!.bottom),
-    ) +
+    blocks
+        .where((b) => !b.positionedOverlay)
+        .fold<double>(
+          0.0,
+          (height, block) => math.max(height, block.tableBounds!.bottom),
+        ) +
     (blocks.first.isParallelFlow ? 0 : blocks.first.bodyBottom);
+
+/// 滚动是连续的。分割绘制区域时，若目标切口切到字行或图片，
+/// 就延长到所有相交内容的末端，位置本身不做任何换页位移。
+Iterable<double> styledTableScrollCuts(
+  List<MeasuredBlock> blocks,
+  double height,
+  double chunkHeight,
+) sync* {
+  final content = <({double top, double bottom})>[];
+  for (final block in blocks) {
+    for (final piece in tableContentPieces(block)) {
+      content.add((top: piece.top, bottom: piece.top + piece.height));
+    }
+  }
+  content.sort((a, b) => a.top.compareTo(b.top));
+  var i = 0;
+  var from = 0.0;
+  while (from < height) {
+    var end = math.min(height, from + chunkHeight);
+    while (i < content.length && content[i].top < end - .00001) {
+      end = math.max(end, content[i++].bottom);
+    }
+    yield end;
+    from = end;
+  }
+}
 
 /// 返回下一段能够完整显示的行带末端；图片作为整体换页。
 double tableCut(List<MeasuredBlock> blocks, double from, double available) {
@@ -273,6 +503,7 @@ List<PageFragment> tableFragments(
   double to,
   double y, {
   double? pageHeight,
+  bool repeatedHeader = false,
 }) {
   if (blocks.first.isParallelFlow) {
     return parallelFlowFragments(blocks, from, to, y);
@@ -280,66 +511,20 @@ List<PageFragment> tableFragments(
   final result = <PageFragment>[];
   // 引用块里的表格：先放一个只用于画盒子的片段，背景和左右边框就能和
   // 表格前后的段落连成同一个引用框。它不参与文字、选区和位置。
-  final box = blocks.first.tableBox;
-  if (box != null || blocks.first.containerBoxes.isNotEmpty) {
-    final tableEnd = tableHeight(blocks);
-    final top = math.max(0.0, from);
-    final bottom = math.min(tableEnd, to);
-    if (bottom > top) {
-      var left = double.infinity, right = 0.0;
-      for (final block in blocks) {
-        final bounds = block.tableBounds!;
-        left = math.min(left, bounds.left);
-        right = math.max(right, bounds.right);
-      }
-      final boxBlock = MeasuredBlock(
-        blockId: '__table_box_${blocks.first.tableId ?? blocks.first.blockId}',
-        containerBoxes: [
-          for (final frame in blocks.first.containerBoxes)
-            ContainerBoxFrame(
-              elementId: frame.elementId,
-              box: frame.box,
-              first: frame.first && from <= 0.1,
-              last: frame.last && to >= tableEnd - 0.1,
-              left: frame.left,
-              width: frame.width,
-              top: from <= 0.1 ? frame.top : 0,
-              bottom: to >= tableEnd - 0.1 ? frame.bottom : 0,
-            ),
-        ],
-        kind: BlockKind.paragraph,
-        height: bottom - top,
-        inset: left,
-        layoutWidth: math.max(1.0, right - left),
-        box: box,
-        boxId: blocks.first.boxId,
-        // 整张表的第一页才画顶边，最后一页才画底边；中间页只有左右边。
-        boxFirst: blocks.first.boxFirst && from <= 0.1,
-        boxLast: blocks.first.boxLast && to >= tableEnd - 0.1,
-        isDecoration: true,
-        isTableBox: true,
-      );
-      result.add(
-        PageFragment(
-          block: boxBlock,
-          lineFrom: 0,
-          lineTo: 0,
-          y: top - from + y,
-          height: bottom - top,
-          frameOnly: true,
-        ),
-      );
-    }
+  final tableEnd = tableHeight(blocks);
+  if (tableContainerFragment(
+        blocks.first,
+        tableHorizontalBounds(blocks),
+        y,
+        math.min(tableEnd, to) - from,
+        first: from <= .01,
+        last: to >= tableEnd - .01,
+      )
+      case final fragment?) {
+    result.add(fragment);
   }
   final framed = <Rect>{};
   final singleCell = blocks.map((b) => b.tableBounds).toSet().length == 1;
-  final authoredOuter = blocks.first.containerBoxes.any(
-    (f) =>
-        f.box.borderTop > 0 ||
-        f.box.borderLeft > 0 ||
-        f.box.borderBottom > 0 ||
-        f.box.borderRight > 0,
-  );
   for (final block in blocks) {
     final bounds = block.tableBounds!;
     if (bounds.bottom <= from || bounds.top >= to) continue;
@@ -351,7 +536,8 @@ List<PageFragment> tableFragments(
           ? pageHeight
           : math.min(bounds.bottom, to) - from + y,
     );
-    if (framed.add(bounds) && !(singleCell && authoredOuter)) {
+    if (framed.add(bounds) &&
+        tableNeedsCellFrame(block, singleCell: singleCell)) {
       result.add(
         PageFragment(
           block: block,
@@ -363,29 +549,84 @@ List<PageFragment> tableFragments(
           tableTopEdge: bounds.top >= from,
           tableBottomEdge: bounds.bottom <= to,
           frameOnly: true,
+          repeatedTableFrame: repeatedHeader,
         ),
       );
     }
-    if (block.imageSize != null) {
-      if (block.tableTop >= from && block.tableTop < to) {
-        result.add(PageFragment.whole(block, y: block.tableTop - from + y));
+    for (final piece in tableContentPieces(block)) {
+      if (piece.top >= from - .00001 && piece.top < to - .00001) {
+        result.add(piece.at(piece.top - from + y));
       }
-      continue;
-    }
-    for (var i = 0; i < block.lines.length; i++) {
-      final top = block.tableTop + i * block.tableUnit;
-      // 文字行带居中于统一网格，末行在该行带剩余的半格留白中结束。
-      if (top < from || top >= to) continue;
-      result.add(
-        PageFragment(
-          block: block,
-          lineFrom: i,
-          lineTo: i + 1,
-          y: top - from + y,
-          height: block.lines[i].height,
-        ),
-      );
     }
   }
   return result;
+}
+
+bool tableNeedsCellFrame(MeasuredBlock block, {required bool singleCell}) =>
+    !singleCell ||
+    block.tableCellBox != null ||
+    block.collapsedTableBorders ||
+    !block.containerBoxes.any(
+      (f) =>
+          f.box.borderTop > 0 ||
+          f.box.borderRight > 0 ||
+          f.box.borderBottom > 0 ||
+          f.box.borderLeft > 0,
+    );
+
+({double left, double right}) tableHorizontalBounds(
+  List<MeasuredBlock> blocks,
+) {
+  var left = double.infinity, right = 0.0;
+  for (final block in blocks) {
+    final bounds = block.tableBounds!;
+    left = math.min(left, bounds.left);
+    right = math.max(right, bounds.right);
+  }
+  return (left: left, right: right);
+}
+
+PageFragment? tableContainerFragment(
+  MeasuredBlock block,
+  ({double left, double right}) bounds,
+  double y,
+  double height, {
+  required bool first,
+  required bool last,
+}) {
+  final box = block.tableBox;
+  if (height <= 0 || (box == null && block.containerBoxes.isEmpty)) return null;
+  return PageFragment(
+    block: MeasuredBlock(
+      blockId: '__table_box_${block.tableId ?? block.blockId}',
+      containerBoxes: [
+        for (final frame in block.containerBoxes)
+          ContainerBoxFrame(
+            elementId: frame.elementId,
+            box: frame.box,
+            first: frame.first && first,
+            last: frame.last && last,
+            left: frame.left,
+            width: frame.width,
+            top: first ? frame.top : 0,
+            bottom: last ? frame.bottom : 0,
+          ),
+      ],
+      kind: BlockKind.paragraph,
+      height: height,
+      inset: bounds.left,
+      layoutWidth: math.max(1, bounds.right - bounds.left),
+      box: box,
+      boxId: block.boxId,
+      boxFirst: block.boxFirst && first,
+      boxLast: block.boxLast && last,
+      isDecoration: true,
+      isTableBox: true,
+    ),
+    lineFrom: 0,
+    lineTo: 0,
+    y: y,
+    height: height,
+    frameOnly: true,
+  );
 }

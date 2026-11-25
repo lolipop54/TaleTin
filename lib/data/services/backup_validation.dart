@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import '../../domain/models/backup_manifest.dart';
+import '../../domain/models/book_cover_choice.dart';
 import '../database/app_database.dart';
 import '../repositories/book_cover_repository.dart';
 import '../repositories/reading_background_repository.dart';
@@ -55,7 +56,7 @@ Future<int> validateBackupDatabase(
       db,
     )).values) {
       if (choice.imagePath case final path?) {
-        if (!path.startsWith('global-covers/') ||
+        if (!BookCoverChoice.isLibraryImage(path) ||
             !paths.contains('library/$path')) {
           throw const FormatException('备份缺少全局自定义封面图片');
         }
@@ -113,7 +114,8 @@ Future<int> validateBackupDatabase(
       if (book.status != 'removed') count++;
       final cover = covers[book.id];
       if (cover?.imagePath case final path?) {
-        if (!paths.contains('library/${book.id}/$path')) {
+        final relative = BookCoverChoice.libraryImagePath(path, book.id);
+        if (!paths.contains('library/$relative')) {
           throw const FormatException('备份缺少自定义封面图片');
         }
       }

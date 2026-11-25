@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import '../../../../core/diagnostics/app_errors.dart';
 import '../../../../app/di/imported_font_providers.dart';
 import '../../../../app/di/app_font_providers.dart';
-import '../../../../platform/channels/imported_fonts.dart';
 import '../../../../platform/channels/reading_fonts.dart';
 
 import '../../../core/widgets/frame_fade.dart';
@@ -330,16 +329,8 @@ class _LocalFilesViewState extends ConsumerState<LocalFilesView>
       if (!mounted || entries.isEmpty) return;
       failed = selected.length - entries.length;
       final store = ref.read(importedFontStoreProvider);
-      for (final entry in entries) {
-        try {
-          await store.importFile(entry.path, prepare: ImportedFonts.prepare);
-        } catch (error, stack) {
-          failed++;
-          AppErrors.report(error, stack, operation: '导入字体失败');
-        }
-      }
       // 这里只更新可选名单，不调用全局设置或单书设置的写入入口。
-      await ReadingFonts.refreshImported();
+      failed += await ReadingFonts.importFiles(store, entries.map((entry) => entry.path));
       if (!mounted) return;
       ref.invalidate(fontFamilyNamesProvider);
       ref.invalidate(currentTypographyFontsProvider);

@@ -1,6 +1,8 @@
 import 'dart:math' as math;
 import 'dart:ui' show Rect;
 
+import '../../core/diagnostics/reader_turn_diagnostics.dart';
+import '../../core/diagnostics/reader_work_trace.dart';
 import '../../domain/models/book_document.dart';
 import '../../domain/models/locator.dart';
 import '../normalization/locator_mapper.dart';
@@ -8,92 +10,21 @@ import '../styles/chapter_styler.dart';
 import '../styles/css_layout_styles.dart';
 import 'block_measure.dart';
 import 'block_measurement_cache.dart';
+import 'book_background.dart';
 import 'english_hyphenation.dart';
 import 'layout_options.dart';
 import 'measured_block.dart';
+import 'measured_paragraphs.dart';
 import 'chapter_layout.dart';
 import 'chapter_paginator.dart';
+import 'container_flow_sizing.dart';
+import 'block_flow_spacing.dart';
+import 'vertical_margins.dart';
 import 'display_tree.dart';
 import 'table_layout.dart';
 import 'parallel_flow_layout.dart';
 
-/// 连续正文的一小段行。保留原块和偏移，不以临时行号保存阅读位置。
-class ScrollCell {
-  ScrollCell(
-    this.block,
-    this.measured,
-    this.offset,
-    this.from,
-    this.to,
-    this.gap, {
-    this.endGap = 0,
-    this.table = const [],
-    this.tableHeight,
-  });
-  final ContentBlock block;
-  final MeasuredBlock measured;
-  final int offset, from, to;
-  final double gap;
-  final double endGap;
-  final List<PageFragment> table;
-  final double? tableHeight;
-  // 单元格完成测量后不再变化，列表反复查询高度时不再复制并遍历文字行。
-  late final double height = tableHeight != null
-      ? tableHeight! + endGap
-      : gap +
-            endGap +
-            (from == 0 && measured.isText ? measured.bodyTop : 0) +
-            (to == measured.lines.length && measured.isText
-                ? measured.bodyBottom
-                : 0) +
-            (measured.isText
-                ? measured.lines
-                      .sublist(from, to)
-                      .fold<double>(0, (n, l) => n + l.height)
-                : measured.height) +
-            (measured.isTitleDecoration && to == measured.lines.length
-                ? kTitleRuleGap + kTitleRuleThickness
-                : 0);
-
-  /// 首批文字要跳过容器内边距；定位、选文与绘制共用这个起点。
-  double get textTop => gap + (from == 0 ? measured.bodyTop : 0);
-
-  /// 块级图片共用分页的居中和容器内边距；坐标相对当前滚动单元格。
-  Iterable<({MeasuredBlock block, Rect rect})> positionedImages(
-    double width,
-  ) sync* {
-    if (table.isNotEmpty) {
-      for (final fragment in table) {
-        final rect = fragment.imageRectIn(width);
-        if (rect != null) yield (block: fragment.block, rect: rect);
-      }
-    } else {
-      final rect = measured.imageRectIn(width, top: gap);
-      if (rect != null) yield (block: measured, rect: rect);
-    }
-  }
-
-  /// 绘制和点按共用片段坐标，普通正文与表格内的公式走同一条路径。
-  Iterable<({InlineImagePlacement image, Rect rect})>
-  get positionedInlineImages sync* {
-    if (table.isNotEmpty) {
-      for (final fragment in table) {
-        yield* fragment.positionedInlineImages;
-      }
-    } else {
-      yield* PageFragment(
-        block: measured,
-        lineFrom: from,
-        lineTo: to,
-        y: gap,
-        height: height - gap - endGap,
-      ).positionedInlineImages;
-    }
-  }
-
-  int offsetAt(int line) =>
-      offset + measured.lines[line].start - measured.displayPrefixLength;
-}
+part 'scroll_cell.dart';
 
 /// 只测量一个章节；超长段以小段测量并保留末行，下一批接着排，避免截断行。
 class ScrollChapter {
@@ -103,8 +34,53 @@ class ScrollChapter {
     this.starts,
     this.height, {
     this.options,
+    this.paperImageHeight,
   });
   final LayoutOptions? options;
+  final double? paperImageHeight;
+  bool get fullWidthPaper => paperImageHeight != null;
+  late final BlockBox? paperBox = options == null
+      ? null
+      : fullWidthPaper
+          ? resolveFullWidthPaper(content, options!)
+          : chapterBackground(content, options!);
+  late final _viewportLayout = options == null
+      ? null
+      : '${options!.readingGeometrySignature}|${options!.publicationFonts.identity}';
+
+  String _viewportKey(double y) {
+    final index = cellAt(y), cell = cells[index];
+    // 换版后即使旧分页缓存全部作废，只要重新测出的可见单元位置和尺寸一致，
+    // 仍可恢复图内的原处。浮动框或前文实际改变时才回到原文字位。
+    return '$_viewportLayout|${cell.block.id}|${starts[index]}|${cell.height}|${cell.textTop}';
+  }
+
+  Locator withViewport(Locator point, double y) {
+    if (_viewportLayout == null || cells.isEmpty) return point;
+    return point.copyWith(scrollViewport: (layout: _viewportKey(y), y: y));
+  }
+
+  /// 一张高图或段间空白可以占半屏，单靠块号和字位只能回到其上沿。
+  /// 用原文再核对一次，同一排版且仍是这个落点才重用格内的像素位置。
+  double viewportOffsetOf(Locator point) {
+    final saved = point.scrollViewport;
+    if (saved != null &&
+        _viewportLayout != null &&
+        cells.isNotEmpty &&
+        saved.y >= 0 &&
+        saved.y <= height &&
+        saved.layout == _viewportKey(saved.y)) {
+      final mapper = LocatorMapper(
+        bookId: point.bookId,
+        contentVersion: point.contentVersion,
+        chapterId: content.chapterId,
+      );
+      if (anchorAt(saved.y, mapper, landing: point).samePosition(point)) {
+        return saved.y;
+      }
+    }
+    return offsetOf(point);
+  }
   final ChapterContent content;
   final List<ScrollCell> cells;
   final List<double> starts;
@@ -118,32 +94,147 @@ class ScrollChapter {
     bool chapterStart = true,
     bool chapterEnd = true,
     BlockMeasurementCache? measurementCache,
+    MeasuredParagraphs? paragraphs,
+    Future<double?> Function(String path, double width)? preparePaperHeight,
   }) async {
     final cells = <ScrollCell>[];
     final starts = <double>[];
+    final setup = ReaderWorkTrace.start('scroll.chapterSetup');
     content = CssLayoutStyles.resolve(content, options);
+    setup?.mark('styles');
     await EnglishHyphenation.prepare();
     final measurer = BlockMeasurer(
       options,
+      paginated: false,
       styleTable: ChapterStyler.layoutTableOf(content),
       displayTree: DisplayTree.build(content),
       cache: measurementCache,
+      paragraphs: paragraphs,
     );
+    setup?.mark('displayTree');
     var height = 0.0;
     await measurer.prepareMath(content);
+    setup?.finish();
+    final pageImages = measurer.pageImagesOf(content);
+    final pageImageIds = pageImages.map((b) => b.blockId).toSet();
+    final sizing = ContainerFlowSizing.build(
+      measurer.displayTree!,
+      ChapterStyler.layoutTableOf(content),
+      options,
+    );
+    MeasuredBlock? previous;
+    VerticalMargin? intervening;
+    var carriedOverlap = 0.0;
     double gapFor(MeasuredBlock block, double initial) {
-      final gap = cells.isEmpty
-          ? math.max(initial, block.marginTop)
-          : measurer.gapBefore(cells.last.measured, block);
+      final before = previous;
+      final gap = before == null
+          ? resolveBlockGap(
+              null,
+              block,
+              baseline: initial,
+              intervening: intervening,
+            )
+          : measurer.gapBefore(before, block, intervening: intervening);
+      final placement = gap + carriedOverlap;
       return block.pageTop == null
-          ? gap
-          : math.max(gap, block.pageTop! - height);
+          ? placement
+          : math.max(placement, block.pageTop! - height);
     }
 
     void add(ScrollCell cell) {
       starts.add(height);
       cells.add(cell);
       height += cell.height;
+      // 列表项不能取负高度。尚未消化的向上位移传给下一个绘制单元。
+      carriedOverlap = math.min(0, cell.flowExtent);
+      if (!cell.containerTail) {
+        previous = cell.measured;
+        intervening = null;
+      }
+    }
+
+    void addTails(
+      ContentBlock anchor,
+      MeasuredBlock measured,
+      List<ContainerFlowTail>? tails,
+    ) {
+      if (tails == null) return;
+      for (final tail in tails) {
+        final fragment = PageFragment.containerTail(
+          measured,
+          tail,
+          carriedOverlap,
+          tail.height,
+        );
+        add(
+          ScrollCell(
+            anchor,
+            fragment.block,
+            0,
+            0,
+            0,
+            0,
+            table: [fragment],
+            tableHeight: tail.height + carriedOverlap,
+            containerTail: true,
+          ),
+        );
+      }
+    }
+
+    void addDecoration(ContentBlock anchor, MeasuredBlock empty) {
+      if (empty.collapsesThrough) {
+        final edges = empty.leadingMargin.join(empty.trailingMargin);
+        intervening = intervening?.join(edges) ?? edges;
+        return;
+      }
+      final carry = carriedOverlap;
+      final gap = empty.flowMargins == null ? carry : gapFor(empty, 0);
+      add(ScrollCell(anchor, empty, 0, 0, 0, gap));
+      addTails(
+        anchor,
+        empty,
+        sizing?.add([empty], gap: gap - carry, height: empty.height),
+      );
+    }
+
+    void addDecorations(ContentBlock anchor, int index) {
+      final items = measurer.measureBefore(index);
+      for (var i = 0; i < items.length; i++) {
+        final first = items[i];
+        if (first.tableId == null) {
+          addDecoration(anchor, first);
+          continue;
+        }
+        final group = [first];
+        while (i + 1 < items.length && items[i + 1].tableId == first.tableId) {
+          group.add(items[++i]);
+        }
+        final total = tableHeight(group);
+        final firstGap = gapFor(first, 0);
+        var from = 0.0;
+        for (final end in styledTableScrollCuts(
+          group,
+          total,
+          options.contentHeight,
+        )) {
+          final gap = from == 0 ? firstGap : 0.0;
+          final fragments = tableFragments(group, from, end, gap);
+          add(
+            ScrollCell(
+              anchor,
+              first,
+              0,
+              0,
+              0,
+              0,
+              table: fragments,
+              tableHeight: end - from + gap,
+            ),
+          );
+          from = end;
+        }
+      }
     }
 
     final work = Stopwatch()..start();
@@ -151,7 +242,10 @@ class ScrollChapter {
     final tables = {
       for (final table in content.tables) table.blockIds.first: table,
     };
-    final tableIds = content.tables.expand((t) => t.blockIds).toSet();
+    final tableIds = {
+      ...content.tables.expand((t) => t.blockIds),
+      ...measurer.displayTree!.captionBlockIds,
+    };
     final parallel = ParallelFlowLayout(
       content,
       measurer.displayTree!,
@@ -185,8 +279,14 @@ class ScrollChapter {
       );
     }
     for (final (blockIndex, block) in content.blocks.indexed) {
-      for (final empty in measurer.measureBefore(blockIndex)) {
-        add(ScrollCell(block, empty, 0, 0, 0, 0));
+      addDecorations(block, blockIndex);
+      if (measurer.displayTree!.hiddenBlocks.contains(blockIndex) &&
+          !tables.containsKey(block.id)) {
+        continue;
+      }
+      if (pageImageIds.contains(block.id) ||
+          parallel.members.contains(blockIndex)) {
+        continue;
       }
       if (tables.containsKey(block.id) ||
           parallel.groups.containsKey(blockIndex)) {
@@ -201,20 +301,37 @@ class ScrollChapter {
                 displayTree: measurer.displayTree,
                 order: content.blocks,
               );
+        if (measured.isEmpty) continue;
         final total = tableHeight(measured);
+        final carry = carriedOverlap;
+        final firstGap = gapFor(
+          measured.firstWhere((b) => !b.positionedOverlay),
+          options.paragraphGap,
+        );
+        final styledCuts =
+            measured.first.tableUnit == 0 && !measured.first.isParallelFlow
+            ? styledTableScrollCuts(
+                measured,
+                total,
+                options.contentHeight,
+              ).iterator
+            : null;
         var from = 0.0;
         while (from < total - .1) {
-          // 连续滚动不需要用分页高度切双列，保留完整二维位置即可。
-          final to = measured.first.isParallelFlow
+          final to = styledCuts?.moveNext() == true
+              ? styledCuts!.current
+              : measured.first.isParallelFlow
               ? total
               : tableCut(measured, from, options.contentHeight);
           final end = to > from
               ? to
               : math.min(total, from + measured.first.tableUnit);
-          final gap = from == 0
-              ? gapFor(measured.first, options.paragraphGap)
-              : 0.0;
+          final gap = from == 0 ? firstGap : carriedOverlap;
           final fragments = tableFragments(measured, from, end, gap);
+          if (fragments.isEmpty) {
+            from = end;
+            continue;
+          }
           final first = fragments.firstWhere(
             (f) => !f.frameOnly,
             orElse: () => fragments.first,
@@ -233,6 +350,14 @@ class ScrollChapter {
           );
           from = end;
         }
+        if (measured.any((b) => b.positionedOverlay)) {
+          previous = measured.lastWhere((b) => !b.positionedOverlay);
+        }
+        addTails(
+          byId[measured.last.blockId] ?? block,
+          measured.last,
+          sizing?.add(measured, gap: firstGap - carry, height: total),
+        );
         await Future<void>.delayed(Duration.zero);
       }
       if (tableIds.contains(block.id) ||
@@ -284,6 +409,8 @@ class ScrollChapter {
                       image.positioned(image.offset - offset),
                 ],
               );
+        final trace = ReaderTurnDiagnostics.active;
+        final clock = trace == null ? null : (Stopwatch()..start());
         var measured = measurer.measure(
           piece,
           sourceOffset: offset,
@@ -294,55 +421,73 @@ class ScrollChapter {
                   block.kind == BlockKind.quote),
           asChapterTitle: contentTitle && block == content.blocks.first,
         );
+        if (clock != null && clock.elapsedMicroseconds >= 2000) {
+          trace!.event('scroll.measureBlock', [
+            clock.elapsedMicroseconds, end - offset, measured.lines.length,
+          ]);
+        }
         if (measured.boxId != null && measured.box != null) {
-          final index = content.blocks.indexOf(block);
           int? containerOf(ContentBlock value) =>
               value.parentBox?.id ?? value.boxId;
           measured = measured.asBoxPart(
             first:
                 first &&
-                (index == 0 ||
-                    containerOf(content.blocks[index - 1]) != measured.boxId),
+                (blockIndex == 0 ||
+                    containerOf(content.blocks[blockIndex - 1]) != measured.boxId),
             last:
                 end == text.length &&
-                (index + 1 == content.blocks.length ||
-                    containerOf(content.blocks[index + 1]) != measured.boxId),
+                (blockIndex + 1 == content.blocks.length ||
+                    containerOf(content.blocks[blockIndex + 1]) != measured.boxId),
           );
         }
         // 最后一行可能还没满，交给下一批与后续文字一起测量。
         final count =
             measured.lines.length -
             (end < text.length && measured.lines.length > 1 ? 1 : 0);
+        final carry = carriedOverlap;
+        final blockGap =
+            first && (block != content.blocks.first || !contentTitle)
+            ? gapFor(measured, options.paragraphGap)
+            : carry;
         if (!measured.isText) {
-          add(
-            ScrollCell(
-              block,
-              measured,
-              0,
-              0,
-              0,
-              gapFor(measured, options.paragraphGap),
-            ),
+          final gap = gapFor(measured, options.paragraphGap);
+          add(ScrollCell(block, measured, 0, 0, 0, gap));
+          addTails(
+            block,
+            measured,
+            sizing?.add([measured], gap: gap - carry, height: measured.height),
           );
           break;
         }
+        var flowed = 0.0;
         for (var line = 0; line < count; line += 12) {
-          add(
-            ScrollCell(
-              block,
-              measured,
-              offset,
-              line,
-              math.min(count, line + 12),
-              first &&
-                      line == 0 &&
-                      (block != content.blocks.first || !contentTitle)
-                  ? gapFor(measured, options.paragraphGap)
-                  : 0,
-            ),
+          final cell = ScrollCell(
+            block,
+            measured,
+            offset,
+            line,
+            math.min(count, line + 12),
+            line == 0 ? blockGap : carriedOverlap,
           );
+          flowed += cell.paintHeight;
+          add(cell);
         }
-        offset += measured.lines[count - 1].end - measured.displayPrefixLength;
+        final nextOffset =
+            offset +
+            measured.lines[count - 1].end -
+            measured.displayPrefixLength;
+        addTails(
+          block,
+          measured,
+          sizing?.add(
+            [measured],
+            gap: blockGap - carry,
+            height: flowed,
+            firstSlice: first,
+            lastSlice: nextOffset >= text.length,
+          ),
+        );
+        offset = nextOffset;
         first = false;
         // 给触摸和绘制让出执行机会，不一次排完整个长章。
         if (work.elapsedMicroseconds >= 3000) {
@@ -351,6 +496,30 @@ class ScrollChapter {
         }
       } while (offset < text.length);
     }
+    // 连续滚动会分格绘制，同一张定位图片可穿过格边界。相邻格共用
+    // 图片的章内坐标和资源，不在正文序列重复插块。
+    final overlays = <({MeasuredBlock block, double top, int cell})>[
+      for (final b in pageImages) (block: b, top: b.pageTop!, cell: -1),
+      for (final (i, c) in cells.indexed)
+        for (final f in c.table)
+          if (f.block.positionedOverlay &&
+              (f.y < 0 || f.y + f.height > c.height))
+            (block: f.block, top: starts[i] + f.y, cell: i),
+    ];
+    final imageBottom = overlays.fold(
+      0.0,
+      (max, image) => math.max(max, image.top + image.block.height),
+    );
+    if (imageBottom > height) {
+      // 图超出正文底部时保留可滚到的区域，但不插进正文的段落与段距。
+      final spacer = MeasuredBlock(
+        blockId: overlays.last.block.blockId,
+        kind: BlockKind.image,
+        height: imageBottom - height,
+        isDecoration: true,
+      );
+      add(ScrollCell(byId[spacer.blockId]!, spacer, 0, 0, 0, 0));
+    }
     // 章尾只留两行正文高度；留白不另造正文块，已有位置和笔记仍指向原文。
     if (chapterEnd && cells.isNotEmpty) {
       final last = cells.removeLast();
@@ -358,47 +527,91 @@ class ScrollChapter {
           options.textScaler.scale(options.settings.fontSize.toDouble()) *
           options.settings.lineHeight *
           2;
-      cells.add(
-        ScrollCell(
-          last.block,
-          last.measured,
-          last.offset,
-          last.from,
-          last.to,
-          last.gap,
-          endGap: gap,
-          table: last.table,
-          tableHeight: last.tableHeight,
-        ),
-      );
-      height += gap;
+      final tail = last.withEndGap(gap);
+      cells.add(tail);
+      height += tail.height - last.height;
     }
-    if (content.blocks.isNotEmpty) {
-      for (final empty in measurer.measureBefore(content.blocks.length)) {
-        add(ScrollCell(content.blocks.last, empty, 0, 0, 0, 0));
+    // 纯装饰章节也有纸面高度。沿用空章锚点，不向持久正文插入占位块。
+    addDecorations(
+      content.blocks.lastOrNull ??
+          ContentBlock(id: '', kind: BlockKind.paragraph),
+      content.blocks.length,
+    );
+    final paper = chapterStart && chapterEnd && preparePaperHeight != null
+        ? fullPageBackground(content)
+        : null;
+    final artHeight = paper == null ? null
+        : await preparePaperHeight!(paper.imageUrl!, options.contentWidth);
+    if (cancelled()) throw const ScrollPreparationCancelled();
+    if (cells.isEmpty && chapterStart && chapterEnd) {
+      final id = backgroundOnlyPageAnchor(content);
+      if (id != null) {
+        final anchor =
+            content.blocks.firstOrNull ??
+            ContentBlock(id: id, kind: BlockKind.paragraph);
+        addDecoration(
+          anchor,
+          MeasuredBlock(
+            blockId: id,
+            kind: BlockKind.paragraph,
+            isDecoration: true,
+            height: artHeight ?? options.contentHeight,
+          ),
+        );
       }
     }
-    return ScrollChapter(content, cells, starts, height, options: options);
+    for (var i = 0; i < cells.length && starts[i] < imageBottom; i++) {
+      final start = starts[i], end = start + cells[i].height - cells[i].endGap;
+      if (end <= start) continue;
+      for (final image in overlays) {
+        final top = image.top;
+        if (i != image.cell && top < end && top + image.block.height > start) {
+          cells[i].pageImages.add(
+            PageFragment.whole(image.block, y: top - start),
+          );
+        }
+      }
+    }
+    if (artHeight != null && cells.isNotEmpty) {
+      // fullPageBackground 只接受不平铺的原书插画，正文超出画幅时直接接着排。
+      final body = height - cells.last.endGap;
+      final extent = math.max(body, artHeight);
+      cells.last = cells.last.withEndGap(extent - body);
+      height = extent;
+    }
+    return ScrollChapter(
+      content, cells, starts, height,
+      options: options, paperImageHeight: artHeight,
+    );
   }
 
-  Locator anchorAt(double y, LocatorMapper mapper) {
+  Locator anchorAt(double y, LocatorMapper mapper, {Locator? landing}) {
     final i = cellAt(y);
     final cell = cells[i];
+    if (cell.containerTail) {
+      return mapper.at(cell.block, blockTextOf(cell.block).length);
+    }
     if (cell.table.isNotEmpty) {
-      final parts = cell.table.where((f) => !f.frameOnly).toList();
-      if (parts.isEmpty) return mapper.at(cell.block, 0);
-      final fragment =
-          parts.where((f) => f.y + f.height > y - starts[i]).firstOrNull ??
-          parts.last;
+      final local = y - starts[i];
+      // 两列可以同高。书签指到右格中间时，只有真正落在其行首才回报原偏移。
+      if (landing != null &&
+          landing.chapterId == mapper.chapterId &&
+          cell.table.any(
+            (f) =>
+                !f.frameOnly &&
+                !f.block.isDecoration &&
+                f.block.blockId == landing.blockId &&
+                (f.y - local).abs() < .00001 &&
+                f.containsSourceOffset(landing.utf16Offset),
+          )) {
+        return landing;
+      }
+      final fragment = tableAnchorAt(cell.table, local);
+      if (fragment == null) return mapper.at(cell.block, 0);
       final block = content.blocks.firstWhere(
         (b) => b.id == fragment.block.blockId,
       );
-      return mapper.at(
-        block,
-        fragment.block.lines.isEmpty
-            ? 0
-            : fragment.block.lines[fragment.lineFrom].start,
-      );
+      return mapper.at(block, fragment.sourceStart);
     }
     if (cell.measured.isDecoration) return mapper.chapterStart(content.blocks);
     if (!cell.measured.isText) {
@@ -410,9 +623,23 @@ class ScrollChapter {
         top + cell.measured.lines[line].height <= y + 0.00001) {
       top += cell.measured.lines[line++].height;
     }
+    // 跳到行中某个字与跳到该行开头的屏幕高度相同。仅在原落点保留
+    // 书签字位，读者开始滚动后继续按当前可见行记录进度。
+    final start = cell.offsetAt(line);
+    final end = cell.offset + cell.measured.lines[line].end -
+        cell.measured.displayPrefixLength;
+    if (landing != null &&
+        landing.chapterId == mapper.chapterId &&
+        landing.blockId == cell.block.id &&
+        (top - y).abs() < .00001 &&
+        landing.utf16Offset >= start &&
+        (landing.utf16Offset < end ||
+            (landing.utf16Offset == end && end == cell.block.runLength))) {
+      return landing;
+    }
     return mapper.at(
       cell.block,
-      cell.offsetAt(line).clamp(0, blockTextOf(cell.block).length),
+      start.clamp(0, blockTextOf(cell.block).length),
     );
   }
 
@@ -434,26 +661,34 @@ class ScrollChapter {
     if (content.blocks.isNotEmpty &&
         anchor.blockId == content.blocks.first.id &&
         anchor.utf16Offset == 0 &&
-        cells.first.measured.isTitleDecoration) {
+        cells.firstOrNull?.measured.isTitleDecoration == true) {
       return 0;
     }
+    double? decorationTop;
     for (var i = 0; i < cells.length; i++) {
       final cell = cells[i];
+      for (final image in cell.pageImages) {
+        if (image.block.blockId == anchor.blockId) {
+          return starts[i] + image.y;
+        }
+      }
       if (cell.table.isNotEmpty) {
         for (final fragment in cell.table) {
           if (fragment.frameOnly || fragment.block.blockId != anchor.blockId) {
             continue;
           }
-          final lines = fragment.block.lines;
-          if (lines.isEmpty ||
-              (anchor.utf16Offset >= lines[fragment.lineFrom].start &&
-                  anchor.utf16Offset <= lines[fragment.lineTo - 1].end)) {
+          if (fragment.containsSourceOffset(anchor.utf16Offset)) {
             return starts[i] + fragment.y;
           }
         }
         continue;
       }
+      // 装饰留白借用相邻正文的块号，恢复正文位置时继续找真正绘制它的单元。
       if (cell.block.id != anchor.blockId) continue;
+      if (cell.measured.isDecoration) {
+        decorationTop ??= starts[i];
+        continue;
+      }
       if (!cell.measured.isText) return starts[i];
       var top = starts[i] + cell.textTop;
       for (var line = cell.from; line < cell.to; line++) {
@@ -461,12 +696,33 @@ class ScrollChapter {
             cell.offset +
             cell.measured.lines[line].end -
             cell.measured.displayPrefixLength;
-        if (anchor.utf16Offset < end) return top;
+        // 折行边界属于下一行，整个原文段落的结束位置仍属于它的最后一行。
+        if (anchor.utf16Offset < end ||
+            (anchor.utf16Offset == end && end == cell.block.runLength)) {
+          return top;
+        }
         top += cell.measured.lines[line].height;
       }
     }
+    // 纯背景封面只有装饰单元；它本身就是章首的可见位置。
+    if (decorationTop != null) return decorationTop;
+    final tree = _locatorDisplayTree ??= DisplayTree.build(content);
+    final visible = tree.visibleIndexForHidden(anchor.blockId);
+    if (visible != null) {
+      return offsetOf(
+        Locator(
+          bookId: anchor.bookId,
+          contentVersion: anchor.contentVersion,
+          chapterId: anchor.chapterId,
+          blockId: content.blocks[visible].id,
+          utf16Offset: 0,
+        ),
+      );
+    }
     return height;
   }
+
+  DisplayTree? _locatorDisplayTree;
 
   static List<TextRun> _runsIn(List<TextRun> runs, int from, int to) {
     final result = <TextRun>[];

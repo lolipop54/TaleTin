@@ -49,6 +49,10 @@ abstract class ChapterContentRepository {
     List<Locator> anchors,
   ) async => null;
 
+  /// 当前导入使用的来源摘要，用于跨会话复用双列页序。
+  Future<String?> spreadSourceDigest(String bookId, Chapter chapter) async =>
+      null;
+
   /// 读取单章正文。实现内部有小容量缓存，按需读取，不整本进内存。
   Future<ChapterContent> chapter(
     String bookId,

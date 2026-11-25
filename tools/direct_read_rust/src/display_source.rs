@@ -1,4 +1,4 @@
-// Copyright (c) 2026 GT Reader contributors. MIT license, see LICENSE.
+// Copyright (c) 2026 GT Reader contributors. GPL-3.0-only, see LICENSE.
 //! 显示来源索引：在原始 DOM 还在的时候，把元素的父子、顺序、块范围和表格结构
 //! 记成一份纯数据，供 Dart 在排版时构建显示树。
 //!
@@ -85,9 +85,14 @@ pub struct DisplaySource {
     pub blocks: Vec<usize>,
     /// 正文块序号 → 对应 HTML 元素；表格单元格用它恢复原行列。
     pub block_elements: Vec<usize>,
+    pub compact_lists: Vec<usize>,
     /// 代码源码换行的最终正文边界；不向旧正文插入字符。
     pub code_lines: Vec<[usize; 3]>,
     pub spaces: Vec<[usize; 3]>,
+    pub wide_spaces: Vec<[usize; 3]>,
+    pub non_breaking_spaces: Vec<[usize; 3]>,
+    pub empty_table_grids: std::collections::BTreeMap<usize, Value>,
+    pub cell_space_nodes: std::collections::BTreeMap<usize, bool>,
 }
 
 impl DisplaySource {
@@ -114,8 +119,13 @@ impl DisplaySource {
             }],
             blocks: vec![],
             block_elements: vec![],
+            compact_lists: vec![],
             code_lines: vec![],
             spaces: vec![],
+            wide_spaces: vec![],
+            non_breaking_spaces: vec![],
+            empty_table_grids: Default::default(),
+            cell_space_nodes: Default::default(),
         }
     }
 
@@ -202,6 +212,17 @@ impl DisplaySource {
         if let Some(root) = self.elements.first_mut() {
             root.node_id = node_id;
         }
+    }
+
+    /// 正文遍历从 body 开始。最后接回真实 html，保留已分配的正文元素编号，
+    /// 让纸面背景和根元素的显示状态都能取到同一次层叠的结果。
+    pub fn attach_html_parent(&mut self, node_id: usize) {
+        let id = self.enter(None, node_id, "html", ElementRole::Root);
+        self.elements[0].parent = Some(id);
+        self.elements[id].children.push(0);
+        self.elements[id].first_block = self.elements[0].first_block;
+        self.elements[id].last_block = self.elements[0].last_block;
+        self.elements[id].anchor = 0;
     }
 
     pub fn set_table(&mut self, id: usize, table: usize) {
@@ -292,6 +313,14 @@ impl DisplaySource {
         for r in &mut self.spaces {
             r[0] -= count;
         }
+        self.non_breaking_spaces.retain(|r| r[0] >= count);
+        for r in &mut self.non_breaking_spaces {
+            r[0] -= count;
+        }
+        self.wide_spaces.retain(|r| r[0] >= count);
+        for r in &mut self.wide_spaces {
+            r[0] -= count;
+        }
     }
 
     pub fn to_json(&self) -> Value {
@@ -301,7 +330,12 @@ impl DisplaySource {
         json!({
             "v": 1,
             "linkSemantics": true,
-            "htmlPresentation": 3,
+            "htmlPresentation": 7,
+            "nonBreakingSpaces": self.non_breaking_spaces,
+            "tableGridRevision": 3,
+            "emptyGrids": self.empty_table_grids,
+            "cellSpaces": self.cell_space_nodes,
+            "compactLists":self.compact_lists,
             "elements": self.elements.iter().map(|element| json!({
                 "id": element.id,
                 "p": element.parent,
@@ -322,6 +356,7 @@ impl DisplaySource {
             "blockElements": self.block_elements,
             "codeLines": self.code_lines,
             "spaces": self.spaces,
+            "wideSpaces": self.wide_spaces,
         })
     }
 }
@@ -333,7 +368,7 @@ pub fn role_of(tag: &str) -> Option<ElementRole> {
         "body" | "html" => ElementRole::Root,
         "div" | "section" | "article" | "aside" | "header" | "footer" | "main" | "nav"
         | "figure" | "center" | "form" | "fieldset" | "details" | "summary" | "address"
-        | "blockquote" => ElementRole::BlockContainer,
+        | "blockquote" | "legend" => ElementRole::BlockContainer,
         "p" | "dd" | "dt" | "figcaption" => ElementRole::Paragraph,
         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => ElementRole::Heading,
         "ul" | "ol" | "dl" => ElementRole::List,
@@ -362,6 +397,13 @@ mod tests {
     }
 
     #[test]
+    fn only_explicit_chapters_create_spread_boundaries() {
+        let result = convert(r#"<p>preface</p><section epub:type="chapter"><h1>One</h1>
+            <p id="toc-link">body</p></section><article role="doc-chapter"><p>Two</p></article>"#);
+        assert_eq!(result["displaySource"]["spreadChapters"], json!([[1,2],[3,3]]));
+    }
+
+    #[test]
     fn records_nested_block_ownership() {
         let result = convert(
             r#"<body><div class="quote"><p>a</p><blockquote><p>b</p></blockquote></div></body>"#,
@@ -369,8 +411,12 @@ mod tests {
         let source = &result["displaySource"];
         assert_eq!(source["v"], 1);
         let elements = source["elements"].as_array().unwrap();
-        // body + div + p + blockquote + p
-        assert_eq!(elements.len(), 5);
+        // HTML5 解析补出 html 根元素；保留它和 body 才能分别读取两层背景。
+        assert_eq!(elements.len(), 6);
+        let body = elements.iter().position(|e| e["tag"] == "body").unwrap();
+        let html = elements.iter().position(|e| e["tag"] == "html").unwrap();
+        assert_eq!(elements[body]["p"], json!(html));
+        assert_eq!(elements[html]["c"], json!([body]));
         // 每个正文块都能追到元素
         assert_eq!(source["blocks"].as_array().unwrap().len(), 2);
         // 外层 div 覆盖它内部的两个块

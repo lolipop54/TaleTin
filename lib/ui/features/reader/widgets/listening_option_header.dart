@@ -6,6 +6,7 @@ import '../../../core/widgets/gt_button.dart';
 import 'reader_sheet.dart';
 import 'reader_option_autosave.dart';
 import '../../../core/widgets/gt_icon.dart';
+import 'reader_desktop_layout.dart';
 
 /// 收起会保存当前选择；标题区和内容共用纸张底色。
 class ListeningOptionHeader extends StatelessWidget
@@ -20,17 +21,19 @@ class ListeningOptionHeader extends StatelessWidget
   @override
   Widget build(BuildContext context) {
     final controller = ReaderOptionScope.maybeOf(context)!;
+    final desktop = readerUsesDesktopPanels;
     return GtAppBar(
       title: title,
-      centerTitle: true,
+      centerTitle: !desktop,
       actions: actions,
       leading: ListenableBuilder(
         listenable: controller,
         builder: (context, _) => GtButton.icon(
-          tooltip: '收起',
+          tooltip: desktop ? '返回' : '收起',
+          showTooltipOnWindows: false,
           onPressed: controller.busy ? null : controller.close,
           icon: GtIcon(
-            GtIcons.chevronDown,
+            desktop ? GtIcons.arrowBack : GtIcons.chevronDown,
             color: context.gtColors.textPrimary,
           ),
         ),

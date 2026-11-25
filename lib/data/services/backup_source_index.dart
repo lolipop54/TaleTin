@@ -5,6 +5,7 @@ import 'dart:isolate';
 import '../../domain/models/backup_manifest.dart';
 import '../../domain/models/source_content_index.dart';
 import '../../engine/parsers/epub/epub_archive.dart';
+import '../../core/io/publication_cache_path.dart';
 import '../../engine/parsers/mobi/mobi_source.dart';
 import '../../engine/parsers/epub/epub_parser.dart';
 import '../../domain/models/book.dart';
@@ -132,7 +133,7 @@ Future<Set<String>> validateBackupSourceIndexes(
         }
       } else if (location.length != 1 ||
           location.single is! String ||
-          !BackupEntry.isSafePath('library/${location.single}')) {
+          !_validPublicationPath(location.single as String)) {
         throw const FormatException('EPUB 章节路径无效');
       }
       if (mobi &&
@@ -145,10 +146,12 @@ Future<Set<String>> validateBackupSourceIndexes(
     final deferredImages = <String>[];
     for (final image in index.images.entries) {
       final path = image.key;
-      if (!BackupEntry.isSafePath('$prefix/res/$path')) {
+      if (!_validPublicationPath(path)) {
         throw const FormatException('正文图片资源路径越界');
       }
-      if (files.containsKey('$prefix/res/$path')) continue;
+      if (files.containsKey('$prefix/res/${publicationCachePath(path)}')) {
+        continue;
+      }
       if (index.format == 'pdf' &&
           image.value.length == 2 &&
           image.value[0] == -1 &&
@@ -259,6 +262,15 @@ Future<Set<String>> _validateDirectMobi(
     stored.close();
   }
 }
+
+// 来源索引只用来查归档，不是备份里的磁盘文件名。冒号等字符在这里合法。
+bool _validPublicationPath(String path) =>
+    path.length <= 1024 &&
+    !path.contains(RegExp(r'[\\\x00-\x1f]')) &&
+    path
+        .split('/')
+        .every((part) => part.isNotEmpty && part != '.' && part != '..') &&
+    normalizeEntryPath(path) == path;
 
 void _validateDeferredImages(String sourcePath, List<String> paths) {
   final archive = EpubArchive.open(sourcePath);

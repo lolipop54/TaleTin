@@ -1,8 +1,38 @@
 import 'package:flutter/material.dart';
 
+import '../theme/gt_tokens.dart';
+
 /// 参考图里的“纸张折角 / 蓝色书签带”装饰。
 /// 仅用于书架、成就、设置、导入等页面；阅读页及其子面板禁止使用折角
 /// （设计文档 9.1：避免与仿真翻页的页面边角冲突）。
+
+/// 三个主页使用同一书页折角，标题字号和字体由各页决定。
+class FoldCornerHeading extends StatelessWidget {
+  const FoldCornerHeading(
+    this.title, {
+    super.key,
+    this.style,
+    this.pageTitle = false,
+  });
+
+  final String title;
+  final TextStyle? style;
+  final bool pageTitle;
+
+  @override
+  Widget build(BuildContext context) => Row(
+    mainAxisSize: MainAxisSize.min,
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Flexible(child: Text(title, style: style)),
+      const SizedBox(width: GtSpacing.s2),
+      Padding(
+        padding: EdgeInsets.only(top: pageTitle ? 3 : 2),
+        child: FoldCorner(height: pageTitle ? 21 : 19),
+      ),
+    ],
+  );
+}
 
 /// 纸角折起装饰（参考图里的蓝色小折角）：
 /// 上端收尖，蓝色折面向右下展开，下面露出白色纸面与轻微投影。

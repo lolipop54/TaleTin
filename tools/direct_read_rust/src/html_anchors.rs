@@ -1,4 +1,4 @@
-// Copyright (c) 2026 GT Reader contributors. MIT license, see LICENSE.
+// Copyright (c) 2026 GT Reader contributors. GPL-3.0-only, see LICENSE.
 // TOC queries need a few positions, not the entire DOM/source-piece graph in
 // Dart. Offsets mirror DomTextMapBuilder's per-run whitespace/trim rules.
 use crate::dom::{Dom, attr, tag};

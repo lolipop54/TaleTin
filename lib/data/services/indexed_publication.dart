@@ -16,6 +16,7 @@ EpubArchive openIndexedPublication(
     return EpubArchive.directory(
       p.join(contentDirectory, 'publication'),
       digests: index.publication,
+      mobiSource: source,
     );
   }
   return EpubArchive.entries(

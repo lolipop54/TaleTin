@@ -23,6 +23,8 @@ class TextStyleSpec {
     this.fontStyle,
     this.fontFamilies,
     this.legacyFontFamily,
+    this.visitedInk,
+    this.activeInk,
     this.color,
     this.lineHeight,
     this.decoration,
@@ -33,6 +35,10 @@ class TextStyleSpec {
     this.verticalAlign,
     this.whiteSpace,
     this.hyphens,
+    this.language,
+    this.emphasis,
+    this.emphasisPosition,
+    this.emphasisColor,
   });
 
   /// 相对父级的字号（em／%／rem），或书里写死的 px。见 [FontSizeSpec]。
@@ -44,6 +50,7 @@ class TextStyleSpec {
   final List<String>? fontFamilies;
   // 旧样式表保留原值，以免规范化后合并记录，错位后续 styleId。
   final String? legacyFontFamily;
+  final ColorValue? visitedInk, activeInk;
   final ColorValue? color;
   final LineHeightSpec? lineHeight;
   final TextDecorationSpec? decoration;
@@ -57,7 +64,8 @@ class TextStyleSpec {
   final TextTransformSpec? textTransform;
   final VerticalAlignSpec? verticalAlign;
   final WhiteSpaceSpec? whiteSpace;
-  final String? hyphens;
+  final String? hyphens, language, emphasis, emphasisPosition;
+  final ColorValue? emphasisColor;
 
   bool get isEmpty =>
       fontSize == null &&
@@ -74,7 +82,13 @@ class TextStyleSpec {
       textTransform == null &&
       verticalAlign == null &&
       whiteSpace == null &&
-      hyphens == null;
+      visitedInk == null &&
+      activeInk == null &&
+      hyphens == null &&
+      language == null &&
+      emphasis == null &&
+      emphasisPosition == null &&
+      emphasisColor == null;
 
   /// 覆盖规则：`this` 是更高优先级的一层，只有自己写了的属性才盖掉 [base]。
   TextStyleSpec mergeOver(TextStyleSpec base) => TextStyleSpec(
@@ -93,6 +107,12 @@ class TextStyleSpec {
     verticalAlign: verticalAlign ?? base.verticalAlign,
     whiteSpace: whiteSpace ?? base.whiteSpace,
     hyphens: hyphens ?? base.hyphens,
+    visitedInk: visitedInk ?? base.visitedInk,
+    activeInk: activeInk ?? base.activeInk,
+    language: language ?? base.language,
+    emphasis: emphasis ?? base.emphasis,
+    emphasisPosition: emphasisPosition ?? base.emphasisPosition,
+    emphasisColor: emphasisColor ?? base.emphasisColor,
   );
 
   static const TextStyleSpec empty = TextStyleSpec();
@@ -111,6 +131,7 @@ class BoxStyleSpec {
     this.radii,
     this.shadow,
     this.overflow,
+    this.decorationBreak,
   });
 
   final Edges? padding;
@@ -123,6 +144,7 @@ class BoxStyleSpec {
 
   /// `overflow`：第一版只记录，不裁剪内容。
   final String? overflow;
+  final String? decorationBreak;
 
   bool get isEmpty =>
       padding == null &&
@@ -130,7 +152,8 @@ class BoxStyleSpec {
       background == null &&
       radii == null &&
       shadow == null &&
-      overflow == null;
+      overflow == null &&
+      decorationBreak == null;
 
   BoxStyleSpec mergeOver(BoxStyleSpec base) => BoxStyleSpec(
     padding: padding ?? base.padding,
@@ -139,6 +162,7 @@ class BoxStyleSpec {
     radii: radii ?? base.radii,
     shadow: shadow ?? base.shadow,
     overflow: overflow ?? base.overflow,
+    decorationBreak: decorationBreak ?? base.decorationBreak,
   );
 
   static const BoxStyleSpec empty = BoxStyleSpec();
@@ -232,6 +256,7 @@ class SizeStyleSpec {
     this.maxHeight,
     this.boxSizing,
     this.objectFit,
+    this.bleed,
   });
 
   final Length? width;
@@ -244,18 +269,19 @@ class SizeStyleSpec {
   /// `border-box` 时宽度包含内边距和边框。默认 `content-box`。
   final BoxSizingSpec? boxSizing;
 
-  /// 图片的缩放方式（`object-fit`）；第一版只支持 `contain`／`fill` 的现有行为。
+  /// 图片在内容框内采用的缩放方式，由分页和滚动的图片绘制共用。
   final String? objectFit;
+  final int? bleed;
 
+  bool get hasDimensions =>
+      width != null ||
+      height != null ||
+      minWidth != null ||
+      minHeight != null ||
+      maxWidth != null ||
+      maxHeight != null;
   bool get isEmpty =>
-      width == null &&
-      height == null &&
-      minWidth == null &&
-      minHeight == null &&
-      maxWidth == null &&
-      maxHeight == null &&
-      boxSizing == null &&
-      objectFit == null;
+      !hasDimensions && boxSizing == null && objectFit == null && bleed == null;
 
   SizeStyleSpec mergeOver(SizeStyleSpec base) => SizeStyleSpec(
     width: width ?? base.width,
@@ -266,6 +292,7 @@ class SizeStyleSpec {
     maxHeight: maxHeight ?? base.maxHeight,
     boxSizing: boxSizing ?? base.boxSizing,
     objectFit: objectFit ?? base.objectFit,
+    bleed: bleed ?? base.bleed,
   );
 
   static const SizeStyleSpec empty = SizeStyleSpec();
@@ -276,14 +303,18 @@ class TableStyleSpec {
   const TableStyleSpec({
     this.borderCollapse,
     this.borderSpacing,
+    this.borderSpacingY,
     this.tableLayout,
+    this.direction,
     this.captionSide,
     this.emptyCells,
   });
 
   final String? borderCollapse;
   final Length? borderSpacing;
+  final Length? borderSpacingY;
   final String? tableLayout;
+  final String? direction;
   final String? captionSide;
   final String? emptyCells;
 
@@ -291,13 +322,18 @@ class TableStyleSpec {
       borderCollapse == null &&
       borderSpacing == null &&
       tableLayout == null &&
+      direction == null &&
       captionSide == null &&
       emptyCells == null;
 
   TableStyleSpec mergeOver(TableStyleSpec base) => TableStyleSpec(
     borderCollapse: borderCollapse ?? base.borderCollapse,
     borderSpacing: borderSpacing ?? base.borderSpacing,
+    borderSpacingY: borderSpacing == null
+        ? base.borderSpacingY
+        : borderSpacingY,
     tableLayout: tableLayout ?? base.tableLayout,
+    direction: direction ?? base.direction,
     captionSide: captionSide ?? base.captionSide,
     emptyCells: emptyCells ?? base.emptyCells,
   );

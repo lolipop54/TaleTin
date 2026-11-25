@@ -16,8 +16,17 @@ enum BookCoverPreset {
 /// null 表示跟随格式默认值；空选择明确使用原书封面，不覆盖原图。
 class BookCoverChoice {
   const BookCoverChoice({this.preset, this.imagePath});
+  static const galleryDirectory = 'cover-gallery';
   final BookCoverPreset? preset;
   final String? imagePath;
+
+  /// 新图及旧版格式默认图从书库根目录读取，旧版单书图从该书目录读取。
+  static bool isLibraryImage(String path) =>
+      path.startsWith('$galleryDirectory/') ||
+      path.startsWith('global-covers/');
+
+  static String libraryImagePath(String path, String bookId) =>
+      isLibraryImage(path) ? path : '$bookId/$path';
 
   Map<String, Object?> toJson() => {
     'preset': preset?.code,
@@ -27,10 +36,10 @@ class BookCoverChoice {
   factory BookCoverChoice.fromJson(Map<String, dynamic> json) {
     final code = json['preset'];
     final path = json['imagePath'] as String?;
-    // 备份是外部输入，只接受本功能生成的相对文件名，不能越出单书目录。
+    // 备份是外部输入，只接受新图库及两种旧位置生成的相对文件名。
     if (path != null &&
         !RegExp(
-          r'^(covers/|global-covers/(txt|epub|mobi|azw3|pdf)/)[a-zA-Z0-9-]+\.png$',
+          r'^(cover-gallery/|covers/|global-covers/(txt|epub|mobi|azw3|pdf)/)[a-zA-Z0-9-]+\.png$',
         ).hasMatch(path)) {
       throw const FormatException('自定义封面路径无效');
     }

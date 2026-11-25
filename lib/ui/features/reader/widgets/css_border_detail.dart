@@ -53,6 +53,12 @@ void paintRoundedCssBorders(
     [rect.bottomRight, rect.bottomLeft, bl, br],
     [rect.bottomLeft, rect.topLeft, tl, bl],
   ];
+  // 圆角虚线沿整圈路径取样，按实际边框轮廓裁剪。分页断口和没有边框
+  // 的边上，内外轮廓重合，路径上的水平描边就不会从相邻边的区域漏出。
+  late final borderBand = Path()
+    ..fillType = PathFillType.evenOdd
+    ..addRRect(outer)
+    ..addRRect(contour(1));
   for (var side = 0; side < 4; side++) {
     final thickness = widths[side];
     if (thickness <= 0) continue;
@@ -81,6 +87,7 @@ void paintRoundedCssBorders(
         band(.5, 1, inside);
       }
     } else if (style == 2 || style == 3) {
+      canvas.clipPath(borderBand);
       final path = Path()..addRRect(contour(.5));
       final paint = Paint()
         ..color = color

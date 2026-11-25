@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.2.6+61
+version: 1.2.7+62
 
 environment:
   sdk: ^3.13.2
@@ -44,12 +44,16 @@ dependencies:
     sdk: flutter
   flutter_svg: ^2.3.0
   drift: 2.34.4
+  sqlite3: 3.5.2
   archive: 4.2.0
   xml: 6.6.1
   html: 0.15.7
   crypto: 3.0.7
   uuid: 4.6.0
   path_provider: 2.1.6
+  file_selector_windows: 0.9.3+6
+  file_selector_platform_interface: 2.7.0
+  win32: 6.4.0
   path: 1.9.1
   meta: ^1.19.0
   # 字素簇边界判定：分页切分点与选区不拆 emoji / 代理对
@@ -115,6 +119,8 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+  shaders:
+    - assets/shaders/page_curl.frag
  
   assets:
     - assets/更新日志.md

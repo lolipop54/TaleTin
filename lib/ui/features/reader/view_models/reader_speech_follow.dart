@@ -14,6 +14,28 @@ mixin _ReaderSpeechFollow
     _speechDiagnostics?.step('sessionCancel', {'request': _speechRequest});
   }
 
+  // 朗读进入已经上屏的右页时只移动高亮。此时调整字号或窗口，应按正在
+  // 读的字重新配对；右侧也可能属于下一章，章节和字位需要一起取。
+  @override
+  (int, Locator)? _spreadSpeechTarget(
+    ReaderSession session,
+    LayoutOptions options,
+  ) {
+    if (_mode.isOriginal || session.scrolling) return null;
+    if (!options.settings.spreadEnabled &&
+        session.layout?.options.settings.spreadEnabled != true) {
+      return null;
+    }
+    final speech = ref.read(listeningServiceProvider).snapshot;
+    final target = speech.bookId == bookId ? speech.pageFollowLocator : null;
+    if (target == null ||
+        target.contentVersion != session.book.contentVersion) {
+      return null;
+    }
+    final index = session.chapters.indexWhere((c) => c.id == target.chapterId);
+    return index < 0 ? null : (index, target);
+  }
+
   /// 跟随只替换显示状态；不保存页首、不启动翻页动画。同页直接返回。
   Future<void> followSpeech(
     Locator locator, {
@@ -86,6 +108,8 @@ mixin _ReaderSpeechFollow
     if (layout == null || layout.chapterId != locator.chapterId) {
       log('contentBegin', {'targetChapter': index});
       final indexed = await _layoutIndexedTxt(
+        ref,
+        bookId,
         session,
         index,
         options,
@@ -108,6 +132,7 @@ mixin _ReaderSpeechFollow
             .read(readerEngineProvider)
             .layoutWindow(
               LayoutRequest(
+                book: session.book,
                 bookId: bookId,
                 contentVersion: session.book.contentVersion,
                 chapter: session.chapters[index],
@@ -156,6 +181,7 @@ mixin _ReaderSpeechFollow
         content: layout.readsTxtBySection ? null : content,
         layout: layout,
         pageIndex: page,
+        spreadTarget: options.settings.spreadEnabled ? locator : null,
         viewportSignature: options.layoutSignature,
       ),
     );

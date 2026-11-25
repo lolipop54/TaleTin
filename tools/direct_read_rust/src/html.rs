@@ -1,4 +1,4 @@
-// Copyright (c) 2026 GT Reader contributors. MIT license, see LICENSE.
+// Copyright (c) 2026 GT Reader contributors. GPL-3.0-only, see LICENSE.
 // Conversion mirrors the reader's existing block/run rules, including separate
 // trimming at style boundaries. UTF-16 lengths are used for all reader positions.
 use crate::display_source::{DisplaySource, role_of};
@@ -125,49 +125,6 @@ impl Html {
             output: Vec::new(),
         }
     }
-    pub fn refs(&self) -> Value {
-        let mut images = vec![];
-        let mut links = vec![];
-        let mut stack = find(&self.dom.document, "body")
-            .map(|b| {
-                b.children
-                    .borrow()
-                    .iter()
-                    .rev()
-                    .cloned()
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        while let Some(n) = stack.pop() {
-            let t = tag(&n);
-            if ignored(t) || t == "style" || t == "link" {
-                continue;
-            }
-            if t == "svg" {
-                if let Some(image) = find(&n, "image") {
-                    if let Some(src) = source(&image) {
-                        images.push(src);
-                    }
-                }
-                continue;
-            }
-            if t == "img" || t == "image" {
-                if let Some(src) = source(&n) {
-                    images.push(src);
-                }
-                continue;
-            }
-            // 所有书内链接都要收集：脚注引用要显示气泡，普通链接要能点击跳转。
-            // 书外链接由 Dart 侧解析时丢掉（resolveEntryPath 返回 null）。
-            if t == "a" {
-                if let Some(href) = attr(&n, "href") {
-                    links.push(href);
-                }
-            }
-            stack.extend(n.children.borrow().iter().rev().cloned());
-        }
-        json!({"images":images,"links":links,"css":style_sources::style_sources(&self.dom)})
-    }
     fn build(&self, metadata: Value, flags: u32) -> Builder {
         let mut build = Builder::new(metadata, flags | if self.optimized { 4 } else { 0 });
         if let Some(body) = find(&self.dom.document, "body") {
@@ -186,45 +143,73 @@ impl Html {
             removed += 1;
         }
         build.source.remove_prefix(removed);
+        if build.source.enabled
+            && let Some(html) = self
+                .dom
+                .document
+                .children
+                .borrow()
+                .iter()
+                .find(|n| tag(n) == "html")
+        {
+            build.source.attach_html_parent(html.id);
+        }
         build
     }
     pub fn convert(&self, metadata: Value, flags: u32) -> Value {
+        if let Some(command) = metadata.get("cssTreeCommand") {
+            return crate::css::publication::command(command);
+        }
         if metadata.get("styleProgram").is_some() {
             return crate::css::program::evaluate(&metadata);
         }
         let anchors = metadata.get("anchors").cloned();
         let anchor_metadata = metadata.clone();
         let mut build = self.build(metadata, flags);
+        if build.metadata["cssBook"].is_string() && build.engine.is_none() {
+            return json!({"cssError":"无法加载当前章节的样式树"});
+        }
         // 批次 C：块与片段各带一个样式表编号，表随正文一起输出；旧显示字段同时保留（双写）。
         let (styles, element_style_ids) =
             crate::style_table::attach_with_elements(&mut build.blocks, &build.element_styles);
         build.source.apply_styles(&element_style_ids);
         let mut source = build.source.to_json();
-        if build.engine.is_some() {
-            let mut declared: Vec<_> = build
-                .computed_cache
-                .iter()
-                .filter_map(|(id, style)| style.font_size_declared.then_some(*id))
-                .collect();
-            declared.sort_unstable();
-            source["fontSizeDeclarations"] = json!(declared);
-        }
-        if let Some(engine) = &build.engine {
-            source["computed"] = json!(true);
-            let mut resources = engine.resources();
-            resources.sort();
-            source["backgroundResources"] = json!(resources);
-            if !engine.font_faces().is_empty() {
-                source["fontFaces"] = json!(engine.font_faces());
-            }
-            if engine.needs_environment() {
-                source["css"] = json!({"nodes":self.dom.style_nodes(),"cssSources":build.metadata["cssSources"],"cssFiles":build.metadata["cssFiles"],"documentPath":build.metadata["documentPath"],"unifiedCss":true});
-            }
+        style_sources::attach(&self.dom, &build, &mut source);
+        if source.is_object()
+            && let (Some(book), Some(path)) = (
+                build.metadata["cssBook"].as_str(),
+                build.metadata["documentPath"].as_str(),
+            )
+            && crate::css::publication::repeated_opening(book, path)
+        {
+            source["repeatedOpening"] = json!(true);
         }
         let mut result = json!({"blocks":build.blocks,"tables":build.tables,"heading":build.heading,"warnings":build.warnings,
             "length":build.length,"singleImage":build.single_image,"pieces":build.maps,"styles":styles});
+        if build.metadata["cssDiagnostics"] == true
+            && let Some(engine) = &build.engine
+        {
+            result["cssDiagnostics"] = json!({"elements":engine.diagnostics.matched_elements,
+                "attempts":engine.diagnostics.attempted_selectors,"matched":engine.diagnostics.matched_rules,
+                "setupUs":engine.diagnostics.setup_us,"matchUs":engine.diagnostics.match_ns / 1000,
+                "cascadeUs":engine.diagnostics.cascade_ns / 1000});
+        }
+        if let Some(hits) = build
+            .engine
+            .as_ref()
+            .and_then(|engine| engine.diagnostics.hits.as_ref())
+        {
+            result["cssHits"] = json!(hits);
+        }
         if !source.is_null() {
             result["displaySource"] = source;
+        }
+        if let Some(trace) = build
+            .engine
+            .as_ref()
+            .and_then(|engine| engine.trace.as_ref())
+        {
+            result["cssTrace"] = trace.clone();
         }
         if anchors.is_some() {
             result["tocHeadings"] = json!(build.toc_headings);
@@ -371,6 +356,7 @@ struct StyleMark {
 struct ListState {
     ordered: bool,
     next: i64,
+    step: i64,
     /// 列表容器上的 list-style（CSS 里由 li 继承）
     list_style: Option<i32>,
 }
@@ -427,7 +413,7 @@ struct Builder {
     marks: Vec<Mark>,
     /// `<br>` 产生的换行标记位置；裁剪 run 时保护这个尾空格，否则换行会被吞掉。
     hard_breaks: Vec<(usize, usize)>,
-    pending_spaces: Vec<(usize, usize)>,
+    pending_spaces: Vec<(usize, usize, usize, bool)>,
     scripts: Vec<StyleMark>,
     lists: Vec<ListState>,
     quote_depth: u32,
@@ -490,7 +476,17 @@ fn text_of(node: &Handle) -> String {
 fn ordered_start(node: &Handle) -> i64 {
     attr(node, "start")
         .and_then(|v| v.trim().parse::<i64>().ok())
-        .unwrap_or(1)
+        .unwrap_or_else(|| {
+            if attr(node, "reversed").is_some() {
+                node.children
+                    .borrow()
+                    .iter()
+                    .filter(|c| tag(c) == "li")
+                    .count() as i64
+            } else {
+                1
+            }
+        })
 }
 
 /// 图片元素自己的行内 `width`／`max-width`（`style="width:60%"`）。
@@ -699,6 +695,12 @@ impl Builder {
             }
             None => 0,
         };
+        if self.source.enabled
+            && matches!(tag_name, "ol" | "ul" | "menu" | "dir" | "dl")
+            && attr(n, "compact").is_some()
+        {
+            self.source.compact_lists.push(eid);
+        }
         if tag_name == "math" && self.source.enabled {
             self.source.elements[eid].math = Some(crate::mathml::serialize(n));
         }

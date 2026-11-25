@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'package:taletin/ui/core/widgets/gt_switch.dart';
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -80,6 +81,39 @@ class _GlobalFontViewState extends ConsumerState<GlobalFontView> {
     setState(() => _busy = busy);
   }
 
+  Future<void> _openImport() async {
+    if (defaultTargetPlatform != TargetPlatform.windows) {
+      await Navigator.of(context, rootNavigator: true).push<bool>(
+        MaterialPageRoute(
+          builder: (_) => const LocalFilesView(purpose: LocalFilePurpose.fonts),
+        ),
+      );
+      return;
+    }
+    if (_busy) return;
+    _setBusy(true);
+    try {
+      final paths = await ref.read(windowsFontPickerProvider)();
+      if (!mounted || paths.isEmpty) return;
+      final failed = await ReadingFonts.importFiles(
+        ref.read(importedFontStoreProvider),
+        paths,
+      );
+      if (!mounted) return;
+      ref.invalidate(fontFamilyNamesProvider);
+      ref.invalidate(currentTypographyFontsProvider);
+      await ref.read(fontFamilyNamesProvider.future);
+      if (mounted && failed > 0) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$failed 个字体导入失败，成功项已保存')));
+      }
+    } catch (error, stack) {
+      AppErrors.report(error, stack, operation: '打开或导入字体失败');
+    } finally {
+      if (mounted) _setBusy(false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     // 阅读器字体子面板持续持有设置资源，导入子路由覆盖期间也不释放。
@@ -127,14 +161,7 @@ class _GlobalFontViewState extends ConsumerState<GlobalFontView> {
           ),
           GtButton(
             style: _headerActionStyle,
-            onPressed: _busy
-                ? null
-                : () => Navigator.of(context, rootNavigator: true).push<bool>(
-                    MaterialPageRoute(
-                      builder: (_) =>
-                          const LocalFilesView(purpose: LocalFilePurpose.fonts),
-                    ),
-                  ),
+            onPressed: _busy ? null : _openImport,
             child: const Text('导入'),
           ),
           // 按钮已有6dp右内边距，只补足剩余10dp，不拉大编辑与导入的间隔。

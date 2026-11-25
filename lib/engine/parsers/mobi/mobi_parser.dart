@@ -161,6 +161,8 @@ class MobiParser {
       p.join(publication.path, 'META-INF', 'container.xml'),
     );
     container.parent.createSync(recursive: true);
+    File(p.join(publication.parent.path, 'mobi-version'))
+        .writeAsStringSync(result.version.toString());
     container.writeAsStringSync('''<?xml version="1.0" encoding="UTF-8"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
 <rootfiles><rootfile full-path="content.opf" media-type="application/oebps-package+xml"/></rootfiles>

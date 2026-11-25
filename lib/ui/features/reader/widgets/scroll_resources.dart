@@ -12,12 +12,14 @@ import '../../../../core/diagnostics/app_errors.dart';
 import '../../../../engine/layout/scroll_chapter.dart';
 import 'reader_performance.dart';
 import '../../../../engine/layout/book_background.dart';
+import '../../../../engine/layout/book_image_fit.dart';
 import '../../../../engine/layout/layout_options.dart';
 import '../../../core/theme/reading_theme.dart';
 import 'book_colors.dart';
 import 'background_image_color.dart';
 import 'book_box_paint.dart';
 import 'book_svg_picture.dart';
+import 'book_raster_size.dart';
 
 /// 只准备屏幕附近图片；位置和高度来自正文模型，不随解码先后改变。
 class ScrollResources extends ChangeNotifier {
@@ -26,10 +28,16 @@ class ScrollResources extends ChangeNotifier {
     this.formulaColor,
     this.readingTheme,
     this.pixelRatio,
+    this.paperSize,
+    this.onBackdropChanged,
   });
   final double Function()? pixelRatio;
+  final Size Function()? paperSize;
+  final ValueChanged<ScrollChapter>? onBackdropChanged;
   final ReadingTheme Function()? readingTheme;
   final _backdrops = Expando<Map<int, Color>>();
+  int _backdropRevision = 0;
+  int get backdropRevision => _backdropRevision;
   final Color Function()? formulaColor;
   final String Function(String) resolve;
   final _held = <String, _ScrollImage>{};
@@ -45,6 +53,11 @@ class ScrollResources extends ChangeNotifier {
   final _pins = <String, int>{};
   bool _disposed = false;
   final _imageIndices = Expando<List<int>>();
+  final _cellPaths = Expando<Set<String>>();
+  final _chapterImages =
+      Expando<
+        ({double width, Set<String> backgrounds, BookRasterSizes sizes})
+      >();
   ui.Image? backgroundImage(String path) => backgroundInfo(path)?.image;
   ImageInfo? backgroundInfo(String path) =>
       _visible(path)?.background ?? _visible(path)?.image;
@@ -53,17 +66,16 @@ class ScrollResources extends ChangeNotifier {
     LayoutOptions options,
     ReadingTheme theme,
   ) {
+    final saved = _backdrops[chapter]?[theme.background.toARGB32()];
+    if (saved != null) return saved;
     final box = chapterBackground(chapter.content, options);
-    final fallback = adaptSurface(
-      box?.background ?? theme.background,
-      theme.background,
-    );
-    return _backdrops[chapter]?[theme.background.toARGB32()] ?? fallback;
+    return adaptSurface(box?.background ?? theme.background, theme.background);
   }
 
   List<int> _indices(ScrollChapter chapter) => _imageIndices[chapter] ??= [
     for (var i = 0; i < chapter.cells.length; i++)
       if (chapter.cells[i].measured.imageSize != null ||
+          chapter.cells[i].pageImages.isNotEmpty ||
           chapter.cells[i].measured.hasInlineImages ||
           blockBackgroundPaths(chapter.cells[i].measured).isNotEmpty ||
           chapter.cells[i].table.any(
@@ -75,31 +87,44 @@ class ScrollResources extends ChangeNotifier {
         i,
   ];
 
-  Set<String> pathsNear(ScrollChapter chapter, double y, double viewport) => {
-    ?chapterBackgroundPath(chapter.content),
-    for (final i in _indices(chapter))
-      if (chapter.starts[i] + chapter.cells[i].height >= y - 600 &&
-          chapter.starts[i] <= y + viewport + 1200) ...{
-        if (chapter.cells[i].table.isEmpty &&
-            chapter.cells[i].block.resourcePath != null)
-          chapter.cells[i].block.resourcePath!,
-        ...blockBackgroundPaths(chapter.cells[i].measured),
-        for (final image in chapter.cells[i].measured.inlineImagesInLines(
-          chapter.cells[i].from,
-          chapter.cells[i].to,
-        ))
-          image.resourcePath,
-        for (final fragment in chapter.cells[i].table) ...{
-          ...blockBackgroundPaths(fragment.block),
-          if (!fragment.frameOnly && fragment.block.resourcePath != null)
-            fragment.block.resourcePath!,
-          for (final image in fragment.block.inlineImagesInLines(
-            fragment.lineFrom,
-            fragment.lineTo,
-          ))
-            image.resourcePath,
-        },
-      },
+  Set<String> pathsNear(ScrollChapter chapter, double y, double viewport) {
+    if (y - 600 > chapter.height || y + viewport + 1200 < 0) return const {};
+    final indices = _indices(chapter);
+    // 找到离屏幕最近的第一格。章尾快滑时也只查看附近的配图、背景和表格。
+    var lo = 0, hi = indices.length;
+    while (lo < hi) {
+      final mid = (lo + hi) ~/ 2, index = indices[mid];
+      if (chapter.starts[index] + chapter.cells[index].height < y - 600) {
+        lo = mid + 1;
+      } else {
+        hi = mid;
+      }
+    }
+    final paths = <String>{?chapterBackgroundPath(chapter.content)};
+    for (var n = lo; n < indices.length; n++) {
+      final index = indices[n];
+      if (chapter.starts[index] > y + viewport + 1200) break;
+      final cell = chapter.cells[index];
+      paths.addAll(_cellPaths[cell] ??= _pathsIn(cell));
+    }
+    return paths;
+  }
+
+  Set<String> _pathsIn(ScrollCell cell) => {
+    if (cell.table.isEmpty) ?cell.measured.resourcePath,
+    for (final image in cell.pageImages) image.block.resourcePath!,
+    ...blockBackgroundPaths(cell.measured),
+    for (final image in cell.measured.inlineImagesInLines(cell.from, cell.to))
+      image.resourcePath,
+    for (final fragment in cell.table) ...{
+      ...blockBackgroundPaths(fragment.block),
+      if (!fragment.frameOnly) ?fragment.block.resourcePath,
+      for (final image in fragment.block.inlineImagesInLines(
+        fragment.lineFrom,
+        fragment.lineTo,
+      ))
+        image.resourcePath,
+    },
   };
 
   bool ready(ScrollChapter chapter, double y, double viewport) => pathsNear(
@@ -108,28 +133,65 @@ class ScrollResources extends ChangeNotifier {
     viewport,
   ).every((path) => _held[_key(path)]?.loaded == true);
 
+  ({double width, Set<String> backgrounds, BookRasterSizes sizes}) _geometry(
+    ScrollChapter chapter,
+  ) {
+    final width =
+        chapter.options?.contentSize.width ??
+        chapter.cells.fold<double>(
+          1,
+          (n, c) =>
+              math.max(n, (c.measured.layoutWidth ?? 0) + c.measured.inset * 2),
+        );
+    final backgrounds = <String>{};
+    final sizes = BookRasterSizes();
+    for (final i in _indices(chapter)) {
+      final cell = chapter.cells[i];
+      backgrounds.addAll(blockBackgroundPaths(cell.measured));
+      for (final fragment in cell.table) {
+        backgrounds.addAll(blockBackgroundPaths(fragment.block));
+      }
+      for (final image in cell.positionedImages(width)) {
+        if (image.block.resourcePath case final path?) {
+          sizes.include(path, image.rect.size, image.block.imageFit);
+        }
+      }
+      for (final visual in cell.positionedInlineImages) {
+        sizes.include(
+          visual.image.resourcePath,
+          visual.rect.size,
+          visual.image.imageFit,
+        );
+      }
+    }
+    return (width: width, backgrounds: backgrounds, sizes: sizes);
+  }
+
+  final _paperAspects = <String, Future<double?>>{};
+  Future<double?> fullWidthPaperHeight(String path, double contentWidth) async {
+    final width = paperSize?.call().width ?? contentWidth;
+    final pending = _paperAspects.putIfAbsent(
+      path,
+      () => paperImageAspect(File(resolve(path))),
+    );
+    final aspect = await pending;
+    if (aspect != null) return width / aspect;
+    if (identical(_paperAspects[path], pending)) _paperAspects.remove(path);
+    return null;
+  }
+
   Future<void> warm(ScrollChapter chapter, double y, double viewport) async {
     final jobs = <Future<void>>[];
     final paths = pathsNear(chapter, y, viewport);
-    final backgroundSize =
-        Size(
-          chapter.cells.fold<double>(
-            1,
-            (n, c) => math.max(
-              n,
-              (c.measured.layoutWidth ?? 0) + c.measured.inset * 2,
-            ),
-          ),
-          viewport,
-        ) *
-        (pixelRatio?.call() ?? 1);
-    final backgrounds = {
-      ?chapterBackgroundPath(chapter.content),
-      for (final cell in chapter.cells) ...blockBackgroundPaths(cell.measured),
-      for (final cell in chapter.cells)
-        for (final fragment in cell.table)
-          ...blockBackgroundPaths(fragment.block),
-    };
+    if (paths.isEmpty) return;
+    final geometry = _chapterImages[chapter] ??= _geometry(chapter);
+    final ratio = pixelRatio?.call() ?? 1;
+    final backgroundSize = Size(geometry.width, viewport) * ratio;
+    final paper = paperSize?.call() ?? Size(geometry.width, viewport);
+    final options = chapter.options;
+    final root = options == null
+        ? null
+        : chapterBackground(chapter.content, options)?.backgroundImage;
     final keys = paths.map(_key).toList();
     for (final path in paths) {
       // 新窗口准备和旧窗口滚动会重叠，等待中的图片不能被旧窗口释放。
@@ -138,14 +200,32 @@ class ScrollResources extends ChangeNotifier {
       final image = _held.putIfAbsent(key, () => _ScrollImage());
       jobs.add(
         (() async {
-          await (image.pending ??= _load(
+          final blockBackground = geometry.backgrounds.contains(path);
+          final background = blockBackground || root?.path == path;
+          final raster = geometry.sizes.decodeSize(
             path,
-            image,
-            key,
-            background: backgrounds.contains(path),
-            backgroundSize: backgroundSize,
-          ));
-          if (backgrounds.contains(path) && image.picture != null) {
+            ratio: ratio,
+            paper: paper,
+            root: root,
+            blockBackground: blockBackground,
+          );
+          final cover = raster.cover;
+          final size = path.toLowerCase().endsWith('.svg')
+              ? null
+              : raster.pixels;
+          await image.prepare(size, cover, (pixels) async {
+            if (_disposed || !identical(_held[key], image)) return;
+            await _load(
+              path,
+              image,
+              key,
+              background: background,
+              backgroundSize: backgroundSize,
+              rasterSize: pixels,
+              cover: cover,
+            );
+          });
+          if (background && image.picture != null) {
             await _rasterize(image, backgroundSize);
           }
         })(),
@@ -156,9 +236,7 @@ class ScrollResources extends ChangeNotifier {
       final options = chapter.options;
       final theme = readingTheme?.call() ?? ReadingTheme.paper;
       final key = theme.background.toARGB32();
-      final box = options == null
-          ? null
-          : chapterBackground(chapter.content, options);
+      final box = chapter.paperBox;
       if (!_disposed &&
           box?.backgroundImage != null &&
           _backdrops[chapter]?[key] == null) {
@@ -169,7 +247,11 @@ class ScrollResources extends ChangeNotifier {
           canvas.drawRect(rect, Paint()..color = theme.background);
           paintBookBoxRect(canvas, rect, box!, theme, images: backgroundInfo);
         });
-        (_backdrops[chapter] ??= {})[key] = tone;
+        if (!_disposed && _backdrops[chapter]?[key] != tone) {
+          (_backdrops[chapter] ??= {})[key] = tone;
+          _backdropRevision++;
+          onBackdropChanged?.call(chapter);
+        }
       }
     } finally {
       for (final path in keys) {
@@ -188,6 +270,8 @@ class ScrollResources extends ChangeNotifier {
     String key, {
     bool background = false,
     Size? backgroundSize,
+    Size? rasterSize,
+    bool cover = false,
   }) async {
     final watch = readerPerformanceEnabled ? (Stopwatch()..start()) : null;
     try {
@@ -206,7 +290,7 @@ class ScrollResources extends ChangeNotifier {
         }
       } else {
         final done = Completer<ImageInfo?>();
-        final provider = FileImage(file);
+        final provider = bookRasterProvider(file, rasterSize, cover: cover);
         final stream = provider.resolve(ImageConfiguration.empty);
         late final ImageStreamListener listener;
         listener = ImageStreamListener(
@@ -229,8 +313,13 @@ class ScrollResources extends ChangeNotifier {
         );
         stream.addListener(listener);
         try {
-          target.image = await done.future;
-          if (target.image == null) await provider.evict();
+          final next = await done.future;
+          if (next == null) {
+            await provider.evict();
+          } else {
+            target.image?.dispose();
+            target.image = next;
+          }
         } finally {
           stream.removeListener(listener);
         }
@@ -252,21 +341,38 @@ class ScrollResources extends ChangeNotifier {
     }
   }
 
-  Widget view(String path, Size size, Color color, String? alt) => SizedBox(
-    width: size.width,
-    height: size.height,
-    child: Builder(
-      builder: (context) => CustomPaint(
-        painter: _ScrollImagePainter(
-          this,
-          path,
-          color,
-          alt ?? '图片无法显示',
-          Theme.of(context).textTheme.bodyMedium?.fontFamily,
+  Widget view(
+    String path,
+    Size size,
+    Color color,
+    String? alt, [
+    BookImageFit? fit,
+  ]) {
+    final rect = fit?.destination(Offset.zero & size);
+    final picture = SizedBox(
+      width: rect?.width ?? size.width,
+      height: rect?.height ?? size.height,
+      child: Builder(
+        builder: (context) => CustomPaint(
+          painter: _ScrollImagePainter(
+            this,
+            path,
+            color,
+            alt ?? '图片无法显示',
+            Theme.of(context).textTheme.bodyMedium?.fontFamily,
+          ),
         ),
       ),
-    ),
-  );
+    );
+    if (rect == null) return picture;
+    return SizedBox.fromSize(
+      size: size,
+      child: Stack(
+        clipBehavior: Clip.hardEdge,
+        children: [Positioned.fromRect(rect: rect, child: picture)],
+      ),
+    );
+  }
 
   Future<void> _rasterize(_ScrollImage target, [Size? targetSize]) async {
     if (_disposed || target.picture == null || target.picture!.size.isEmpty) {
@@ -339,6 +445,34 @@ class _ScrollImage {
   ImageInfo? background;
   Future<void>? backgroundPending;
   Future<void>? pending;
+  Size? _requestedPixels;
+  bool _cover = false;
+
+  // 同一文件可能先用于小图，再用于大图或背景。较清晰的一份到达前继续画旧图。
+  Future<void> prepare(
+    Size? size,
+    bool cover,
+    Future<void> Function(Size?) load,
+  ) {
+    final previous = pending;
+    if (previous == null) {
+      _requestedPixels = size;
+      _cover = cover;
+      return pending = load(size);
+    }
+    final held = _requestedPixels;
+    if (cover != _cover) size = null;
+    if (held == null ||
+        (size != null &&
+            held.width >= size.width &&
+            held.height >= size.height)) {
+      return previous;
+    }
+    final next = size == null ? null : BookRasterSizes.largest(held, size);
+    _requestedPixels = next;
+    return pending = previous.then((_) => load(next));
+  }
+
   void dispose() {
     background?.dispose();
     background = null;

@@ -1,4 +1,4 @@
-// Copyright (c) 2026 GT Reader contributors. MIT license, see LICENSE.
+// Copyright (c) 2026 GT Reader contributors. GPL-3.0-only, see LICENSE.
 use super::style::Computed;
 use super::value::*;
 use crate::style_tables_generated::STYLE_PROPERTIES;
@@ -71,10 +71,21 @@ pub(super) fn resolve_current_color(computed: &mut Computed, parent: Option<&Com
 pub(super) fn copy_property(out: &mut Computed, parent: Option<&Computed>, name: &str) {
     let empty = Computed::default();
     let src = parent.unwrap_or(&empty);
+    // initial/unset 和从无声明的父元素继承都得到 auto，能覆盖 thead 的 UA 默认。
+    if name == "break-inside" {
+        out.break_inside = Some(src.break_inside.as_deref().unwrap_or("auto").to_owned());
+        return;
+    }
     if name == "font-size" {
         out.font_size = src.font_size.clone();
         out.font_size_factor = src.font_size_factor;
         return;
+    }
+    if name == "border-spacing" {
+        out.border_spacing_y = src.border_spacing_y.clone();
+    }
+    if name == "vertical-align" {
+        out.vertical_align_length = src.vertical_align_length.clone();
     }
     if name == "font-weight" {
         out.font_weight = src.font_weight;
@@ -90,14 +101,16 @@ pub(super) fn copy_property(out: &mut Computed, parent: Option<&Computed>, name:
         "text-align"=>text_align,"text-align-last"=>text_align_last,"text-indent"=>text_indent,
         "text-decoration"=>decoration,"text-shadow"=>text_shadow,"letter-spacing"=>letter_spacing,
         "word-spacing"=>word_spacing,"white-space"=>white_space,"vertical-align"=>vertical_align,
+        "text-emphasis-style"=>emphasis,"text-emphasis-position"=>emphasis_position,"text-emphasis-color"=>emphasis_color,
         "text-transform"=>text_transform,"hyphens"=>hyphens,"list-style-type"=>list_style_type,
         "list-style-position"=>list_style_position,"display"=>display,"width"=>width,"height"=>height,
         "min-width"=>min_width,"min-height"=>min_height,"max-width"=>max_width,"max-height"=>max_height,
-        "box-sizing"=>box_sizing,"object-fit"=>object_fit,"overflow"=>overflow,"float"=>float,
+        "box-decoration-break"=>decoration_break,
+        "box-sizing"=>box_sizing,"object-fit"=>object_fit,"bleed"=>bleed,"overflow"=>overflow,"float"=>float,
         "clear"=>clear,"position"=>position,"break-before"=>break_before,"break-after"=>break_after,
         "break-inside"=>break_inside,"border-radius"=>radii,"box-shadow"=>box_shadow,
         "border-collapse"=>border_collapse,"border-spacing"=>border_spacing,"table-layout"=>table_layout,
-        "caption-side"=>caption_side,"empty-cells"=>empty_cells,
+        "direction"=>direction,"caption-side"=>caption_side,"empty-cells"=>empty_cells,
     }
     if name.ends_with("-radius") && name != "border-radius" {
         let i = match name {
@@ -106,19 +119,15 @@ pub(super) fn copy_property(out: &mut Computed, parent: Option<&Computed>, name:
             "border-bottom-right-radius" => 2,
             _ => 3,
         };
-        let values = out.radii.get_or_insert_with(|| {
-            [
-                Length::Px(0.0),
-                Length::Px(0.0),
-                Length::Px(0.0),
-                Length::Px(0.0),
-            ]
-        });
+        let zero = || (Length::Px(0.0), Length::Px(0.0));
+        let values = out
+            .radii
+            .get_or_insert_with(|| std::array::from_fn(|_| zero()));
         values[i] = src
             .radii
             .as_ref()
             .map(|v| v[i].clone())
-            .unwrap_or(Length::Px(0.0));
+            .unwrap_or_else(zero);
     } else if name.starts_with("padding-")
         || name.starts_with("margin-")
         || matches!(name, "top" | "right" | "bottom" | "left")
@@ -167,31 +176,25 @@ pub(super) fn copy_property(out: &mut Computed, parent: Option<&Computed>, name:
             _ => {}
         }
     } else if name.starts_with("background-") {
-        let target = out.background.get_or_insert_with(|| Background {
-            color: None,
-            image: None,
-            repeat: None,
-            position: None,
-            size: None,
-            raw: None,
-        });
-        let empty = Background {
-            color: None,
-            image: None,
-            repeat: None,
-            position: None,
-            size: None,
-            raw: None,
-        };
+        let target = out.background.get_or_insert_with(Background::default);
+        let empty = Background::default();
         let src = src.background.as_ref().unwrap_or(&empty);
         match name {
             "background-color" => target.color = src.color.clone(),
-            "background-image" => target.image = src.image.clone(),
+            "background-image" => {
+                target.image = src.image.clone();
+                target.gradient = src.gradient.clone();
+            }
             "background-repeat" => target.repeat = src.repeat.clone(),
             "background-position" => target.position = src.position.clone(),
             "background-size" => target.size = src.size.clone(),
+            "background-attachment" => target.attachment = src.attachment.clone(),
             _ => {}
         }
+    } else if let Some(value) = src.extras.get(name) {
+        out.extras.insert(name.to_owned(), value.clone());
+    } else {
+        out.extras.remove(name);
     }
 }
 pub(super) fn reset_property(out: &mut Computed, name: &str) {

@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
@@ -34,14 +36,41 @@ class PdfZoomSurface extends StatefulWidget {
   final bool Function()? canStart;
   final Widget child;
   @override
-  State<PdfZoomSurface> createState() => _PdfZoomSurfaceState();
+  State<PdfZoomSurface> createState() => PdfZoomSurfaceState();
 }
 
-class _PdfZoomSurfaceState extends State<PdfZoomSurface> {
+class PdfZoomSurfaceState extends State<PdfZoomSurface> {
   final _points = <int, Offset>{};
   Offset _focal = Offset.zero, _travel = Offset.zero;
   double _distance = 1, _startScale = 1, _scale = 1;
   bool _zooming = false, _panning = false, _panAllowed = false;
+
+  /// 鼠标位置是缩放中心，由桌面正文的滚轮处理入口转入。
+  void zoomFromWheel(double delta, Offset position) {
+    final view = widget.view;
+    if (_points.isNotEmpty || view.busy || !(widget.canStart?.call() ?? true)) {
+      return;
+    }
+    final box = context.findRenderObject()! as RenderBox;
+    final anchor = box.globalToLocal(position);
+    if (!(Offset.zero & box.size).contains(anchor)) return;
+    final limited = (view.scale * math.pow(1.15, -delta / 100)).clamp(
+      PdfViewport.minScale,
+      PdfViewport.maxScale,
+    );
+    final scale = (limited - 1).abs() < 1e-6 ? 1.0 : limited;
+    if (scale == view.scale) return;
+    _beginZoom();
+    widget.onZoom(scale, anchor, anchor, false);
+    view.end();
+    widget.onEnd?.call();
+  }
+
+  // 两种缩放入口都按当前模式决定是否进入固定视图调整。
+  void _beginZoom() {
+    widget.view.begin(fixedView: widget.fixedView);
+    widget.onBegin();
+  }
 
   (Offset, double) get _span {
     final first = _points.values.first;
@@ -70,8 +99,7 @@ class _PdfZoomSurfaceState extends State<PdfZoomSurface> {
       if (_panning) widget.onPanEnd?.call(true, true);
       _panning = false;
       _zooming = true;
-      widget.view.begin(fixedView: widget.fixedView);
-      widget.onBegin();
+      _beginZoom();
     }
     _rebase();
   }

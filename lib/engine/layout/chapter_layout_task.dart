@@ -18,6 +18,9 @@ class ChapterLayoutTask {
     required this.options,
     this._indexedTxt,
     this.measurementCache,
+    this.onExactPages,
+    this.knownWindow,
+    this.onPageSealed,
     this.onCheckpoint,
     this.readCheckpoint,
     this.readPageWindow,
@@ -62,6 +65,17 @@ class ChapterLayoutTask {
   ChapterContent get content => _wholeContent ?? _source.content;
   final LayoutOptions options;
   final BlockMeasurementCache? measurementCache;
+  // 只交接前台请求量出的文字。后台全章补排不占用即将上屏的段落名额。
+  late final MeasuredParagraphs? paragraphs = options.pageInk == null
+      ? null
+      : MeasuredParagraphs((caption) {
+          if (_foreground == 0) return null;
+          final ink = options.pageInk!;
+          return caption ? ink.secondary : ink.primary;
+        });
+  final void Function(ExactPageCount)? onExactPages;
+  final VoidCallback? onPageSealed;
+  final Future<int?> Function(int window, int offset, int windows)? knownWindow;
   final void Function(Map<String, Object?>)? onCheckpoint;
   final Future<Map<String, dynamic>?> Function(
     int? throughCursor,
@@ -81,14 +95,18 @@ class ChapterLayoutTask {
   final TxtChapterSource? _indexedTxt;
   bool _windowReady = false;
   int _txtWindow = 0;
+  final _windowPageCounts = <int, int>{};
+  final _windowPageStarts = <int>[0];
   int get _txtWindowCount =>
       _indexedTxt?.starts.length ?? _txtWindows?.starts.length ?? 0;
-  int get _txtOffset =>
-      _indexedTxt?.starts[_txtWindow].textOffset ??
-      _txtWindows?.starts[_txtWindow].offset ??
+  int get _txtOffset => _windowOffset(_txtWindow);
+  int _windowOffset(int window) =>
+      _indexedTxt?.starts[window].textOffset ??
+      _txtWindows?.starts[window].offset ??
       0;
   var _pages = <PageSlice>[];
   final _recentTxtWindows = <int, _TxtPageWindowState>{};
+  final _pinnedTxtWindows = <int, int>{};
   final _pageRestarts = <List<int>>[];
   List<int>? _restart;
   // 长 TXT 的页序只在一个窗口内连续。窗口用起始文字位置区分，
@@ -133,7 +151,9 @@ class ChapterLayoutTask {
       body,
       options,
       measurementCache,
+      paragraphs: paragraphs,
       cacheEnabled: onCheckpoint != null,
+      countOnly: onPageSealed != null,
       displayTree: _wholeDisplayTree ?? DisplayTree.build(body),
       rowBase: rowBase,
       startBlock: _txtWindows?.starts[_txtWindow].paragraph ?? 0,
@@ -156,11 +176,30 @@ class ChapterLayoutTask {
     List<int>? restart,
   ]) =>
       ChapterPaginator(
+            parallelFlow: source._parallel,
+            compactIllustrations: source.content.pdfPage == null,
             pageHeight: options.contentHeight,
-            gapBefore: source.measurer.gapBefore,
+            chapterStarts: _spreadStarts(
+              source.content,
+              options,
+              source.measurer.displayTree!,
+            ),
+            measurer: source.measurer,
+            backgroundOnlyAnchor: () =>
+                backgroundOnlyPageAnchor(source.content),
+            containerSizing: () => ContainerFlowSizing.build(
+              source.measurer.displayTree!,
+              ChapterStyler.layoutTableOf(source.content),
+              options,
+            ),
+            pageImages: _firstPage == 0
+                ? source.measurer.pageImagesOf(source.content)
+                : const [],
           )
           .steps(
             source,
+            onPageSealed: onPageSealed,
+            releaseBefore: onPageSealed == null ? null : source.releaseBefore,
             firstPage: _firstPage,
             firstBlock: restart == null ? 0 : 1,
             firstLine: restart?[2] ?? 0,
@@ -228,7 +267,11 @@ class ChapterLayoutTask {
     _windowReady = true;
     _recentTxtWindows.remove(window);
     while (_recentTxtWindows.length > 2) {
-      _recentTxtWindows.remove(_recentTxtWindows.keys.first);
+      final oldest = _recentTxtWindows.keys
+          .where((i) => !_pinnedTxtWindows.containsKey(i))
+          .firstOrNull;
+      if (oldest == null) break;
+      _recentTxtWindows.remove(oldest);
     }
     if (cached != null) {
       _source = cached.source;
@@ -391,6 +434,14 @@ class ChapterLayoutTask {
     }
     if (!moved) {
       _complete = true;
+      onExactPages?.call((
+        chapter: chapter.ordinal,
+        window: _txtWindowCount == 0 ? -1 : _txtWindow,
+        offset: _txtOffset,
+        windows: _txtWindowCount == 0 ? 1 : _txtWindowCount,
+        pages: _txtWindowCount == 0 ? _pageCount : _pages.length,
+      ));
+      if (_txtWindowCount > 0) _windowPageCounts[_txtWindow] = _pages.length;
       _snapshot = null;
       return false;
     }
@@ -633,6 +684,7 @@ class ChapterLayoutTask {
   }) {
     if (isDisposed) return;
     _disposalReason = reason;
+    paragraphs?.dispose();
     pauseBackground();
     unawaited(_events.close());
   }

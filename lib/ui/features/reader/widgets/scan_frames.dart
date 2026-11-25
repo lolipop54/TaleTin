@@ -3,6 +3,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 
 import 'page_canvas.dart';
+import '../view_models/reader_session_view_model.dart' show SpreadPageRef;
 import 'prepared_page.dart';
 import 'page_information.dart';
 import 'book_paper.dart';
@@ -100,8 +101,15 @@ class ScanFrames {
 
 /// 目标页已准备但尚未提交；无目标表示全书最后一页。
 class ScanPreparation {
-  ScanPreparation(this.frames, this.commit, {this.targetPage});
+  ScanPreparation(this.frames, this.commit, {this.targetPage, this.footerTarget, this.onDispose});
   final ScanFrames frames;
   final Future<void> Function()? commit;
   final Object? targetPage;
+  final SpreadPageRef? footerTarget;
+  final VoidCallback? onDispose;
+
+  void dispose() {
+    frames.dispose();
+    onDispose?.call();
+  }
 }

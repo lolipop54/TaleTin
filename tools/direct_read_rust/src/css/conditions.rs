@@ -1,4 +1,4 @@
-// Copyright (c) 2026 GT Reader contributors. MIT license, see LICENSE.
+// Copyright (c) 2026 GT Reader contributors. GPL-3.0-only, see LICENSE.
 //! 条件按实际单纸面求值；supports 只承认 Flutter 当前能显示的能力。
 use super::{properties::parse_property, style::Computed, value::split_top_level};
 use serde_json::Value;
@@ -151,6 +151,9 @@ fn supports(feature: &str) -> bool {
                     | "table-caption"
             );
         }
+        "box-decoration-break" | "-webkit-box-decoration-break" => {
+            return value.eq_ignore_ascii_case("clone") || value.eq_ignore_ascii_case("slice");
+        }
         "position" => return value == "static",
         "float" | "clear" => return value == "none",
         "background-image" => return value == "none" || super::value::parse_url(value).is_some(),
@@ -253,6 +256,9 @@ mod tests {
         assert!(e.matches("media", "(prefers-color-scheme:dark)"));
         assert!(!e.matches("media", "print"));
         assert!(!e.matches("supports", "(display:grid)"));
+        assert!(e.matches("supports", "(object-fit:cover)"));
+        assert!(!e.matches("supports", "(object-fit:stretch)"));
+        assert!(!e.matches("supports", "(background-image:linear-gradient(red,blue))"));
         assert!(e.matches("supports", "(color:red) and not (display:flex)"));
     }
 }

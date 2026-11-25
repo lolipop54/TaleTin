@@ -24,6 +24,7 @@ class ReaderSession {
     this.content,
     this.layout,
     this.pageIndex = 0,
+    this.spreadTarget,
     this.viewportSignature,
     this.originalAnchor,
     this.originalFraction = 0,
@@ -55,6 +56,9 @@ class ReaderSession {
   final ChapterLayout? layout;
   final int pageIndex;
 
+  /// 双列跳转保留实际点击的文字，重排时仍能找到右页中的同一句。
+  final Locator? spreadTarget;
+
   /// 本次排版使用的参数签名；与新的参数不一致时需要重排
   final String? viewportSignature;
 
@@ -82,6 +86,9 @@ class ReaderSession {
   /// 是否正在用原书排版（位置来自 WebView 上报）
   bool get isOriginal => originalAnchor != null;
 
+  bool get usesSimplifiedSpread =>
+      !scrolling && !isOriginal && layout?.options.settings.spreadEnabled == true;
+
   Chapter get chapter => chapters[chapterIndex];
 
   int get pageCount => layout?.pageCount ?? 0;
@@ -93,7 +100,7 @@ class ReaderSession {
     if (originalAnchor != null) return originalAnchor;
     final current = layout;
     if (current == null || !isReady) return null;
-    return current.beginLocatorOf(current.page(pageIndex));
+    return spreadTarget ?? current.beginLocatorOf(current.page(pageIndex));
   }
 
   /// 当前页首的摘录（加书签时一起存，列表里展示）
@@ -242,6 +249,7 @@ class ReaderSession {
     ChapterContent? content,
     ChapterLayout? layout,
     int? pageIndex,
+    Locator? spreadTarget,
     String? viewportSignature,
     Locator? originalAnchor,
     double? originalFraction,
@@ -279,6 +287,9 @@ class ReaderSession {
         : content ?? this.content,
     layout: layout ?? this.layout,
     pageIndex: pageIndex ?? this.pageIndex,
+    spreadTarget:
+        spreadTarget ??
+        (pageIndex == null && chapterIndex == null ? this.spreadTarget : null),
     viewportSignature: viewportSignature ?? this.viewportSignature,
     originalAnchor: clearOriginalPosition
         ? null

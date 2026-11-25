@@ -11,9 +11,12 @@ class TableContainerLayout {
     this.left,
     this.right,
     this.top,
-    this.bottom,
-  );
+    this.bottom, [
+    this.contentHeight,
+    this.marginReference,
+  ]);
   final List<ContainerBoxFrame> frames;
+  final double? contentHeight, marginReference;
   final double left, right, top, bottom;
   static TableContainerLayout build(
     String blockId,
@@ -34,21 +37,34 @@ class TableContainerLayout {
         DisplayContainer(
           elementId: container.elementId,
           styleId: container.styleId,
-          first: container.first,
-          last: tail.any((c) => c.elementId == container.elementId && c.last),
+          first: container.role == 'table' || container.first,
+          last:
+              container.role == 'table' ||
+              tail.any((c) => c.elementId == container.elementId && c.last),
           role: container.role,
           tag: container.tag,
         ),
       );
       if (container.role == 'table') break;
     }
-    final geometry = DisplayBoxLayout.resolve(chain, styles, options);
+    final geometry = DisplayBoxLayout.resolve(
+      chain,
+      styles,
+      options,
+      tree: tree,
+      blockOwnerId: chain
+          .where((c) => c.role == 'table')
+          .firstOrNull
+          ?.elementId,
+    );
     return TableContainerLayout(
       geometry.frames,
       geometry.left,
       geometry.right,
       geometry.top,
       geometry.bottom,
+      geometry.containerHeight,
+      geometry.marginReference,
     );
   }
 }

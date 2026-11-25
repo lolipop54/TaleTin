@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -5,22 +6,44 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/services.dart';
 
 import '../../core/diagnostics/app_errors.dart';
+import '../../core/diagnostics/reader_work_trace.dart';
+import '../../domain/models/book.dart';
 import '../../domain/models/book_document.dart';
 import '../../domain/repositories/chapter_content_repository.dart';
 import '../../engine/layout/layout_options.dart';
 import '../../engine/layout/publication_font_set.dart';
 import '../../engine/styles/chapter_styler.dart';
 import '../../engine/styles/css_layout_styles.dart';
+import '../../platform/reading_font_binding.dart';
 import 'epub_source_repository.dart';
 
 /// 从当前章的 CSS 找到实际需要的书内字体。读取、解混淆和缓存沿用书籍资源服务。
 class PublicationFontLoader {
-  PublicationFontLoader(this._openSource);
+  PublicationFontLoader(this._openSource, {this.sourceIdentity});
 
   final Future<EpubSourceSession?> Function(String) _openSource;
-  final _prepared = Expando<Map<String, Future<PublicationFontSet>>>();
+  final Future<Object?> Function(String, Book?)? sourceIdentity;
+  final _localSources = Expando<Object>();
+  final _pending = <Object, Future<PublicationFontSet>>{};
+  // null 表示该版归档缺少文件或文件头不是字体。临时读取或注册失败仍会重试。
+  final _aliases = <(Object, String), String?>{};
+  final _reading = <String, _FontBookWindow>{};
   // Flutter 注册后按进程持有字体。相同字节使用同一个别名，不按书重复注册。
   static final _registered = <String, Future<String?>>{};
+
+  /// 当前读书会话可借用同一份已核验的归档。最后一个读者退出便关闭。
+  void Function() retainBook(Book book) {
+    final bookId = book.id;
+    final window = _reading.putIfAbsent(bookId, () => _FontBookWindow(book));
+    window.book = book;
+    window.readers++;
+    return () {
+      if (--window.readers == 0) {
+        _reading.remove(bookId);
+        unawaited(window.idle?.close());
+      }
+    };
+  }
 
   Future<LayoutOptions> prepare(
     String bookId,
@@ -42,28 +65,30 @@ class PublicationFontLoader {
           if (used.contains(name.toLowerCase())) raw,
     ];
     if (faces.isEmpty) return options;
-    final key = jsonEncode(faces);
-    final pending = _prepared[content] ??= {};
-    // 同时可能有正页、邻页和翻页动画请求同一章。
-    if (pending.length >= 2 && !pending.containsKey(key)) {
-      pending.remove(pending.keys.first);
-    }
-    final task = pending[key] ??= _load(bookId, faces);
+    final identity = (
+      bookId,
+      await sourceIdentity?.call(bookId, _reading[bookId]?.book) ??
+          (_localSources[content] ??= Object()),
+    );
+    final key = (identity, jsonEncode(faces));
+    final task = _pending[key] ??= _load(bookId, identity, faces);
     try {
       return options.withPublicationFonts(await task);
-    } catch (_) {
-      if (identical(pending[key], task)) pending.remove(key);
-      rethrow;
+    } finally {
+      if (identical(_pending[key], task)) _pending.remove(key);
     }
   }
 
-  Future<PublicationFontSet> _load(String bookId, List<Map> faces) async {
+  Future<PublicationFontSet> _load(
+    String bookId,
+    Object sourceKey,
+    List<Map> faces,
+  ) async {
     EpubSourceSession? source;
+    final window = _reading[bookId];
     final families = <String, List<PublicationFace>>{};
     final loadedPaths = <String, String?>{};
     try {
-      source = await _openSource(bookId);
-      if (source == null) return PublicationFontSet.empty;
       for (final face in faces) {
         final name = (face['family'] as String).toLowerCase();
         final style = (face['style'] as String).toLowerCase();
@@ -77,20 +102,41 @@ class PublicationFontLoader {
         };
         final min = weight(weights.first);
         final max = weight(weights.last).clamp(min, 1000);
-        for (final path in (face['sources'] as List).cast<String>()) {
+        final sources = (face['sources'] as List).cast<String>();
+        String? alias;
+        for (final path in sources) {
           if (!path.startsWith('res/')) continue;
           final entry = path.substring(4);
-          final alias = loadedPaths.containsKey(entry)
-              ? loadedPaths[entry]
-              : loadedPaths[entry] = await _registerResource(source, entry);
-          if (alias == null) continue;
+          final key = (sourceKey, entry);
+          if (_aliases.containsKey(key)) {
+            alias = _aliases.remove(key);
+            _aliases[key] = alias;
+          } else if (loadedPaths.containsKey(entry)) {
+            alias = loadedPaths[entry];
+          } else {
+            source ??= window?.take(sourceKey) ?? await _openSource(bookId);
+            if (source == null) return PublicationFontSet.empty;
+            var unusable = false;
+            alias = await _registerResource(
+              source,
+              entry,
+              () => unusable = true,
+            );
+            loadedPaths[entry] = alias;
+            if (alias != null || unusable) {
+              _aliases[key] = alias;
+              if (_aliases.length > 128) _aliases.remove(_aliases.keys.first);
+            }
+          }
+          if (alias != null) break;
+        }
+        if (alias != null) {
           (families[name] ??= []).add((
             alias: alias,
             minWeight: min,
             maxWeight: max,
             italic: style == 'italic' || style.startsWith('oblique'),
           ));
-          break;
         }
       }
     } on Object catch (error, stack) {
@@ -100,7 +146,13 @@ class PublicationFontLoader {
       }
       AppErrors.report(error, stack, operation: '读取原书字体失败', notify: false);
     } finally {
-      await source?.close();
+      if (source != null &&
+          window != null &&
+          identical(_reading[bookId], window)) {
+        window.put(sourceKey, source);
+      } else {
+        await source?.close();
+      }
     }
     if (families.isEmpty) return PublicationFontSet.empty;
     final identity = sha256
@@ -123,11 +175,16 @@ class PublicationFontLoader {
   Future<String?> _registerResource(
     EpubSourceSession source,
     String entry,
+    void Function() onUnusable,
   ) async {
     try {
-      final data = await source.fontResource(entry);
-      if (data == null || data.bytes.length < 12) return null;
+      final data = await source.fontResource(entry, onAbsent: onUnusable);
+      if (data == null) return null;
       final bytes = data.bytes;
+      if (bytes.length < 12) {
+        onUnusable();
+        return null;
+      }
       final magic = ByteData.sublistView(bytes).getUint32(0);
       if (!{
         0x00010000, // TTF
@@ -137,6 +194,7 @@ class PublicationFontLoader {
         0x774f4646, // WOFF
         0x774f4632, // WOFF2
       }.contains(magic)) {
+        onUnusable();
         return null;
       }
       final alias = 'gt-book-${data.digest}';
@@ -157,18 +215,46 @@ class PublicationFontLoader {
   }
 
   Future<String?> _register(String alias, Uint8List bytes) async {
+    final trace = ReaderWorkTrace.start('font.register', {'bytes': bytes.length});
     try {
       if (Platform.isAndroid) {
         await const MethodChannel('gtreader/reading_fonts')
             .invokeMethod<void>('validatePublication', bytes);
       }
+      trace?.mark('validate');
       final loader = FontLoader(alias)
         ..addFont(Future.value(ByteData.sublistView(bytes)));
-      await loader.load();
+      await ReadingFontBinding.registerBookFont(loader);
+      trace?.mark('register');
       return alias;
     } on Object catch (error, stack) {
       AppErrors.report(error, stack, operation: '书内字体无法解码', notify: false);
       return null;
+    } finally {
+      trace?.finish();
     }
+  }
+}
+
+/// 只留一个空闲会话。正在读取的会话由调用方独占，归还或退出都不会关掉在途读取。
+class _FontBookWindow {
+  _FontBookWindow(this.book);
+  Book book;
+  int readers = 0;
+  Object? identity;
+  EpubSourceSession? idle;
+
+  EpubSourceSession? take(Object key) {
+    final source = idle;
+    idle = null;
+    if (identity == key && source?.isClosed == false) return source;
+    unawaited(source?.close());
+    return null;
+  }
+
+  void put(Object key, EpubSourceSession source) {
+    unawaited(idle?.close());
+    identity = key;
+    idle = source;
   }
 }

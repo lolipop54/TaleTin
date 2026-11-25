@@ -1,4 +1,4 @@
-// Copyright (c) 2026 GT Reader contributors. MIT license, see LICENSE.
+// Copyright (c) 2026 GT Reader contributors. GPL-3.0-only, see LICENSE.
 use crate::dom::{Dom, Handle, attr, tag};
 use crate::original_hyphen::English;
 use html5ever::{

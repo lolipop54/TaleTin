@@ -15,7 +15,7 @@ Future<void> exportErrorLog({
 }) async {
   if (_exporting) return;
   _exporting = true;
-  documents ??= BackupDocuments();
+  documents ??= BackupDocuments.forCurrentPlatform();
   String? uri;
   var completed = false;
   try {

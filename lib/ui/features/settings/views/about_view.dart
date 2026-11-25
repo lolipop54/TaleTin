@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:taletin/ui/core/widgets/gt_app_bar.dart';
 import 'package:taletin/ui/core/widgets/gt_button.dart';
 import 'package:flutter/material.dart';
@@ -5,12 +7,18 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../domain/models/reading_settings.dart';
 import '../../../../platform/channels/reading_window.dart';
+import '../../../../platform/channels/windows_app_information.dart';
+import '../widgets/settings_action.dart';
+import '../widgets/settings_page.dart';
+import '../widgets/windows_settings_layout.dart';
 
-/// 版本来自手机已安装包，不能使用写死的展示字符串。
+/// 从正在运行的包或 EXE 读版本，设置入口等待版本准备好再打开。
 final appInformationProvider = FutureProvider.autoDispose<Map<String, Object?>>(
-  (ref) async => (await ReadingWindow.channel.invokeMapMethod<String, Object?>(
-    'appInfo',
-  ))!,
+  (ref) async => Platform.isWindows
+      ? windowsAppInformation(Platform.resolvedExecutable)
+      : (await ReadingWindow.channel.invokeMapMethod<String, Object?>(
+          'appInfo',
+        ))!,
 );
 
 class AboutView extends ConsumerWidget {
@@ -19,7 +27,7 @@ class AboutView extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final state = ref.watch(appInformationProvider), info = state.value;
     return Scaffold(
-      appBar: GtAppBar(title: const Text('关于 TaleTin')),
+      appBar: GtAppBar.settings(title: const Text('关于 TaleTin')),
       body: SafeArea(
         child: info == null
             ? Center(
@@ -48,23 +56,38 @@ class AboutView extends ConsumerWidget {
                   ),
                   const SizedBox(height: 24),
                   Text('隐私说明', style: Theme.of(context).textTheme.titleMedium),
-                  const Text(
+                  Text(
                     '书籍、阅读进度、书签、笔记、统计和设置都保存在本机，'
                     '没有账号，也没有云同步，不会上传到任何服务器。\n\n'
                     '导入书籍和导出备份都由你在系统文件选择器中指定文件与位置。\n\n'
                     '${ReadingLayoutMode.originalIncluded ? '原书排版使用内置浏览器组件还原原书样式，书中的脚本不会执行，外部网络资源不会加载；应用声明的网络权限是组件本身的要求，不代表会联网。\n\n' : ''}'
-                    '听书调用手机已安装的系统语音引擎，应用不内置语音模型，可断网试听确认是否完全离线。\n\n'
+                    '听书使用设备已安装的系统语音，可以断网试听。\n\n'
                     '清理缓存不会删除书籍和笔记；卸载应用或清除应用数据会移除本机数据。',
                   ),
                   const SizedBox(height: 24),
-                  GtButton.tonal(
-                    onPressed: () => showLicensePage(
-                      context: context,
-                      applicationName: 'TaleTin',
-                      applicationVersion: '${info['version']}+${info['build']}',
+                  settingsActions(context, [
+                    GtButton.tonal(
+                      onPressed: () {
+                        final version = '${info['version']}+${info['build']}';
+                        if (WindowsSettingsPane.contains(context)) {
+                          openSettingsPage(
+                            context,
+                            LicensePage(
+                              applicationName: 'TaleTin',
+                              applicationVersion: version,
+                            ),
+                          );
+                        } else {
+                          showLicensePage(
+                            context: context,
+                            applicationName: 'TaleTin',
+                            applicationVersion: version,
+                          );
+                        }
+                      },
+                      child: const Text('查看开源许可'),
                     ),
-                    child: const Text('查看开源许可'),
-                  ),
+                  ]),
                 ],
               ),
       ),

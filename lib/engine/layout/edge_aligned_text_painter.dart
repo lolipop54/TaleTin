@@ -10,7 +10,8 @@ class EdgeAlignedTextPainter extends TextPainter {
     required super.textScaler,
     required this.spacing,
     this.fixedPrefixLength = 0,
-  }) : super(textDirection: TextDirection.ltr);
+    super.textDirection = TextDirection.ltr,
+  });
 
   final double spacing;
   final int fixedPrefixLength;
@@ -79,6 +80,10 @@ class EdgeAlignedTextPainter extends TextPainter {
   @override
   Offset getOffsetForCaret(TextPosition position, Rect caretPrototype) {
     final offset = super.getOffsetForCaret(position, caretPrototype);
+    if (textDirection == TextDirection.rtl) {
+      // 混排时逻辑首尾均可能落在行中，交给实际字形决定光标方向和位置。
+      return Offset((offset.dx - _edgeShift).clamp(0.0, width), offset.dy);
+    }
     if (position.offset == 0) return Offset(0, offset.dy);
     if (position.offset == plainText.length) return Offset(width, offset.dy);
     if (position.offset <= fixedPrefixLength) return offset;

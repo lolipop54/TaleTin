@@ -7,6 +7,8 @@ class _LazyMeasuredBlocks implements MeasuredBlockSource {
     this.options,
     BlockMeasurementCache? cache, {
     required this.cacheEnabled,
+    this.countOnly = false,
+    MeasuredParagraphs? paragraphs,
     required DisplayTree displayTree,
     this.rowBase = 0,
     int startBlock = 0,
@@ -20,9 +22,13 @@ class _LazyMeasuredBlocks implements MeasuredBlockSource {
          styleTable: ChapterStyler.layoutTableOf(content),
          displayTree: displayTree,
          cache: cache,
+         paragraphs: paragraphs,
        ) {
     _tables = {for (final t in content.tables) t.blockIds.first: t};
-    _tableIds = content.tables.expand((t) => t.blockIds).toSet();
+    _tableIds = {
+      ...content.tables.expand((t) => t.blockIds),
+      ...displayTree.captionBlockIds,
+    };
     _parallel = ParallelFlowLayout(
       content,
       measurer.displayTree!,
@@ -39,7 +45,26 @@ class _LazyMeasuredBlocks implements MeasuredBlockSource {
   final LayoutOptions options;
   final BlockMeasurer measurer;
   final BlockMeasurementCache? measurementCache;
-  final bool cacheEnabled;
+  final bool cacheEnabled, countOnly;
+  int _base = 0, _scanned = 0, _lastFlow = 0;
+
+  /// 段距可能回看跨过的空盒、定位图和叠放块，一直看到上一块正常正文。
+  /// 表格和标题预读的后文仍在列表中；每次合并释放一批，避免反复搬动列表。
+  void releaseBefore(int index) {
+    for (; _scanned < index; _scanned++) {
+      final block = values[_scanned - _base];
+      if (!block.collapsesThrough &&
+          !block.isPageImage &&
+          !block.positionedOverlay) {
+        _lastFlow = _scanned;
+      }
+    }
+    if (_lastFlow - _base >= 32) {
+      values.removeRange(0, _lastFlow - _base);
+      _base = _lastFlow;
+    }
+  }
+
   final bool includeChapterTitle;
   final int rowBase;
   final values = <MeasuredBlock>[];
@@ -109,13 +134,17 @@ class _LazyMeasuredBlocks implements MeasuredBlockSource {
   }
 
   void _addMeasured(MeasuredBlock block) {
+    if (countOnly) {
+      values.add(block);
+      return;
+    }
     if (!block.isDecoration || block.isTitleDecoration) {
       measuredById.putIfAbsent(block.blockId, () => block);
       orders.putIfAbsent(block.blockId, () => values.length);
     }
     consumedBefore.add(
       consumedBefore.last +
-          (block.isDecoration && !block.isTitleDecoration
+          (block.isDecoration && !block.isTitleDecoration && !block.isPageImage
               ? 0
               : block.text.length - block.displayPrefixLength + 1),
     );
@@ -170,7 +199,10 @@ class _LazyMeasuredBlocks implements MeasuredBlockSource {
       _queue(empty, sourceCursor: null);
     }
     final table = _tables[block.id];
-    if (_parallel.groups.containsKey(ordinal)) {
+    if (table == null &&
+        measurer.displayTree?.hiddenBlocks.contains(ordinal) == true) {
+      // 目录与旧书签仍可以引用此块，显示时不为它占位置。
+    } else if (_parallel.groups.containsKey(ordinal)) {
       final group = _parallel.measure(ordinal, measurer);
       _cursor = _parallel.ends[ordinal]! + 1;
       for (var i = 0; i < group.length; i++) {
@@ -233,10 +265,37 @@ class _LazyMeasuredBlocks implements MeasuredBlockSource {
     for (final table in content.tables) {
       if (!allowed.contains(table.blockIds.first)) continue;
       allowed.addAll(table.blockIds);
+      final tree = measurer.displayTree!;
+      if (tree.captionBlockIds.isNotEmpty) {
+        final index = tree.blockIndexById[table.blockIds.first]!;
+        final root = tree.source!
+            .chainOfBlock(index)
+            .where((e) => e.role == 'table')
+            .firstOrNull;
+        if (root != null) {
+          for (final node in tree.nodes[root.id].children.where(
+            (n) => n.element.role == 'caption',
+          )) {
+            allowed.addAll(tree.blocksOf(node));
+            allowed.add('__caption_${node.element.id}');
+          }
+        }
+      }
       for (final cell in table.cells.where((c) => c.blocks.isEmpty)) {
         allowed.add(
           '__empty_${table.blockIds.first}_${cell.row}_${cell.column}',
         );
+      }
+    }
+    final tree = measurer.displayTree!;
+    for (final entry in tree.emptyGrids.entries) {
+      if (tree.nodes[entry.key].element.anchor > cursor) continue;
+      allowed.add(tree.anchorBlockId(tree.nodes[entry.key].element.anchor));
+      for (final node in tree.nodes[entry.key].children.where(
+        (n) => n.element.role == 'caption',
+      )) {
+        allowed.addAll(tree.blocksOf(node));
+        allowed.add('__caption_${node.element.id}');
       }
     }
     if (restored.any((b) => !allowed.contains(b.blockId))) {
@@ -274,21 +333,21 @@ class _LazyMeasuredBlocks implements MeasuredBlockSource {
         _queue(measurer.measureChapterTitle(chapter.title), sourceCursor: null);
       }
     }
-    while (values.length <= index) {
+    while (_base + values.length <= index) {
       if (_exhausted) {
         _release();
-        if (values.length <= index) break;
+        if (_base + values.length <= index) break;
         continue;
       }
       if (!_measureNext()) break;
     }
-    return index < values.length;
+    return index >= _base && index < _base + values.length;
   }
 
   @override
   MeasuredBlock operator [](int index) {
     if (!has(index)) throw RangeError.index(index, values);
-    return values[index];
+    return values[index - _base];
   }
 }
 

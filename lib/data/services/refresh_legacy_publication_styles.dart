@@ -21,7 +21,7 @@ Future<ChapterContent> refreshLegacyPublicationStyles(
   EpubArchive? archive;
   try {
     archive = publication.existsSync()
-        ? EpubArchive.directory(publication.path)
+        ? EpubArchive.directory(publication.path, mobiSource: sourcePath)
         : EpubArchive.open(sourcePath);
     final package = EpubPackage.parse(
       archive,
@@ -31,8 +31,10 @@ Future<ChapterContent> refreshLegacyPublicationStyles(
     if (item == null) return content;
     final book = archive;
     final parsed = XhtmlBlockBuilder(
+      legacyMobi: book.legacyMobi,
       basePath: item.entryPath,
       buildTextMap: false,
+      containsResource: book.contains,
       styleTextResolver: (path) =>
           book.contains(path) ? book.readText(path) : null,
       resolveImage: (path) => book.contains(path)
@@ -70,6 +72,7 @@ Future<ChapterContent> refreshLegacyPublicationStyles(
               'width': content.blocks[i].resourceWidth,
             if (content.blocks[i].resourceHeight != null)
               'height': content.blocks[i].resourceHeight,
+            if (content.blocks[i].svgRatioOnly) 'svgRatioOnly': true,
             if (parsed.blocks[i].inlineImages.isNotEmpty)
               'iim': [
                 for (var j = 0; j < parsed.blocks[i].inlineImages.length; j++)
@@ -82,9 +85,17 @@ Future<ChapterContent> refreshLegacyPublicationStyles(
           }),
       ],
       tables: parsed.tables,
-      epubDetailsRevision: kEpubDetailsRevision,
+      // 本次已重新取齐表格。SVG 由旧资源按最新尺寸规则另行补齐。
+      epubDetailsRevision: content.epubDetailsRevision < 2
+          ? 2
+          : content.epubDetailsRevision,
       stylesJson: parsed.stylesJson,
-      displaySourceJson: parsed.displaySourceJson,
+      displaySourceJson: parsed.displayWithCover(
+        package.coverEntries,
+        item.entryPath,
+        first: chapter.ordinal == 0,
+        title: chapter.title,
+      ),
     );
   } on Object {
     // 源书缺失、已变化或新旧正文不符时沿用已保存资料，不改业务数据。

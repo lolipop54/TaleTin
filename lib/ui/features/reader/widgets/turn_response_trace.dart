@@ -30,7 +30,7 @@ class TurnResponseTrace {
   }
 
   void move(int pointer, Duration source) {
-    if (!turnTraceEnabled) return;
+    if (!turnTraceEnabled && !turnFrameTraceEnabled) return;
     final us = _inputs[pointer]?.elapsedMicroseconds;
     if (us == null) return;
     if (!_firstMoves.containsKey(pointer)) {
@@ -81,6 +81,7 @@ class TurnResponseTrace {
       return;
     }
     final buildUs = watch.elapsedMicroseconds;
+    final firstMove = _firstMoves[pointer], recognized = _recognized[pointer];
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (turnFrameTraceEnabled) {
         // 重采样会改写 PointerEvent.timeStamp，不能把它当作原始触摸时间。
@@ -88,7 +89,9 @@ class TurnResponseTrace {
         final frameUs = WidgetsBinding.instance.currentSystemFrameTimeStamp.inMicroseconds;
         debugPrint('TURN_RESPONSE $label pointer=$pointer '
             'frameUs=$frameUs '
-            'receivedToSubmitUs=${watch.elapsedMicroseconds}');
+            'receivedToSubmitUs=${watch.elapsedMicroseconds} '
+            'moveToSubmitUs=${firstMove == null ? -1 : watch.elapsedMicroseconds - firstMove} '
+            'recognizedToSubmitUs=${recognized == null ? -1 : watch.elapsedMicroseconds - recognized}');
       }
       traceTurn(
         'response first-frame-submitted pointer=$pointer label=$label '

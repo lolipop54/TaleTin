@@ -1,3 +1,5 @@
+enum ReadingProgressStyle { percentage, pages }
+
 class ReadingControls {
   const ReadingControls({
     this.keepAwake = false,
@@ -7,6 +9,7 @@ class ReadingControls {
     this.navigationBar = true,
     this.imageViewing = true,
     this.pdfFixedViewMode = false,
+    this.progressStyle = ReadingProgressStyle.percentage,
   });
   final bool keepAwake, volumeKeys, swipeUpToExit, statusBar, navigationBar;
 
@@ -15,6 +18,7 @@ class ReadingControls {
 
   /// PDF 缩放后须确认视窗，才继续翻页或滚动。
   final bool pdfFixedViewMode;
+  final ReadingProgressStyle progressStyle;
 }
 
 abstract interface class ReadingControlsRepository {

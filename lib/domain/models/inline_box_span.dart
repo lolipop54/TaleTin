@@ -23,6 +23,19 @@ class InlineBoxSpan {
   /// 滚动长段分批测量时，人工切口不能重复添加左右内边距。
   final bool first, last;
 
+  InlineBoxSpan shifted(int offset) => offset == 0
+      ? this
+      : InlineBoxSpan(
+          start: start + offset,
+          end: end + offset,
+          id: id,
+          box: box,
+          scale: scale,
+          styleId: styleId,
+          first: first,
+          last: last,
+        );
+
   Map<String, Object?> toJson() => {
     's': start,
     'e': end,

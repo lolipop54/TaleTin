@@ -28,6 +28,11 @@ class GtListButton extends StatelessWidget {
     selected: selected,
     onPressed: onPressed,
     child: ListTile(
+      // 点击由外层 GtButton 处理。行内没有 onTap，默认会错误地显示普通箭头。
+      mouseCursor: onPressed == null
+          ? SystemMouseCursors.basic
+          : SystemMouseCursors.click,
+      hoverColor: Colors.transparent,
       title: title,
       subtitle: subtitle,
       trailing: trailing,

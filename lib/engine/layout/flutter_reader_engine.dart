@@ -12,6 +12,8 @@ import '../../core/diagnostics/reader_work_trace.dart';
 import '../../core/diagnostics/reader_delivery_experiments.dart';
 import '../../domain/services/layout_checkpoint_store.dart';
 
+import '../../domain/models/book.dart';
+import '../../domain/models/exact_page_count.dart';
 import '../../domain/models/locator.dart';
 import '../../domain/services/reader_engine.dart';
 import '../selection/selection_rects.dart';
@@ -23,8 +25,38 @@ import 'layout_options.dart';
 import '../normalization/content_fingerprint.dart';
 
 class FlutterReaderEngine extends ReaderEngine {
-  FlutterReaderEngine({LayoutCache? cache, this.checkpoints, this.prepareFonts})
-    : _cache = cache ?? LayoutCache();
+  FlutterReaderEngine({
+    LayoutCache? cache,
+    this.checkpoints,
+    this.prepareFonts,
+    this.recordPages,
+    this.lookupPages,
+  }) : _cache = cache ?? LayoutCache();
+  final void Function(Book, LayoutOptions, ExactPageCount)? recordPages;
+
+  final Future<int?> Function(Book, LayoutOptions, int, int, int, int)?
+  lookupPages;
+
+  Future<int?> Function(int, int, int)? _knownWindows(LayoutRequest request) {
+    final book = request.book, options = request.options, lookup = lookupPages;
+    final chapter = request.chapter.ordinal;
+    if (book?.format != BookFormat.txt || lookup == null) return null;
+    return (window, offset, windows) =>
+        lookup(book!, options, chapter, window, offset, windows);
+  }
+
+  void Function(ExactPageCount)? _reporter(LayoutRequest request) {
+    final book = request.book, options = request.options, record = recordPages;
+    if (record == null ||
+        book == null ||
+        (book.format.usesOriginalWebView &&
+            options.settings.layoutMode.isOriginal) ||
+        book.format == BookFormat.pdf) {
+      return null;
+    }
+    return (part) => record(book, options, part);
+  }
+
   final LayoutCheckpointStore? checkpoints;
   final PreparePublicationFonts? prepareFonts;
 
@@ -132,6 +164,8 @@ class FlutterReaderEngine extends ReaderEngine {
         content: null,
         options: options,
         indexedTxt: sections,
+        onExactPages: _reporter(request),
+        knownWindow: _knownWindows(request),
         measurementCache: _measurements,
       );
     }
@@ -166,6 +200,8 @@ class FlutterReaderEngine extends ReaderEngine {
       content: request.content,
       options: options,
       measurementCache: _measurements,
+      onExactPages: _reporter(request),
+      knownWindow: _knownWindows(request),
       onCheckpoint: key == null
           ? null
           : (data) {
@@ -229,7 +265,10 @@ class FlutterReaderEngine extends ReaderEngine {
       );
       final cached = _cache.get(key);
       trace?.details['hit'] = cached != null;
-      if (cached != null) return cached;
+      if (cached != null) {
+        _recordCompleteChapter(request, options, cached);
+        return cached;
+      }
 
       final layout = await ChapterLayout.produce(
         bookId: request.bookId,
@@ -242,6 +281,7 @@ class FlutterReaderEngine extends ReaderEngine {
       );
       // 结果产出后才入缓存：取消的排版不会污染后续请求
       _cache.put(key, layout);
+      _recordCompleteChapter(request, options, layout);
       return layout;
     } catch (error) {
       trace?.finish(status: error.runtimeType.toString());
@@ -249,6 +289,30 @@ class FlutterReaderEngine extends ReaderEngine {
     } finally {
       trace?.finish();
     }
+  }
+
+  void _recordCompleteChapter(
+    LayoutRequest request,
+    LayoutOptions options,
+    ChapterLayout layout,
+  ) {
+    final report = _reporter(request);
+    if (report == null) return;
+    final chapter = request.chapter, body = request.content;
+    // 整章 TXT 与长章分节的页首不同。带前置插图的旧 TXT 也可能在后面才有章题，
+    // 两个入口对这种旧正文的补题位置有差异，只交接两者版面相同的章。
+    if (ChapterLayoutTask.usesTxtWindows(chapter, body, options)) return;
+    if (options.insertChapterTitle) {
+      final title = ChapterLayout.chapterTitleBlockIndex(body, chapter.title);
+      if (title != null && title > 0) return;
+    }
+    report((
+      chapter: chapter.ordinal,
+      window: -1,
+      offset: 0,
+      windows: 1,
+      pages: layout.pageCount,
+    ));
   }
 
   @override

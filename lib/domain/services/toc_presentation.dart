@@ -1,3 +1,4 @@
+import '../../engine/parsers/txt/txt_chapter_rule.dart';
 import '../models/book_document.dart';
 import 'txt_chapter_sections.dart';
 
@@ -53,12 +54,80 @@ class TocEntry {
       sections.any((section) => section.title.contains(query));
 }
 
-/// 已有目录只展示书里明确列出的目标；读取分段、版权段和脚注不是新目录。
-/// 需要从封面恢复的合集章节由解析器确认后写入目录，不在界面再次猜测。
+/// 平铺目录只补两个明确章号之间能逐章核对的缺口。
+/// 分卷、章内锚点、交错存放的合集仍按原书目录显示。
+List<TocNode> completeFlatToc(List<TocNode> nodes, List<Chapter> chapters) {
+  if (nodes.length < 2 || nodes.length >= chapters.length) return nodes;
+  final ordinalById = {
+    for (final chapter in chapters) chapter.id: chapter.ordinal,
+  };
+  final byOrdinal = {for (final chapter in chapters) chapter.ordinal: chapter};
+  final result = <TocNode>[];
+  var previousOrdinal = -1;
+  ({int number, String unit})? previousNumber;
+  for (final node in nodes) {
+    final ordinal = ordinalById[node.chapterId];
+    if (node.children.isNotEmpty ||
+        node.fragment?.isNotEmpty == true ||
+        ordinal == null ||
+        ordinal <= previousOrdinal) {
+      return nodes;
+    }
+    final number = _tocChapterNumber(node.title);
+    final gap = ordinal - previousOrdinal;
+    if (gap > 1 &&
+        number != null &&
+        previousNumber != null &&
+        previousNumber.unit == number.unit &&
+        number.number - previousNumber.number == gap) {
+      final missing = <TocNode>[];
+      for (var i = 1; i < gap; i++) {
+        final chapter = byOrdinal[previousOrdinal + i];
+        final expected = (number: previousNumber.number + i, unit: number.unit);
+        if (chapter == null ||
+            chapter.textLength == 0 ||
+            _tocChapterNumber(chapter.title) != expected) {
+          break;
+        }
+        missing.add(TocNode(title: chapter.title, chapterId: chapter.id));
+      }
+      // 章号和文件顺序必须连续吻合，避免把版权、脚注及续段当作缺章。
+      if (missing.length == gap - 1) result.addAll(missing);
+    }
+    result.add(node);
+    previousOrdinal = ordinal;
+    previousNumber = number;
+  }
+  return result.length == nodes.length ? nodes : result;
+}
+
+final _leadingChapterNumber = RegExp(
+  r'^(章|chapter\s+)([0-9０-９]+)(?=$|[\s:：·、.．—-])',
+  caseSensitive: false,
+);
+
+({int number, String unit})? _tocChapterNumber(String title) {
+  final text = title.trim();
+  final match = _leadingChapterNumber.firstMatch(text);
+  if (match != null) {
+    final number = TxtChapterRule.parseNumber(match[2]!);
+    if (number != null) {
+      return (number: number, unit: match[1]!.trim().toLowerCase());
+    }
+  }
+  final chapter = TxtChapterRule.numberedChapter(text);
+  if (chapter == null ||
+      !TxtChapterRule.separated(text.substring(chapter.end))) {
+    return null;
+  }
+  return (number: chapter.number, unit: chapter.unit);
+}
+
 List<TocVolume> buildTocVolumes(
   List<TocNode> nodes,
   List<Chapter> chapters, {
   Map<String, List<TxtTocSection>> txtSections = const {},
+  bool fillNumberedGaps = true,
 }) {
   final ordered = [...chapters]..sort((a, b) => a.ordinal.compareTo(b.ordinal));
   if (nodes.isEmpty) {
@@ -78,6 +147,7 @@ List<TocVolume> buildTocVolumes(
       ),
     ];
   }
+  if (fillNumberedGaps) nodes = completeFlatToc(nodes, ordered);
   final ids = {for (final n in nodes) ...n.chapterIds};
   final represented = ordered.where((c) => ids.contains(c.id)).toList();
   return _buildAnchorVolumes(nodes, represented, {

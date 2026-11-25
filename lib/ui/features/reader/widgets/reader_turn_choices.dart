@@ -5,6 +5,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/gt_tokens.dart';
 import '../../../core/widgets/gt_button.dart';
 import '../../../core/widgets/gt_icon.dart';
+import 'reader_desktop_layout.dart';
 
 /// 使用本地透明缩略图；顺序与翻页设置枚举一致，完整卡片都能点击。
 class ReaderTurnChoices extends StatelessWidget {
@@ -40,6 +41,66 @@ class ReaderTurnChoices extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.gtColors;
+    if (readerUsesDesktopPanels) {
+      final pixelRatio = MediaQuery.devicePixelRatioOf(context);
+      return Column(
+        children: [
+          for (final effect in effects)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: GtButton.raw(
+                key: ValueKey('reader-turn-${effect.name}'),
+                selected: effect == selected,
+                borderRadius: BorderRadius.circular(8),
+                onPressed: curlOnly && effect != PageTurnEffect.curl
+                    ? null
+                    : () => onSelect(effect),
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: effect == selected
+                        ? colors.actionPrimary.withValues(alpha: .10)
+                        : null,
+                    border: Border.all(
+                      color: effect == selected
+                          ? colors.actionPrimary
+                          : colors.borderSubtle,
+                    ),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 6,
+                  ),
+                  child: Row(
+                    children: [
+                      Image(
+                        image: image(effect, pixelRatio),
+                        width: 26,
+                        height: 32,
+                        fit: BoxFit.contain,
+                        excludeFromSemantics: true,
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          effect.label,
+                          style: GtText.body(colors.textPrimary),
+                        ),
+                      ),
+                      if (effect == selected)
+                        GtIcon(
+                          GtIcons.checkCircle,
+                          size: 18,
+                          color: colors.actionPrimary,
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+        ],
+      );
+    }
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       physics: const ClampingScrollPhysics(),

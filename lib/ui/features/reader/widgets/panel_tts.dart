@@ -6,6 +6,7 @@ import '../../../../domain/models/tts_state.dart';
 import '../view_models/listening_panel_view_model.dart';
 import '../view_models/listening_view_state.dart';
 import '../view_models/reader_session_view_model.dart';
+import '../view_models/visible_spread.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/gt_tokens.dart';
 import '../view_models/reader_view_model.dart';
@@ -32,7 +33,13 @@ class PanelTts extends ConsumerWidget {
     final speech = all?.bookId == id ? all! : const ListeningState();
     final commands = ref.watch(listeningPanelProvider(id));
     final ready = session != null && all != null;
-    final canPlay = all?.voice != null;
+    final canPlay =
+        all?.voice != null &&
+        (session == null ||
+            !session.usesSimplifiedSpread ||
+            speech.desiredPlaying ||
+            (speech.hasSession && speech.followReading) ||
+            spreadShowsSession(ref.watch(visibleSpreadProvider(id)), session));
     return ReaderSheet(
       title: '听书',
       onClose: vm.closePanel,

@@ -27,6 +27,7 @@ class PageInformation {
     this.bookEdges = false,
     this.spreadSide,
     this.spread = false,
+    this.externalProgress = false,
     this.paper,
     this.backgroundImage,
   });
@@ -44,6 +45,7 @@ class PageInformation {
   /// null为单页；双页只在左上显示章名、左下显示进度、右下显示时间电量。
   final int? spreadSide;
   final bool spread;
+  final bool externalProgress;
   final Color? paper;
   final ui.Image? backgroundImage;
   PageInformation withColor(Color foreground) => PageInformation(
@@ -63,6 +65,7 @@ class PageInformation {
     bookEdges: bookEdges,
     spreadSide: spreadSide,
     spread: spread,
+    externalProgress: externalProgress,
     paper: paper,
     backgroundImage: backgroundImage,
   );
@@ -86,23 +89,25 @@ class PageInformation {
     bookEdges,
     spreadSide,
     spread,
+    externalProgress,
     paper,
     backgroundImage,
   );
 
-  TextPainter _text(String text, double fontSize, double width) => TextPainter(
-    text: TextSpan(
-      text: text,
-      style: GtText.caption(
-        color,
-        family: fontFamily,
-      ).copyWith(fontSize: fontSize),
-    ),
-    textDirection: TextDirection.ltr,
-    textScaler: scaler,
-    maxLines: 1,
-    ellipsis: '…',
-  )..layout(maxWidth: math.max(0, width));
+  TextPainter _text(String text, double fontSize, double width, [Color? ink]) =>
+      TextPainter(
+        text: TextSpan(
+          text: text,
+          style: GtText.caption(
+            ink ?? color,
+            family: fontFamily,
+          ).copyWith(fontSize: fontSize),
+        ),
+        textDirection: TextDirection.ltr,
+        textScaler: scaler,
+        maxLines: 1,
+        ellipsis: '…',
+      )..layout(maxWidth: math.max(0, width));
 
   double _height(double fontSize) {
     final p = _text('国', fontSize, double.infinity);
@@ -112,10 +117,16 @@ class PageInformation {
   }
 
   double get top => visible ? 16 + _height(12) : 0;
-  double get bottom =>
-      visible ? 12 + bottomInset + math.max(14, _height(11)) : 0;
+  double get footerLineHeight => math.max(14, _height(11));
+  double get footerBottomPadding => 12 + bottomInset;
+  double get bottom => visible ? footerBottomPadding + footerLineHeight : 0;
 
-  void paint(Canvas canvas, Size size, {bool paintMenu = true}) {
+  void paint(
+    Canvas canvas,
+    Size size, {
+    bool paintMenu = true,
+    Color? chapterColor,
+  }) {
     if (paintMenu) searchMenu?.paint(canvas, size);
     if (bookmarked) {
       canvas.save();
@@ -138,8 +149,9 @@ class PageInformation {
       double y,
       double maxWidth, [
       double align = 0,
+      Color? ink,
     ]) {
-      final p = _text(text, fontSize, maxWidth);
+      final p = _text(text, fontSize, maxWidth, ink);
       p.paint(canvas, Offset(x - p.width * align, y));
       p.dispose();
     }
@@ -151,10 +163,14 @@ class PageInformation {
         inset,
         16,
         spread ? size.width / 2 - 2 * inset : width,
+        0,
+        chapterColor,
       );
     }
     final y = size.height - bottom;
-    if (spreadSide != 1) label(progress, 11, inset, y, width / 3);
+    if (spreadSide != 1 && !externalProgress) {
+      label(progress, 11, inset, y, width / 3);
+    }
     if (spreadSide == 0) return;
     label(
       clock,

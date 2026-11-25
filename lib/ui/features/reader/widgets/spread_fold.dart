@@ -3,6 +3,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 
 import 'page_fold.dart';
+import 'page_ink.dart';
 import 'book_paper.dart';
 import 'page_fold_mesh.dart';
 
@@ -26,11 +27,16 @@ class SpreadFold {
   double get inset => edges ? bookEdgeWidth : 0;
   Size get leafSize => Size(size.width / 2 - inset, size.height);
 
-  /// 书角用从中缝量起的实际触点，只在翻页画布和起手侧纸边截断。
-  Offset boundCornerTouch(Offset touch) => Offset(
-    touch.dx.clamp(-size.width / 2, leafSize.width),
-    touch.dy.clamp(0.0, size.height),
-  );
+  /// 正翻与回翻在同一张纸的坐标里计算，中缝是 x=0，页叠不算入纸宽。
+  Offset boundCornerTouch(Offset touch, {required bool fromTop}) {
+    final leaf = leafSize;
+    return PageFold.constrainTouch(
+      leaf,
+      Offset(leaf.width, fromTop ? 0 : leaf.height),
+      touch,
+      allowFullTurn: true,
+    );
+  }
 
   late final ui.Image front, back;
   final _paint = Paint()..filterQuality = FilterQuality.low;
@@ -63,15 +69,8 @@ class SpreadFold {
     Offset.zero & size,
     _paint,
   );
-  void paint(
-    Canvas canvas, {
-    required double progress,
-    required Color paper,
-    required bool fromTop,
-    Offset? touch,
-    bool edgeCurl = false,
-    double? edgeY,
-  }) {
+  ({PageFold? fold, bool target}) geometry({required double progress, required bool fromTop,
+    Offset? touch, bool edgeCurl = false, double? edgeY}) {
     final half = size.width / 2;
     final leaf = leafSize;
     final corner = Offset(
@@ -82,30 +81,59 @@ class SpreadFold {
           ? 0
           : leaf.height,
     );
-    final point = touch == null
-        ? PageFold.tapCornerTouch(
-            leaf,
-            progress,
-            backward: false,
-            fromTop: fromTop,
+    final point = edgeCurl
+        ? Offset(
+            touch == null
+                ? leaf.width * (1 - 2 * progress)
+                : touch.dx * leaf.width / half,
+            touch?.dy ?? corner.dy,
           )
-        : edgeCurl
-        ? Offset(touch.dx * leaf.width / half, touch.dy)
-        : boundCornerTouch(touch);
-    if ((point - corner).distance < .01) {
-      _full(canvas, current);
-      return;
-    }
+        : boundCornerTouch(
+            touch ??
+                PageFold.tapCornerTouch(
+                  leaf,
+                  progress,
+                  backward: false,
+                  fromTop: fromTop,
+                ),
+            fromTop: fromTop,
+          );
+    if ((point - corner).distance < .01) return (fold: null, target: false);
     if (point.dx <= -leaf.width + .01 && (point.dy - corner.dy).abs() < .01) {
-      _full(canvas, target);
+      return (fold: null, target: true);
+    }
+    return (fold: PageFold(size: leaf, corner: corner, touch: point), target: false);
+  }
+
+  void paint(
+    Canvas canvas, {
+    required double progress,
+    required Color paper,
+    required bool fromTop,
+    Offset? touch,
+    bool edgeCurl = false,
+    double? edgeY,
+    PageInk? currentInk,
+    PageInk? targetInk,
+  }) {
+    final half = size.width / 2;
+    final leaf = leafSize;
+    final frame = geometry(progress: progress, fromTop: fromTop, touch: touch,
+        edgeCurl: edgeCurl, edgeY: edgeY);
+    final fold = frame.fold;
+    if (fold == null) {
+      _full(canvas, frame.target ? target : current);
+      (frame.target ? targetInk : currentInk)?.paint(canvas);
       return;
     }
     canvas.save();
     canvas.clipRect(Offset.zero & size);
     _full(canvas, current);
+    currentInk?.paint(canvas);
     canvas.save();
     canvas.clipRect(Rect.fromLTWH(backward ? 0 : half, 0, half, leaf.height));
     _full(canvas, target);
+    targetInk?.paint(canvas);
     canvas.restore();
     if (backward) {
       canvas.translate(size.width, 0);
@@ -114,13 +142,15 @@ class SpreadFold {
     canvas.clipRect(Rect.fromLTRB(inset, 0, size.width - inset, size.height));
     canvas.translate(half, 0);
     // 允许纸背越过书沟落到另一侧；单页算法的外层裁剪不能沿用到这里。
-    final fold = PageFold(size: leaf, corner: corner, touch: point);
     void image(ui.Image i) => canvas.drawImageRect(
       i,
       Rect.fromLTWH(0, 0, i.width.toDouble(), i.height.toDouble()),
       Offset.zero & leaf,
       _paint,
     );
+    // 页码在整组纸的左下角。左半页在裁出的卷页纹理中是镜像坐标。
+    final frontInk = backward ? toLeftLeaf(currentInk) : null;
+    final backInk = backward ? null : toLeftLeaf(targetInk);
     canvas.drawShadow(
       fold.back,
       const Color(0x80000000),
@@ -130,11 +160,13 @@ class SpreadFold {
     canvas.save();
     canvas.clipPath(fold.front);
     image(front);
+    frontInk?.paint(canvas);
     canvas.restore();
     canvas.save();
     canvas.clipPath(fold.back);
     canvas.transform(fold.reflection);
     image(back);
+    backInk?.paint(canvas);
     canvas.restore();
     paintFoldMesh(
       canvas,
@@ -145,9 +177,21 @@ class SpreadFold {
       fold.normal,
       fold.curlWidth,
       backImage: back,
+      frontInk: frontInk,
+      backInk: backInk,
     );
     canvas.restore();
   }
+
+  Rect leftLeafBounds(Rect band) => Rect.fromLTWH(
+    size.width / 2 - band.right,
+    band.top,
+    band.width,
+    band.height,
+  );
+  LeafInk? toLeftLeaf(PageInk? ink) => ink == null
+      ? null
+      : LeafInk(ink, leftLeafBounds(ink.bounds), mirror: true);
 
   void dispose() {
     current.dispose();

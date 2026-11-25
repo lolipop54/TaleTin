@@ -79,31 +79,22 @@ abstract final class BoxStyleParser {
   ///
   /// 只填自己写的字段，其余留空：层叠时才能做到「`border` 先写宽度和线型、
   /// `border-color` 后写颜色」互不覆盖。
-  static BorderSpec? borderWidths(String? raw) => _sideSpecs(
-    raw,
-    (token) {
-      final keyword = _borderWidthKeywords[token];
-      if (keyword != null) return BorderSideSpec(width: PxLength(keyword));
-      final length = StyleParser.length(token);
-      return length == null ? null : BorderSideSpec(width: length);
-    },
-  );
+  static BorderSpec? borderWidths(String? raw) => _sideSpecs(raw, (token) {
+    final keyword = _borderWidthKeywords[token];
+    if (keyword != null) return BorderSideSpec(width: PxLength(keyword));
+    final length = StyleParser.length(token);
+    return length == null ? null : BorderSideSpec(width: length);
+  });
 
-  static BorderSpec? borderStyles(String? raw) => _sideSpecs(
-    raw,
-    (token) {
-      final style = borderLineStyle(token);
-      return style == null ? null : BorderSideSpec(style: style);
-    },
-  );
+  static BorderSpec? borderStyles(String? raw) => _sideSpecs(raw, (token) {
+    final style = borderLineStyle(token);
+    return style == null ? null : BorderSideSpec(style: style);
+  });
 
-  static BorderSpec? borderColors(String? raw) => _sideSpecs(
-    raw,
-    (token) {
-      final color = StyleParser.color(token);
-      return color == null ? null : BorderSideSpec(color: color);
-    },
-  );
+  static BorderSpec? borderColors(String? raw) => _sideSpecs(raw, (token) {
+    final color = StyleParser.color(token);
+    return color == null ? null : BorderSideSpec(color: color);
+  });
 
   /// 背景简写。
   ///
@@ -121,6 +112,7 @@ abstract final class BoxStyleParser {
     String? repeat;
     String? position;
     String? size;
+    String? attachment;
     String? clip;
     var leftover = false;
     for (final token in StyleParser.splitTokens(first)) {
@@ -144,6 +136,10 @@ abstract final class BoxStyleParser {
         size = token;
         continue;
       }
+      if (token == 'fixed' || token == 'scroll' || token == 'local') {
+        attachment = token;
+        continue;
+      }
       if (_clipKeywords.contains(token)) {
         clip = token;
         continue;
@@ -153,7 +149,7 @@ abstract final class BoxStyleParser {
         color = parsedColor;
         continue;
       }
-      // 还认不出的写法（多层背景、尺寸、attachment 等）原样记进 raw。
+      // 尚未识别的简写仍保留原值，供书内样式覆盖报告使用。
       leftover = true;
     }
     final spec = BackgroundSpec(
@@ -163,6 +159,7 @@ abstract final class BoxStyleParser {
       repeat: repeat,
       position: position,
       size: size,
+      attachment: attachment,
       clip: clip,
       raw: leftover || layers.length > 1 ? text : null,
     );
@@ -223,14 +220,17 @@ abstract final class BoxStyleParser {
     return result.isEmpty ? null : result;
   }
 
-  /// 圆角：`10px`、`10px 4px`、`10px / 20px`（椭圆写法只取横向值并记录）。
+  /// 圆角：`10px`、`10px 4px`、`10px / 20px`（横纵半径分别保存）。
   static CornerRadii? radii(String? raw) {
     final text = (raw ?? '').trim().toLowerCase();
     if (text.isEmpty) return null;
-    final horizontal = text.split('/').first.trim();
-    final sides = StyleParser.sideLengths(horizontal);
-    if (sides == null) return null;
+    final axes = text.split('/');
+    if (axes.length > 2) return null;
+    final sides = StyleParser.sideLengths(axes.first.trim());
+    final ys = axes.length == 2 ? StyleParser.edges(axes.last.trim()) : null;
+    if (sides == null || (axes.length == 2 && ys == null)) return null;
     return CornerRadii(
+      vertical: ys,
       topLeft: sides[0],
       topRight: sides[1],
       bottomRight: sides[2],
@@ -371,13 +371,7 @@ abstract final class BoxStyleParser {
     'round',
   };
 
-  static const _positionKeywords = {
-    'left',
-    'right',
-    'top',
-    'bottom',
-    'center',
-  };
+  static const _positionKeywords = {'left', 'right', 'top', 'bottom', 'center'};
 
   static const _clipKeywords = {
     'border-box',

@@ -7,12 +7,32 @@ class _TopBar extends ConsumerWidget {
     required this.state,
     required this.theme,
     required this.bookId,
+    this.onTool,
   });
 
   final bool visible;
   final ReaderState state;
   final ReadingTheme theme;
   final String bookId;
+  final ValueChanged<ReaderPanel>? onTool;
+
+  Widget _actionButton(
+    String tooltip, {
+    required VoidCallback? onPressed,
+    required Widget icon,
+    bool mobileTooltip = true,
+  }) => onTool != null
+      ? DesktopReaderActionButton(
+          tooltip: tooltip,
+          onPressed: onPressed,
+          icon: icon,
+        )
+      : GtButton.icon(
+          style: GtButton.compactIconStyle,
+          tooltip: mobileTooltip ? tooltip : null,
+          onPressed: onPressed,
+          icon: icon,
+        );
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -58,11 +78,28 @@ class _TopBar extends ConsumerWidget {
               ),
               child: Container(
                 key: const ValueKey('reader-top-bar-surface'),
-                color: theme.background,
-                height: GtSize.appBarHeight,
+                decoration: BoxDecoration(
+                  color: theme.background,
+                  border: onTool == null
+                      ? null
+                      : Border(
+                          bottom: BorderSide(
+                            color: theme.secondary.withValues(alpha: .20),
+                            width: readerDesktopHeaderBottomBorder,
+                          ),
+                        ),
+                ),
+                padding: onTool == null
+                    ? null
+                    : const EdgeInsets.symmetric(horizontal: 12),
+                height: onTool == null
+                    ? GtSize.appBarHeight
+                    : readerDesktopHeaderHeight,
                 child: Row(
                   children: [
                     GtButton.icon(
+                      tooltip: onTool == null ? null : '返回书架',
+                      showTooltipOnWindows: false,
                       onPressed: () async {
                         final trace = ReaderWorkTrace.start(
                           'reader.exit.top_button',
@@ -159,8 +196,9 @@ class _TopBar extends ConsumerWidget {
                       ),
                     ),
                     // 三个操作共用紧凑触摸范围与 24dp 图标。
-                    GtButton.icon(
-                      style: GtButton.compactIconStyle,
+                    _actionButton(
+                      hasBookmark ? '移除书签' : '添加书签',
+                      mobileTooltip: false,
                       onPressed: anchor == null
                           ? null
                           : () => toggleReaderBookmark(ref, bookId),
@@ -173,9 +211,8 @@ class _TopBar extends ConsumerWidget {
                       ),
                     ),
                     if (!ref.watch(pdfModeProvider(bookId)))
-                      GtButton.icon(
-                        style: GtButton.compactIconStyle,
-                        tooltip: '全文搜索',
+                      _actionButton(
+                        '全文搜索',
                         onPressed: () async {
                           await ref
                               .read(
@@ -184,14 +221,13 @@ class _TopBar extends ConsumerWidget {
                               .open();
                         },
                         icon: GtIcon(
-                          GtIcons.search,
+                          GtIcons.readerSearch,
                           size: 24,
                           color: theme.primary,
                         ),
                       ),
-                    GtButton.icon(
-                      style: GtButton.compactIconStyle,
-                      tooltip: '标记或撤销已读',
+                    _actionButton(
+                      '标记或撤销已读',
                       onPressed: () =>
                           confirmBookCompletion(context, ref, bookId),
                       // SVG 的主题色只替换纸张和勾的绿色，保留勾周围的白边。
@@ -210,6 +246,15 @@ class _TopBar extends ConsumerWidget {
                               color: theme.primary,
                             ),
                     ),
+                    if (onTool != null) ...[
+                      const SizedBox(width: 8),
+                      ReaderToolbar(
+                        theme: theme,
+                        showListening: !ref.watch(pdfModeProvider(bookId)),
+                        selected: state.panel,
+                        onSelect: onTool,
+                      ),
+                    ],
                   ],
                 ),
               ),

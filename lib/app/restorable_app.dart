@@ -1,8 +1,10 @@
 import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'dart:async';
+import 'dart:io';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../data/services/backup_snapshot.dart';
 import '../domain/repositories/app_theme_repository.dart';
@@ -38,6 +40,7 @@ class _RestorableAppState extends State<RestorableApp> {
   AppThemeMode _overlayTheme = AppThemeMode.system;
   String? _overlayFontFamily;
   late final AppLifecycleListener _lifecycle;
+  static const _windowClose = MethodChannel('taletin/window_close');
 
   ProviderContainer _makeContainer(BootstrapResult result) => ProviderContainer(observers: const [AppErrorObserver()], overrides: [
     ...runtimeOverrides(result), restoreLibraryProvider.overrideWithValue(_restore),
@@ -46,9 +49,39 @@ class _RestorableAppState extends State<RestorableApp> {
   @override
   void initState() {
     super.initState();
-    _lifecycle = AppLifecycleListener(onInactive: () {
-      if (!_busy) unawaited(_runtime.listeningHandler.flushPosition());
-    });
+    _lifecycle = AppLifecycleListener(
+      onInactive: () {
+        if (!_busy) unawaited(_runtime.listeningHandler.flushPosition());
+      },
+      onExitRequested: Platform.isWindows ? _saveBeforeExit : null,
+    );
+    if (Platform.isWindows) {
+      _windowClose.setMethodCallHandler((call) async {
+        if (call.method != 'save') throw MissingPluginException();
+        final result = await _saveBeforeExit();
+        await _windowClose.invokeMethod<void>(
+          result == ui.AppExitResponse.exit ? 'saved' : 'cancel',
+        );
+      });
+      unawaited(_windowClose.invokeMethod<void>('ready'));
+    }
+  }
+
+  Future<ui.AppExitResponse> _saveBeforeExit() async {
+    // 关闭窗口才停止；最小化和锁屏只保存，不会中断后台听书。
+    if (_busy) return ui.AppExitResponse.cancel;
+    void Function()? releaseMedia;
+    try {
+      releaseMedia = await _runtime.listeningHandler.suspendForRestore();
+      await _runtime.listeningHandler.flushPosition();
+      await _runtime.positions.flush();
+      await _runtime.statistics.flush();
+      return ui.AppExitResponse.exit;
+    } catch (error, stack) {
+      releaseMedia?.call();
+      AppErrors.report(error, stack, operation: '退出前保存听书进度失败');
+      return ui.AppExitResponse.cancel;
+    }
   }
 
   Future<void> _prepare(BootstrapResult next) async {
@@ -120,6 +153,7 @@ class _RestorableAppState extends State<RestorableApp> {
 
   @override
   void dispose() {
+    if (Platform.isWindows) _windowClose.setMethodCallHandler(null);
     _releaseWarmSubscriptions();
     _lifecycle.dispose(); _container?.dispose(); _candidate?.dispose(); _picture?.dispose();
     super.dispose();

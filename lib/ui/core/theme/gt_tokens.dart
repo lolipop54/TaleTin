@@ -293,6 +293,12 @@ abstract final class GtSliderSize {
 
 /// 组件尺寸 Token。
 abstract final class GtSize {
+  /// 扣除主导航和页边距后，桌面设置与统计可以并排展示两列的最小宽度。
+  static const double desktopTwoColumnMinWidth = 760;
+
+  /// 手机横屏统计两列的下限，扣除列间距后给右侧七天月历约 342 个逻辑像素。
+  static const double mobileStatisticsTwoColumnMinWidth = 600;
+
   /// 图标
   static const double iconSmall = 18;
   static const double iconNormal = 24;

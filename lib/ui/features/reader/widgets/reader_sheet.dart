@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/gt_tokens.dart';
 import '../../../core/widgets/gt_icon.dart';
+import 'reader_desktop_layout.dart';
 
 /// 阅读器底部「纸张面板」统一外壳（设计文档 9.1）：
 /// 直角纸张背景 + 标题区 + 关闭按钮。
@@ -53,6 +54,8 @@ class ReaderSheet extends StatelessWidget {
     return Container(
       constraints: BoxConstraints(maxHeight: available * maxHeightFactor),
       color: backgroundOf(context),
+      // 单独打开的笔记编辑器也使用这个纸面；工具面板的左右安全区已由外层消费。
+      padding: EdgeInsets.only(left: media.padding.left, right: media.padding.right),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -90,10 +93,15 @@ class ReaderSheet extends StatelessWidget {
                   height: 32,
                   child: GtButton.icon(
                     style: GtButton.compactIconStyle,
-                    tooltip: collapsible ? '收起' : '关闭',
+                    tooltip: collapsible && !readerUsesDesktopPanels
+                        ? '收起'
+                        : '关闭',
+                    showTooltipOnWindows: !collapsible,
                     onPressed: onClose,
                     icon: GtIcon(
-                      collapsible ? GtIcons.chevronDown : GtIcons.close,
+                      collapsible && !readerUsesDesktopPanels
+                          ? GtIcons.chevronDown
+                          : GtIcons.close,
                       size: 23,
                       color: colors.textPrimary,
                     ),

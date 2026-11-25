@@ -12,6 +12,7 @@ import '../../../../core/widgets/state_views.dart';
 import '../../view_models/reader_session_view_model.dart';
 import '../../view_models/annotation_list_provider.dart';
 import '../../view_models/reader_view_model.dart';
+import '../../view_models/reader_note_title.dart';
 import 'note_tab.dart';
 import 'note_actions.dart';
 
@@ -77,14 +78,21 @@ class _BookNotesTabState extends ConsumerState<BookNotesTab> {
               : pageHighlightColorOf(note.color),
           location: note.chapterTitle,
           onJump: () => jumpToBookNote(ref, bookId, note),
-          onEdit: () {
+          onEdit: () async {
+            final chapterTitle = await readerNoteTitle(
+              ref,
+              bookId,
+              note.start,
+              fallback: note.chapterTitle,
+            );
+            if (!context.mounted) return;
             final vm = ref.read(readerProvider.notifier);
             vm.closePanel();
             vm.openNoteEditor(
               NoteEditorRequest(
                 range: note.range,
                 quote: note.quote,
-                chapterTitle: note.chapterTitle,
+                chapterTitle: chapterTitle,
                 existing: note,
               ),
             );

@@ -92,7 +92,7 @@ class _GTReaderAppState extends ConsumerState<GTReaderApp> {
         (_) => _externalBookChanged(),
       );
     }
-    if (widget.listening != null) {
+    if (widget.listening != null && defaultTargetPlatform == TargetPlatform.android) {
       _notificationClicks = AudioService.notificationClicked.listen((clicked) {
         final state = widget.listening!.snapshot;
         if (!clicked || !state.hasSession || state.bookId.isEmpty) return;

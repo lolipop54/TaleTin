@@ -26,6 +26,9 @@ Map<String, Object?> geometryStyleJson(ComputedStyle style) => {
 /// - 字体族在选用书内字体时影响几何。实际加载的字体字节另计入章节缓存键。
 /// - 颜色、下划线/删除线、文字阴影只影响绘制。
 Map<String, Object?> _textGeometry(TextStyleSpec text) => {
+  'lang': ?text.language,
+  'em': ?text.emphasis,
+  'ep': ?text.emphasisPosition,
   if (text.fontSize != null) 'fs': text.fontSize!.toJson(),
   if (text.fontWeight != null) 'fw': text.fontWeight!.toJson(),
   if (text.fontStyle != null) 'fy': text.fontStyle!.name,
@@ -48,16 +51,22 @@ bool _textHasGeometry(TextStyleSpec text) =>
     text.wordSpacing != null ||
     text.textTransform != null ||
     text.verticalAlign != null ||
-    text.whiteSpace != null;
+    text.whiteSpace != null ||
+    text.language != null ||
+    text.emphasis != null ||
+    text.emphasisPosition != null;
 
 /// 盒子只有内边距和边框**宽度**影响几何；颜色、线型、圆角、背景、阴影都只影响绘制。
 Map<String, Object?> _boxGeometry(BoxStyleSpec box) => {
   if (box.padding != null) 'p': box.padding!.toJson(),
+  if (box.decorationBreak == 'clone') 'db': 'clone',
   'bw': ?_borderWidthsJson(box.border),
 };
 
 bool _boxHasGeometry(BoxStyleSpec box) =>
-    box.padding != null || _borderWidthsJson(box.border) != null;
+    box.decorationBreak == 'clone' ||
+    box.padding != null ||
+    _borderWidthsJson(box.border) != null;
 
 Map<String, Object?>? _borderWidthsJson(BorderSpec? border) {
   if (border == null || border.isEmpty) return null;
@@ -103,7 +112,9 @@ Map<String, Object?> _sizeGeometry(SizeStyleSpec size) => {
 Map<String, Object?> _tableGeometry(TableStyleSpec table) => {
   if (table.borderCollapse != null) 'bc': table.borderCollapse,
   if (table.borderSpacing != null) 'bsp': table.borderSpacing!.toJson(),
+  if (table.borderSpacingY != null) 'bspy': table.borderSpacingY!.toJson(),
   if (table.tableLayout != null) 'tl': table.tableLayout,
+  if (table.direction != null) 'dir': table.direction,
   if (table.captionSide != null) 'cs': table.captionSide,
 };
 
@@ -111,4 +122,5 @@ bool _tableHasGeometry(TableStyleSpec table) =>
     table.borderCollapse != null ||
     table.borderSpacing != null ||
     table.tableLayout != null ||
+    table.direction != null ||
     table.captionSide != null;

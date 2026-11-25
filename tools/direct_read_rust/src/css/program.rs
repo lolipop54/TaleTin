@@ -1,4 +1,4 @@
-// Copyright (c) 2026 GT Reader contributors. MIT license, see LICENSE.
+// Copyright (c) 2026 GT Reader contributors. GPL-3.0-only, see LICENSE.
 //! 在实际纸面环境中重算样式；不再解析正文，也不改变任何正文坐标。
 use super::selector::ElementRef;
 use super::{Computed, Engine};
@@ -12,7 +12,7 @@ pub fn evaluate(metadata: &Value) -> Value {
     };
     let dom = crate::dom::Dom::from_style_nodes(records);
     let Some(mut engine) = Engine::from_metadata(&program) else {
-        return json!({});
+        return json!({"cssError":"无法恢复当前章节的条件样式"});
     };
     let mut computed: HashMap<usize, Computed> = HashMap::new();
     let mut variables: HashMap<usize, HashMap<String, String>> = HashMap::new();

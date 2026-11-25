@@ -18,7 +18,7 @@ const List<StyleProperty> kSizeProperties = [
     consumer: StyleConsumer.blockFlow,
     status: StyleStatus.parsed,
     phase: 'D1',
-    notes: '图片、文字块自己与祖先容器的 width 已生效；按实际父内容区计算，包含无装饰的容器。标题按边框盒限制宽度。',
+    notes: '普通块和块级图片按直接父内容盒换算。标题沿用边框盒限宽。',
   ),
 
   StyleProperty(
@@ -33,6 +33,7 @@ const List<StyleProperty> kSizeProperties = [
     consumer: StyleConsumer.blockFlow,
     status: StyleStatus.parsed,
     phase: 'D1',
+    notes: '块级图片、空块和普通文字块共用尺寸换算。百分比只使用确定的父内容高度。',
   ),
 
   StyleProperty(
@@ -47,6 +48,7 @@ const List<StyleProperty> kSizeProperties = [
     consumer: StyleConsumer.blockFlow,
     status: StyleStatus.parsed,
     phase: 'D1',
+    notes: '普通块和块级图片共用下限。下限大于上限时以下限为准，再应用阅读器限宽。',
   ),
 
   StyleProperty(
@@ -61,6 +63,7 @@ const List<StyleProperty> kSizeProperties = [
     consumer: StyleConsumer.blockFlow,
     status: StyleStatus.parsed,
     phase: 'D1',
+    notes: '空块和普通文字块增加块内留白，块级图片按明确尺寸和固有比例求大小。',
   ),
 
   StyleProperty(
@@ -75,7 +78,7 @@ const List<StyleProperty> kSizeProperties = [
     consumer: StyleConsumer.blockFlow,
     status: StyleStatus.parsed,
     phase: 'D1',
-    notes: '图片、文字块自己与祖先容器的 max-width 已生效。',
+    notes: '普通块和块级图片共用上限与盒模型换算。',
   ),
 
   StyleProperty(
@@ -90,6 +93,7 @@ const List<StyleProperty> kSizeProperties = [
     consumer: StyleConsumer.blockFlow,
     status: StyleStatus.parsed,
     phase: 'D1',
+    notes: '块级图片按上限约束。普通文字块保留超过上限的正文，避免后文重叠。',
   ),
 
   StyleProperty(
@@ -102,8 +106,9 @@ const List<StyleProperty> kSizeProperties = [
     affectsGeometry: true,
     primitive: StylePrimitive.edges,
     consumer: StyleConsumer.blockFlow,
-    status: StyleStatus.parsed,
+    status: StyleStatus.rendered,
     phase: 'D1',
+    notes: '块、标题、分隔线、图片、行内块与单元格共用内容盒换算。普通行内文字宽高不适用，合并边框按网格两侧分担。',
   ),
 
   StyleProperty(
@@ -116,11 +121,26 @@ const List<StyleProperty> kSizeProperties = [
     affectsGeometry: false,
     primitive: StylePrimitive.atomicInline,
     consumer: StyleConsumer.replacedFlow,
-    status: StyleStatus.parsed,
+    status: StyleStatus.rendered,
     phase: 'E',
+    notes: '图片先排图框，再按 fill、contain、cover、none、scale-down 和原图尺寸绘制。',
   ),
 
   // ── 表格 ──────────────────────────────────────────────────────────────,
+  StyleProperty(
+    id: 4009,
+    cssName: 'bleed',
+    valueType: StyleValueType.keyword,
+    inherited: false,
+    initial: 'none',
+    appliesTo: kSizeTargets,
+    affectsGeometry: true,
+    primitive: StylePrimitive.edges,
+    consumer: StyleConsumer.replacedFlow,
+    status: StyleStatus.rendered,
+    phase: 'E',
+    notes: '章首插画按出版方指定的边延伸到纸边。',
+  ),
   StyleProperty(
     id: 5001,
     cssName: 'border-collapse',
@@ -146,8 +166,9 @@ const List<StyleProperty> kSizeProperties = [
     affectsGeometry: true,
     primitive: StylePrimitive.tableCell,
     consumer: StyleConsumer.tableFlow,
-    status: StyleStatus.parsed,
+    status: StyleStatus.rendered,
     phase: 'P6',
+    notes: '分离边框时可分别声明水平、垂直两个间距；合并边框时均为零。',
   ),
 
   StyleProperty(
@@ -160,7 +181,7 @@ const List<StyleProperty> kSizeProperties = [
     affectsGeometry: true,
     primitive: StylePrimitive.tableCell,
     consumer: StyleConsumer.tableFlow,
-    status: StyleStatus.parsed,
+    status: StyleStatus.rendered,
     phase: 'P6',
   ),
 
@@ -174,7 +195,7 @@ const List<StyleProperty> kSizeProperties = [
     affectsGeometry: true,
     primitive: StylePrimitive.tableCell,
     consumer: StyleConsumer.tableFlow,
-    status: StyleStatus.parsed,
+    status: StyleStatus.rendered,
     phase: 'P6',
   ),
 
@@ -188,7 +209,21 @@ const List<StyleProperty> kSizeProperties = [
     affectsGeometry: false,
     primitive: StylePrimitive.tableCell,
     consumer: StyleConsumer.tableFlow,
-    status: StyleStatus.parsed,
+    status: StyleStatus.rendered,
     phase: 'P6',
+  ),
+  StyleProperty(
+    id: 5006,
+    cssName: 'direction',
+    valueType: StyleValueType.keyword,
+    inherited: true,
+    initial: 'ltr',
+    appliesTo: kTableTargets,
+    affectsGeometry: true,
+    primitive: StylePrimitive.tableCell,
+    consumer: StyleConsumer.tableFlow,
+    status: StyleStatus.rendered,
+    phase: 'P6',
+    notes: '表格列方向及共享边线平局方向。',
   ),
 ];

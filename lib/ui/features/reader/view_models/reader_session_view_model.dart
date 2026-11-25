@@ -12,6 +12,7 @@ import 'dart:async';
 import '../../../../platform/channels/reading_window.dart';
 
 import '../../../../core/diagnostics/app_errors.dart';
+import '../../../../core/concurrency/background_compute.dart';
 import '../../../../core/diagnostics/listening_follow_diagnostics.dart';
 import '../../../../core/diagnostics/reader_recovery_diagnostics.dart';
 import '../../../../data/services/toc_index_compute.dart';
@@ -49,7 +50,9 @@ import '../../../../domain/models/reading_settings.dart';
 import '../../../../domain/repositories/reading_position_repository.dart';
 import '../../../../domain/repositories/chapter_content_repository.dart';
 import '../../../../domain/services/reader_engine.dart';
+import '../../../../domain/services/layout_checkpoint_store.dart';
 import '../../../../domain/services/toc_entry_index.dart';
+import '../../../../domain/services/toc_presentation.dart';
 import '../../../../engine/layout/chapter_layout.dart';
 import '../../../../engine/layout/layout_options.dart';
 import '../../../../engine/normalization/text_anchor.dart';
@@ -57,6 +60,7 @@ import '../../../../engine/parsers/epub/anchor_locator.dart';
 import '../../../../engine/parsers/epub/toc_progress_entries.dart';
 
 part 'reader_layout_coordinator.dart';
+part 'reader_indexed_txt_layout.dart';
 part 'reader_original_position.dart';
 part 'reader_pdf_position.dart';
 part 'reader_annotation_navigation.dart';
@@ -67,6 +71,7 @@ part 'reader_toc_navigation.dart';
 part 'reader_progress_titles.dart';
 part 'reader_scan_commit.dart';
 part 'reader_spread_pages.dart';
+part 'reader_spread_order.dart';
 part 'reader_image_navigation.dart';
 part 'reader_progress_navigation.dart';
 part 'reader_visual_confirmation.dart';
@@ -81,6 +86,7 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
         _ReaderDisplayPosition,
         _ReaderTocNavigation {
   ReaderSessionNotifier(this.bookId);
+  _SpreadOrder? _spreadOrder;
   ReaderSession get _scanSession => state.requireValue;
   ReaderSession? get _progressSession => state.value;
   Ref get _sessionRef => ref;
@@ -255,6 +261,8 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
     _confirmedVisualPosition = null;
     listenSelf((_, next) => _retainDisplayLayout(next.value));
     ref.onDispose(() {
+      _spreadOrder?.flush();
+      _spreadOrder = null;
       cancelProgressNavigation();
       ++_tokenVersion;
       _token?.cancel();
@@ -273,6 +281,9 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
     }
     if (book == null || book.status != BookStatus.active) {
       throw const ReaderFailure('这本书已不在书架中');
+    }
+    if (ref.mounted && book.format.usesOriginalWebView) {
+      ref.onDispose(ref.read(publicationFontLoaderProvider).retainBook(book));
     }
     final chapters = await traceTurnStep(
       'load chapters',
@@ -426,7 +437,16 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
   });
 
   // 新播放取当前可见位置；历史听书点只负责恢复画面和保存，暂停续播由服务负责。
-  Locator? get listeningStartAnchor => state.value?.currentAnchor;
+  Locator? get listeningStartAnchor {
+    final session = state.value;
+    if (session == null || !session.usesSimplifiedSpread) {
+      return session?.currentAnchor;
+    }
+    final pages = ref.read(visibleSpreadProvider(bookId));
+    if (!spreadShowsSession(pages, session)) return null;
+    final left = pages.first;
+    return left.layout.beginLocatorOf(left.layout.page(left.pageIndex));
+  }
 
   bool _manualListening = false;
   Future<void>? _manualHandoff;
@@ -576,72 +596,44 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
   }
 
   /// 翻到下一页；已在全书末尾时返回 [PageTurnResult.atBookEnd]。
-  Future<PageTurnResult> nextPage() async {
+  Future<PageTurnResult> nextPage() => _turnPage(true);
+
+  Future<PageTurnResult> previousPage() => _turnPage(false);
+
+  Future<PageTurnResult> _turnPage(bool forward) async {
     cancelProgressNavigation();
     await beginManualReading();
     _clearRestoredPosition();
     final session = state.value;
     if (session == null || !session.isReady) return PageTurnResult.moved;
-    final adjacent = await session.layout!.adjacentPage(
-      session.pageIndex,
-      forward: true,
-    );
+    final version = _tokenVersion;
+    final target = await prepareAdjacent(forward);
     if (!ref.mounted ||
+        version != _tokenVersion ||
         state.value?.pageIndex != session.pageIndex ||
         session.layout?.samePageAs(state.value?.layout, session.pageIndex) !=
             true) {
       return PageTurnResult.moved;
     }
-    if (adjacent != null) {
+    if (target == null) {
+      return forward ? PageTurnResult.atBookEnd : PageTurnResult.atBookStart;
+    }
+    if (target.layout.chapterId == session.chapter.id) {
       state = AsyncData(
-        session.copyWith(
-          layout: adjacent.layout,
-          pageIndex: adjacent.pageIndex,
-        ),
+        session.copyWith(layout: target.layout, pageIndex: target.pageIndex),
       );
       unawaited(persist());
-      return PageTurnResult.moved;
-    }
-    if (session.chapterIndex + 1 >= session.chapters.length) {
-      return PageTurnResult.atBookEnd;
-    }
-    await _layoutChapter(
-      chapterIndex: session.chapterIndex + 1,
-      options: _options,
-      anchor: null,
-      preparedLayout: _nextChapterLayout,
-    );
-    return PageTurnResult.moved;
-  }
-
-  /// 翻到上一页；已在全书开头时返回 [PageTurnResult.atBookStart]。
-  Future<PageTurnResult> previousPage() async {
-    cancelProgressNavigation();
-    await beginManualReading();
-    _clearRestoredPosition();
-    final session = state.value;
-    if (session == null || !session.isReady) return PageTurnResult.moved;
-    if (session.pageIndex > 0) {
-      final prepared = await prepareAdjacent(false);
-      if (!ref.mounted || prepared == null) return PageTurnResult.moved;
-      state = AsyncData(
-        session.copyWith(
-          layout: prepared.layout,
-          pageIndex: prepared.pageIndex,
+    } else {
+      await _layoutChapter(
+        chapterIndex: session.chapters.indexWhere(
+          (c) => c.id == target.layout.chapterId,
         ),
+        options: _options,
+        anchor: null,
+        atChapterEnd: !forward,
+        preparedLayout: target.layout,
       );
-      unawaited(persist());
-      return PageTurnResult.moved;
     }
-    if (session.chapterIndex == 0) return PageTurnResult.atBookStart;
-    await _layoutChapter(
-      chapterIndex: session.chapterIndex - 1,
-      options: _options,
-      anchor: null,
-      // 进入上一章时落在它的最后一页，向前翻页才连续
-      atChapterEnd: true,
-      preparedLayout: _previousChapterLayout,
-    );
     return PageTurnResult.moved;
   }
 
@@ -746,7 +738,13 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
       final page = prepared.pageIndexOf(locator);
       if (page != null) {
         state = AsyncData(
-          state.requireValue.copyWith(layout: prepared, pageIndex: page),
+          state.requireValue.copyWith(
+            layout: prepared,
+            pageIndex: page,
+            spreadTarget: prepared.options.settings.spreadEnabled
+                ? locator
+                : null,
+          ),
         );
         if (manual && !restoringListening) await persist();
         return;

@@ -6,18 +6,26 @@ import 'package:flutter/material.dart';
 
 import 'dart:ui' as ui;
 
+import '../../../../engine/layout/book_image_fit.dart';
+import '../../../../engine/layout/book_background.dart'
+    show blockBackgroundPaths;
+
 import 'package:flutter_svg/flutter_svg.dart';
 
 import '../../../../domain/models/book_document.dart';
 import '../../../../core/diagnostics/app_errors.dart';
 import 'page_canvas.dart';
+import '../../../../engine/layout/chapter_paginator.dart'
+    show PageFragment, backgroundFrames;
 import '../../../../engine/layout/math_typesetting.dart';
 import 'book_paper.dart';
 import 'turn_trace.dart';
 import 'book_box_paint.dart';
+import 'block_background_paint.dart';
 import 'book_colors.dart';
 import 'background_image_color.dart';
 import 'book_svg_picture.dart';
+import 'book_raster_size.dart';
 
 /// 一页内容的绘制材料。准备正文及书内背景图片，不对整页抓图。
 /// 调用方须等 load 完成再展示，并在替换或丢弃过期结果时 dispose。
@@ -35,6 +43,7 @@ class PreparedPage {
              page.theme.background,
            );
   final Color backdrop;
+  static final _paperColors = Expando<({Object key, Future<Color> color})>();
 
   /// 预备和正式绘制使用同一底色，否则有书内根背景时会生成两份文字缓存。
   void prepareText() =>
@@ -45,12 +54,22 @@ class PreparedPage {
 
   final PageCanvas page;
   final Map<String, ImageInfo?> _images;
+  bool get hasBookImages => _images.values.any((image) => image != null);
   bool get hasFailedImages => _images.values.any((image) => image == null);
-  int get imageBytes => _images.values.fold(
-    0,
-    (sum, info) =>
-        sum + (info == null ? 0 : info.image.width * info.image.height * 4),
-  );
+
+  /// 相邻页常使用同一张纸纹。独立句柄指向同一份解码像素时只占一份预算。
+  int countImageBytes(Map<String, List<ui.Image>> seen) {
+    var bytes = 0;
+    for (final entry in _images.entries) {
+      final image = entry.value?.image;
+      if (image == null) continue;
+      final versions = seen.putIfAbsent(entry.key, () => []);
+      if (versions.any(image.isCloneOf)) continue;
+      versions.add(image);
+      bytes += image.width * image.height * 4;
+    }
+    return bytes;
+  }
 
   /// ImageInfo.clone产生独立句柄；比较底层像素身份，避免误用重新加载的图片。
   bool sameImagesAs(PreparedPage other) =>
@@ -80,32 +99,41 @@ class PreparedPage {
         : backdrop,
   );
 
+  static bool needsImages(PageCanvas page) =>
+      page.backgroundPaths.isNotEmpty ||
+      page.layout
+              .page(page.pageIndex)
+              ?.paintFragments
+              .any(
+                (f) =>
+                    (f.imageSize != null && f.block.resourcePath != null) ||
+                    f.block
+                        .inlineImagesInLines(f.lineFrom, f.lineTo)
+                        .isNotEmpty,
+              ) ==
+          true;
+
   /// 纯文字页同步就绪，翻页时不插入一帧加载画面。
   static PreparedPage? textOnly(PageCanvas page) =>
-      page.backgroundPaths.isNotEmpty ||
-          page.layout
-                  .page(page.pageIndex)
-                  ?.fragments
-                  .any(
-                    (f) =>
-                        (f.imageSize != null && f.block.resourcePath != null) ||
-                        f.block
-                            .inlineImagesInLines(f.lineFrom, f.lineTo)
-                            .isNotEmpty,
-                  ) ==
-              true
-      ? null
-      : PreparedPage._(page, {});
+      needsImages(page) ? null : PreparedPage._(page, {});
 
   static Future<PreparedPage> load(
     PageCanvas page,
     ImageConfiguration configuration,
   ) async {
     final background = page.theme.texture?.image.clone();
+    final slice = page.layout.page(page.pageIndex);
+    final root = page.cssBackground?.backgroundImage;
+    final blockBackgrounds = <String>{
+      for (final f in slice?.paintFragments ?? const <PageFragment>[])
+        ...blockBackgroundPaths(f.block),
+    };
+    final backgrounds = {?root?.path, ...blockBackgrounds};
+    final ratio = configuration.devicePixelRatio ?? 1;
     final paths = <String>{
-      ...page.backgroundPaths,
+      ...backgrounds,
       for (final fragment
-          in page.layout.page(page.pageIndex)?.fragments ?? []) ...{
+          in page.layout.page(page.pageIndex)?.paintFragments ?? []) ...{
         if (fragment.block.kind == BlockKind.image &&
             fragment.block.resourcePath != null &&
             fragment.imageSize != null)
@@ -118,9 +146,21 @@ class PreparedPage {
       },
     };
     final formulaSizes = <String, Size>{};
+    final rasterSizes = BookRasterSizes();
+    for (final fragment in slice?.paintedImages ?? const <PageFragment>[]) {
+      final block = fragment.block;
+      if (block.resourcePath case final path?) {
+        rasterSizes.include(path, fragment.imageSize!, block.imageFit);
+      }
+    }
     for (final fragment
-        in page.layout.page(page.pageIndex)?.fragments ?? const []) {
+        in page.layout.page(page.pageIndex)?.paintFragments ?? const []) {
       for (final visual in fragment.positionedInlineImages) {
+        rasterSizes.include(
+          visual.image.resourcePath,
+          visual.rect.size,
+          visual.image.imageFit,
+        );
         if (visual.image.formula == null) continue;
         final previous = formulaSizes[visual.image.resourcePath];
         if (previous == null || previous.width < visual.rect.width) {
@@ -136,9 +176,17 @@ class PreparedPage {
       final images = await traceTurnStep(
         label,
         () => Future.wait(
-          paths.map(
-            (path) => traceTurnStep(
-              '$label image=${paths.toList().indexOf(path)} '
+          paths.indexed.map((entry) {
+            final (index, path) = entry;
+            final raster = rasterSizes.decodeSize(
+              path,
+              ratio: ratio,
+              paper: page.paperSize ?? page.layout.contentSize,
+              root: root,
+              blockBackground: blockBackgrounds.contains(path),
+            );
+            return traceTurnStep(
+              '$label image=$index '
               'svg=${path.toLowerCase().endsWith('.svg')}',
               () => _loadPageImage(
                 File(page.resolveResource(path)),
@@ -147,12 +195,14 @@ class PreparedPage {
                     ? page.theme.primary
                     : null,
                 targetSize: formulaSizes[path],
-                backgroundSize: page.backgroundPaths.contains(path)
+                rasterSize: raster.pixels,
+                cover: raster.cover,
+                backgroundSize: backgrounds.contains(path)
                     ? page.layout.contentSize
                     : null,
               ),
-            ),
-          ),
+            );
+          }),
         ),
       );
       return PreparedPage._(
@@ -179,17 +229,36 @@ class PreparedPage {
     final fallback = box?.background ?? page.theme.background;
     final image = images[box?.backgroundImage?.path]?.image;
     if (image == null) return adaptSurface(fallback, page.theme.background);
-    return averageBackgroundColor(page.layout.contentSize, (canvas) {
+    // 章内各页用同一纸纹、同一尺寸和纸色。并行准备邻页时只做一次 GPU 采样。
+    final content = page.layout.content;
+    final key = (
+      page.layout.options.layoutSignature,
+      page.theme.background,
+      box!.background,
+      page.resolveResource(box.backgroundImage!.path),
+    );
+    final cached = _paperColors[content];
+    if (cached?.key == key) return cached!.color;
+    final color = averageBackgroundColor(page.layout.contentSize, (canvas) {
       final rect = Offset.zero & page.layout.contentSize;
       canvas.drawRect(rect, Paint()..color = page.theme.background);
       paintBookBoxRect(
         canvas,
         rect,
-        box!,
+        box,
         page.theme,
         images: (path) => images[path],
       );
     });
+    _paperColors[content] = (key: key, color: color);
+    try {
+      return await color;
+    } catch (_) {
+      if (identical(_paperColors[content]?.color, color)) {
+        _paperColors[content] = null;
+      }
+      rethrow;
+    }
   }
 
   /// SVG 也先生成固定图像，避免扫描中出现占位后补图。
@@ -199,9 +268,14 @@ class PreparedPage {
     Color? formulaColor,
     Size? targetSize,
     Size? backgroundSize,
+    Size? rasterSize,
+    bool cover = false,
   }) async {
     if (!file.path.toLowerCase().endsWith('.svg')) {
-      return _loadImage(FileImage(file), configuration);
+      return _loadImage(
+        bookRasterProvider(file, rasterSize, cover: cover),
+        configuration,
+      );
     }
     try {
       final picture = await loadBookSvg(
@@ -289,6 +363,27 @@ class PreparedPage {
     }
   }
 
+  /// 章末补纸仅重画纸面的书内配色和纹理。正文图片与文字仍只画在原页。
+  void paintChapterPaper(Canvas canvas, Size size, [PageCanvas? appearance]) {
+    final page = appearance ?? this.page;
+    final box = page.cssBackground;
+    if (box == null) return;
+    paintBookBoxRect(
+      canvas,
+      Offset.zero & size,
+      box,
+      page.theme,
+      images: (path) => _images[path],
+      paintShadows: page.paintShadows,
+    );
+  }
+
+  Color paperInformationColor(Color secondary) => adaptInk(
+    secondary,
+    backdrop,
+    backdrop.computeLuminance() < .4 ? const Color(0xffeeeeee) : secondary,
+  );
+
   /// size 是包含页边距的整页尺寸；正文仍按排版时的尺寸居中，不能重新断行。
   void paint(
     Canvas canvas,
@@ -316,14 +411,8 @@ class PreparedPage {
         backgroundImage: background,
       );
     }
-    if (page.cssBackground case final box?) {
-      paintBookBoxRect(
-        canvas,
-        Offset.zero & size,
-        box,
-        page.theme,
-        images: (path) => _images[path],
-      );
+    if (page.cssBackground != null) {
+      paintChapterPaper(canvas, size, page);
       if (page.information?.bookEdges == true &&
           page.information?.spreadSide == null) {
         BookPaperPainter(
@@ -336,44 +425,49 @@ class PreparedPage {
     final information = page.cssBackground == null
         ? page.information
         : page.information?.withColor(
-            adaptInk(
-              page.theme.secondary,
-              backdrop,
-              backdrop.computeLuminance() < .4
-                  ? const Color(0xffeeeeee)
-                  : page.theme.secondary,
-            ),
+            paperInformationColor(page.theme.secondary),
           );
-    information?.paint(canvas, size, paintMenu: false);
-    canvas.translate(
+    final bleed = page.hasBleedingArtwork;
+    canvas.save();
+    final infoTop = information?.top ?? 0;
+    final origin = Offset(
       (size.width - content.width) / 2,
       (size.height -
               content.height +
-              (page.information?.top ?? 0) -
+              infoTop -
               (page.information?.bottom ?? 0)) /
           2,
     );
+    canvas.translate(origin.dx, origin.dy);
     page.paintText(
       canvas,
+      paintImageBoxes: false,
       images: (path) => _images[path],
       backdrop: page.cssBackground == null ? null : backdrop,
     );
-    for (final fragment in page.layout.page(page.pageIndex)?.fragments ?? []) {
-      final imageSize = fragment.imageSize;
+    for (final fragment
+        in page.layout.page(page.pageIndex)?.paintedImages ??
+            const <PageFragment>[]) {
       final path = fragment.block.resourcePath;
-      if (fragment.frameOnly ||
-          fragment.block.kind != BlockKind.image ||
-          imageSize == null ||
-          path == null) {
-        continue;
-      }
+      if (path == null) continue;
       final block = fragment.block;
       final rect = fragment.imageRectIn(page.layout.contentSize.width)!;
-      _paintPageImage(canvas, rect, path, block.alt);
+      if (block.box case final box?) {
+        paintImageBox(
+          canvas,
+          rect,
+          box,
+          page.theme,
+          images: (path) => _images[path],
+          paintShadows: page.paintShadows,
+        );
+      }
+      _paintPageImage(canvas, rect, path, block.alt, block.imageFit);
     }
     // 行内图片：位置来自测量结果（行号、行内横坐标、行内纵坐标），
     // 文字层已经按分段画好，这里只补图片。
-    for (final fragment in page.layout.page(page.pageIndex)?.fragments ?? []) {
+    for (final fragment
+        in page.layout.page(page.pageIndex)?.paintFragments ?? []) {
       if (fragment.frameOnly) continue;
       final block = fragment.block;
       final images = block
@@ -393,24 +487,93 @@ class PreparedPage {
             block.horizontalOffset(image.line, maxWidth) +
             image.left;
         final rect = Offset(left, top + image.top) & image.size;
-        _paintPageImage(canvas, rect, image.resourcePath, image.alt);
+        _paintPageImage(
+          canvas,
+          rect,
+          image.resourcePath,
+          image.alt,
+          image.imageFit,
+        );
       }
+    }
+    canvas.restore();
+    if (bleed) {
+      if (page.information?.bookEdges == true &&
+          page.information?.spreadSide == null) {
+        BookPaperPainter(
+          backdrop,
+          decorationOnly: true,
+          preserveBackground: true,
+        ).paint(canvas, size);
+      }
+    }
+    if (information != null) {
+      Color? chapterInk;
+      if (information.visible && information.spreadSide != 1) {
+        final at = Offset(information.inset + 2, (16 + infoTop) / 2) - origin;
+        // 负外边距可把正文底色画到页眉。只检查碰到章名的片段，页脚仍用纸面颜色。
+        Color? surface;
+        for (final f
+            in page.layout.page(page.pageIndex)?.paintFragments ??
+                const <PageFragment>[]) {
+          if (at.dy < f.y || at.dy >= f.y + f.height) continue;
+          for (final frame in backgroundFrames(
+            f.block,
+            includePlainBox: true,
+          )) {
+            final color = frame.box.background;
+            if (color == null ||
+                !(containerBackgroundPart(f, frame)?.$1.contains(at) ??
+                    false)) {
+              continue;
+            }
+            surface = Color.alphaBlend(
+              adaptSurface(color, page.theme.background),
+              surface ?? backdrop,
+            );
+          }
+        }
+        if (surface != null) {
+          chapterInk = adaptInk(
+            information.color,
+            surface,
+            surface.computeLuminance() < .18 ? Colors.white : Colors.black,
+          );
+        }
+      }
+      information.paint(
+        canvas,
+        size,
+        paintMenu: false,
+        chapterColor: chapterInk,
+      );
     }
     canvas.restore();
     page.information?.searchMenu?.paint(canvas, size);
   }
 
   /// 画一张正文图片；解码失败时保留原尺寸，并用替代文字占位。
-  void _paintPageImage(Canvas canvas, Rect rect, String path, String? alt) {
+  void _paintPageImage(
+    Canvas canvas,
+    Rect rect,
+    String path,
+    String? alt,
+    BookImageFit? fit,
+  ) {
     final image = _images[path];
     if (image != null) {
+      if (fit != null) {
+        canvas.save();
+        canvas.clipRect(rect);
+      }
       paintImage(
         canvas: canvas,
-        rect: rect,
+        rect: fit?.destination(rect) ?? rect,
         image: image.image,
         fit: BoxFit.fill,
         filterQuality: FilterQuality.medium,
       );
+      if (fit != null) canvas.restore();
       return;
     }
     // 与静态页一样，失败时保留原图尺寸和替代文字，不改变后续正文位置。

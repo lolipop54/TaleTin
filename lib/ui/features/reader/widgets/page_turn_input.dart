@@ -1,6 +1,14 @@
 part of 'page_turn_area.dart';
 
 extension _PageTurnInput on _PageTurnAreaState {
+  Future<bool> _commitTurn(PageTurnDirection direction) {
+    final commit = widget.onPreparedTurn, frames = _fold;
+    if (commit != null && frames?.preparedTarget != null) {
+      return commit(frames!.current, frames.target);
+    }
+    return widget.onTurn(direction);
+  }
+
   /// 按距离判定翻页时，需要拖开阅读视窗宽度的 1/4。
   static const double _commitFraction = 0.25;
 
@@ -41,7 +49,7 @@ extension _PageTurnInput on _PageTurnAreaState {
     }
   }
 
-  Widget _buildInput(double width) => Listener(
+  Widget _buildInput(double width, double height) => Listener(
     onPointerDown: (event) {
       _tracePointer(event);
       _pointer = event.pointer;
@@ -61,6 +69,8 @@ extension _PageTurnInput on _PageTurnAreaState {
         return;
       }
       _pointerCancelled = false;
+      _fontPointer = event.pointer;
+      _fontActivity(_fontInputOwner, true);
       if (_needsDragFrames) _dragFrames.motion();
       _responseTrace.activate(_pointer);
       widget.onInteractionStart?.call();
@@ -72,11 +82,13 @@ extension _PageTurnInput on _PageTurnAreaState {
     },
     onPointerUp: (event) {
       _dragFrames.stop();
+      _endFontPointer(event.pointer);
       _tracePointer(event);
       _stallEvent('pointer.up', {'pointer': event.pointer});
     },
     onPointerCancel: (event) {
       _dragFrames.stop();
+      _endFontPointer(event.pointer);
       _tracePointer(event);
       _stallEvent('pointer.cancel', {'pointer': event.pointer});
       if (!_ignorePointer) _pointerCancelled = true;
@@ -139,7 +151,7 @@ extension _PageTurnInput on _PageTurnAreaState {
       child: ClipRect(
         child: ValueListenableBuilder<int>(
           valueListenable: _motion,
-          builder: (context, value, child) => _buildStack(width),
+          builder: (context, value, child) => _paperStack(context, Size(width, height)),
         ),
       ),
     ),
@@ -218,7 +230,7 @@ extension _PageTurnInput on _PageTurnAreaState {
     }
     final moved = await _tracePageStep(
       'tap commit',
-      () => widget.onTurn(direction),
+      () => _commitTurn(direction),
     );
     if (!mounted) return;
     if (!moved) {
@@ -424,7 +436,7 @@ extension _PageTurnInput on _PageTurnAreaState {
     if (!mounted || token != _foldToken) return;
     final moved = await _tracePageStep(
       'drag commit $_traceInput',
-      () => widget.onTurn(direction),
+      () => _commitTurn(direction),
     );
     traceTurn('drag commit-result moved=$moved $_traceInput');
     // 目录／搜索跳转或提交期间的重建可能已清掉本次折页；旧手势不能再回弹。

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'package:taletin/ui/core/widgets/gt_app_bar.dart';
 import 'package:taletin/ui/core/widgets/gt_list_button.dart';
@@ -8,13 +10,14 @@ import 'package:flutter_riverpod/misc.dart';
 import '../../../core/theme/gt_tokens.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/widgets/gt_icon.dart';
+import 'windows_settings_layout.dart';
 
 final _pendingPages = <ModalRoute<dynamic>?, Object>{};
 
 /// 需要设备数据的页面先在原页准备；订阅持续到返回，避免自动释放后重复加载。
 Future<void> openSettingsPage<T>(
   BuildContext context,
-  Widget page, {
+  FutureOr<Widget?> page, {
   ProviderListenable<Future<T>>? ready,
 }) async {
   final container = ProviderScope.containerOf(context);
@@ -25,9 +28,11 @@ Future<void> openSettingsPage<T>(
       ? null
       : container.listen(ready, (_, _) {});
   try {
+    final target = page is Widget ? page : await page;
     if (subscription != null) await subscription.read();
     // 准备期间切换主导航或再次点击其它入口，以用户最后的操作为准。
-    if (!context.mounted ||
+    if (target == null ||
+        !context.mounted ||
         origin?.isCurrent == false ||
         _pendingPages[origin] != request ||
         !TickerMode.valuesOf(context).enabled) {
@@ -35,18 +40,25 @@ Future<void> openSettingsPage<T>(
     }
     final reduced = MediaQuery.disableAnimationsOf(context);
     final motion = context.gtMotion;
-    // 子页由最外层导航打开，覆盖整个主界面；底栏只属于三个主页。
-    await Navigator.of(context, rootNavigator: true).push(
+    final desktop = WindowsSettingsPane.contains(context);
+    // Windows 在设置内容区内导航，手机子页由外层导航覆盖底栏。
+    await Navigator.of(context, rootNavigator: !desktop).push(
       PageRouteBuilder<void>(
-        transitionDuration: reduced
+        transitionDuration: desktop
+            ? (reduced ? Duration.zero : const Duration(milliseconds: 120))
+            : reduced
             ? const Duration(milliseconds: 150)
             : motion.panelIn,
-        reverseTransitionDuration: reduced
+        reverseTransitionDuration: desktop
+            ? (reduced ? Duration.zero : const Duration(milliseconds: 120))
+            : reduced
             ? const Duration(milliseconds: 150)
             : motion.panelExit,
-        pageBuilder: (_, _, _) =>
-            UncontrolledProviderScope(container: container, child: page),
-        transitionsBuilder: (_, animation, _, child) => reduced
+        pageBuilder: (_, _, _) => UncontrolledProviderScope(
+          container: container,
+          child: desktop ? WindowsSettingsDetail(child: target) : target,
+        ),
+        transitionsBuilder: (_, animation, _, child) => desktop || reduced
             ? FadeTransition(opacity: animation, child: child)
             : SlideTransition(
                 position: Tween(begin: const Offset(1, 0), end: Offset.zero)
@@ -162,7 +174,7 @@ class _SettingsChoicesState<T> extends ConsumerState<SettingsChoices<T>> {
       backgroundColor: widget.backgroundColor,
       appBar:
           widget.appBarBuilder?.call(widget.actions) ??
-          GtAppBar(title: Text(widget.title), actions: widget.actions),
+          GtAppBar.settings(title: Text(widget.title), actions: widget.actions),
       body: SafeArea(
         child: widget.onReorder != null
             ? ReorderableListView.builder(

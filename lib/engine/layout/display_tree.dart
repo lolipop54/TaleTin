@@ -1,10 +1,10 @@
 /// 只用于当前排版的显示树：把正文块挂到来源索引的容器链上。
 ///
-/// 它不是持久模型，也不改正文块号。测量时按这条链从外到内扣内边距和边框，
-/// 绘制时按同一顺序先画外层背景、再画内层；分页片段只携带链的引用。
+/// 从外到内测量边框和内边距，按同一顺序绘制背景。分页片段引用这条链，正文块号沿用持久模型。
 library;
 
 import '../../domain/models/book_document.dart';
+import '../../domain/models/content_table.dart';
 import '../../domain/models/display_source_index.dart';
 import '../styles/chapter_styler.dart';
 import '../styles/style_box_value.dart';
@@ -12,8 +12,10 @@ import '../styles/style_table.dart';
 import '../styles/style_value.dart';
 import 'display_role.dart';
 import 'math_formula.dart';
+import 'gallery_layout.dart';
 
 part 'display_anonymous_flow.dart';
+part 'display_image_flow.dart';
 
 class DisplayTree {
   final formulas = <int, RenderedFormula>{};
@@ -24,28 +26,119 @@ class DisplayTree {
     this.nodes = const [],
     this.authoritative = false,
     this.boundaries = const {},
+    this.leadingBreaks = const {},
+    this.frameLabels = const {},
+    this.blankLines = const {},
+    this.pageBreaks = const {},
+    this.clearBreaks = const {},
+    this.softBreaks = const {},
+    this.compactLists = const {},
+    this.legends = const {},
+    this.listItems = const {},
     this.emptyAt = const {},
+    this.emptyGrids = const {},
+    this.emptyGridBlocks = const {},
     this.textLengths = const {},
     this.flows = const {},
     this.inlineEmpty = const {},
+    this.imageWrappers = const {},
     this.emptySpace = const {},
+    this.hiddenBlocks = const {},
+    this.hiddenElements = const {},
+    this.hiddenText = const {},
+    this.hiddenBreaks = const {},
+    this.inlineLayoutCandidates = const {},
+    this.galleryCaptions = const {},
+    this.portraits = const {},
+    this.openingArtwork,
+    this.coverBlockId,
   });
 
   final DisplaySourceIndex? source;
   final List<DisplayNode> nodes;
   final bool authoritative;
+
+  /// 原 DOM 中通向可见块级引用的祖先。宽度检查只经过这些路径。
+  late final Set<int> hasQuoteBelow = _quoteAncestors();
+
+  Set<int> _quoteAncestors() {
+    final result = <int>{};
+    for (final node in nodes.reversed) {
+      final e = node.element;
+      if (node.anonymous ||
+          e.parent == null ||
+          hiddenElements.contains(e.id) ||
+          const {'ol', 'ul', 'dl'}.contains(e.tag)) {
+        continue;
+      }
+      if ((node.isBlock && e.tag == 'blockquote') || result.contains(e.id)) {
+        result.add(e.parent!);
+      }
+    }
+    return result;
+  }
+
   final Map<int, int> textLengths;
   final Map<int, List<DisplayNode>> flows;
   final Map<int, List<DisplayNode>> inlineEmpty;
+  final Map<int, DisplayNode> imageWrappers;
   final Set<int> emptySpace;
+  final Set<int> hiddenBlocks;
+  final Set<int> hiddenElements;
+  final Map<int, List<(int, int)>> hiddenText;
+  final Map<int, Set<int>> hiddenBreaks;
+  final Map<int, List<DisplayNode>> inlineLayoutCandidates;
+  final Map<String, PortraitEntry> portraits;
+  final ({String id, int edges})? openingArtwork;
+  final String? coverBlockId;
+  final Map<String, ContentBlock> galleryCaptions;
   final Map<int, Set<int>> boundaries;
+  final Map<int, int> leadingBreaks;
+
+  /// 边框首尾整段带装饰的角标。按原段识别，滚动分段也沿用同一结果。
+  final Set<int> frameLabels;
+
+  /// 块序号 → 第一个 br 的正文位置 → 后续各个额外占一行的 br。
+  final Map<int, Map<int, List<DisplayElement>>> blankLines;
+  final Map<String, Set<int>> pageBreaks;
+  final Map<int, Map<int, ClearSpec>> clearBreaks;
+  final Map<int, Set<int>> softBreaks;
+  final Set<int> compactLists;
+  final Map<int, DisplayNode> legends;
+  final Map<int, List<ContentBlock>> listItems;
   final Map<int, List<DisplayNode>> emptyAt;
+  final Map<int, ContentTable> emptyGrids;
+  final Map<String, ContentBlock> emptyGridBlocks;
 
   /// 第 i 个正文块的容器链（外层→内层）。没有来源索引时为空。
   final List<List<DisplayContainer>> chains;
 
   /// 正文块 ID → 它在章内的顺序；测量器按 ID 找容器链。
   final Map<String, int> blockIndexById;
+
+  /// 表题保留源块号。与单元格一起测量，避免按 DOM 顺序再排一次底部表题。
+  late final captionBlockIds = <String>{
+    if (authoritative)
+      for (final node in nodes)
+        if (node.element.role == 'caption' &&
+            (node.parent?.element.table != null ||
+                emptyGrids.containsKey(node.element.parent)))
+          ...blocksOf(node),
+  };
+  late final _idsByIndex = {
+    for (final entry in blockIndexById.entries) entry.value: entry.key,
+  };
+  String anchorBlockId(int anchor) => _idsByIndex.isEmpty
+      ? ''
+      : _idsByIndex[anchor.clamp(0, _idsByIndex.length - 1)]!;
+
+  Iterable<String> blocksOf(DisplayNode node) sync* {
+    final first = node.element.firstBlock, last = node.element.lastBlock;
+    if (first == null || last == null) return;
+    for (var i = first; i <= last; i++) {
+      if (_idsByIndex[i] case final id?) yield id;
+    }
+  }
 
   static DisplayTree build(ChapterContent content) {
     final source = DisplaySourceIndex.fromJson(content.displaySourceJson);
@@ -81,8 +174,70 @@ class DisplayTree {
       return false;
     }
 
+    final hiddenElements = {
+      for (final node in nodes)
+        if (hidden(node)) node.element.id,
+    };
+    final hiddenBlocks = {
+      for (final (index, _) in content.blocks.indexed)
+        if (source.ownerOfBlock(index) case final owner?)
+          if (hiddenElements.contains(owner.id)) index,
+    };
+    final hiddenText = <int, List<(int, int)>>{};
+    final hiddenBreaks = <int, Set<int>>{};
+    final visibleBreaks = <int, Set<int>>{};
+    final inlineLayoutCandidates = <int, List<DisplayNode>>{};
+    for (final node in nodes) {
+      final element = node.element;
+      final isHidden = hiddenElements.contains(element.id);
+      final computed = table[element.styleId ?? 0];
+      if (!isHidden &&
+          isInlineDisplay(node.display) &&
+          (computed.block.float == FloatSpec.left ||
+              (node.display == DisplaySpec.inlineBlock &&
+                  computed.size.hasDimensions))) {
+        for (final block
+            in element.ranges.map((range) => range.block).toSet()) {
+          (inlineLayoutCandidates[block] ??= []).add(node);
+        }
+      }
+      if (element.tag == 'br') {
+        final breaks = isHidden ? hiddenBreaks : visibleBreaks;
+        (breaks[element.anchor] ??= {}).add(element.anchorOffset);
+      }
+      if (!isHidden || hiddenElements.contains(element.parent)) continue;
+      final ranges = <int, (int, int)>{};
+      for (final range in element.ranges) {
+        if (range.start == range.end) continue;
+        final previous = ranges[range.block];
+        ranges[range.block] = previous == null
+            ? (range.start, range.end)
+            : (
+                previous.$1 < range.start ? previous.$1 : range.start,
+                previous.$2 > range.end ? previous.$2 : range.end,
+              );
+      }
+      for (final entry in ranges.entries) {
+        (hiddenText[entry.key] ??= []).add(entry.value);
+      }
+    }
+    for (final entry in hiddenBreaks.entries) {
+      entry.value.removeAll(visibleBreaks[entry.key] ?? const {});
+    }
+    int? visibleEdge(DisplayElement element, {required bool first}) {
+      final start = element.firstBlock, end = element.lastBlock;
+      if (start == null || end == null) return null;
+      var edge = first ? start : end;
+      while (edge >= start && edge <= end && hiddenBlocks.contains(edge)) {
+        edge += first ? 1 : -1;
+      }
+      return edge;
+    }
+
     final flows = <int, List<DisplayNode>>{};
-    for (final node in nodes.where((n) => n.isTextContainer && !hidden(n))) {
+    for (final node in nodes.where(
+      (n) => n.isTextContainer && !hiddenElements.contains(n.element.id),
+    )) {
       for (final range in node.element.ranges) {
         final owner = source.ownerOfBlock(range.block);
         if (owner == null || owner.id == node.element.id) continue;
@@ -93,7 +248,9 @@ class DisplayTree {
         if (parent == owner.id) (flows[range.block] ??= []).add(node);
       }
     }
+    final listItems = <int, List<ContentBlock>>{};
     final chains = <List<DisplayContainer>>[];
+    final frameLabels = <int>{};
     for (var index = 0; index < content.blocks.length; index++) {
       final chain = <DisplayContainer>[];
       for (final element in source.chainOfBlock(index)) {
@@ -106,27 +263,122 @@ class DisplayTree {
           continue;
         }
         // 页面边距只由阅读器设置；html/body 的 padding 不能把整页正文挤小。
-        if (element.tag == 'body' || element.tag == 'html') continue;
+        if (element.tag == 'html' ||
+            element.tag == 'body' &&
+                content.displaySourceJson?['bodyMargin'] != true) {
+          continue;
+        }
         if (!nodes[element.id].isBlock || element.styleId == null) continue;
         chain.add(
           DisplayContainer(
             elementId: element.id,
             styleId: element.styleId!,
-            first: element.firstBlock == index,
-            last: element.lastBlock == index,
+            first: visibleEdge(element, first: true) == index,
+            last: visibleEdge(element, first: false) == index,
             role: element.role,
             tag: element.tag,
           ),
         );
       }
+      final item = content.blocks[index];
+      if (item.inlineBoxes.isNotEmpty &&
+          table[item.styleId ?? 0].text.lineHeight != null &&
+          chain.any((c) {
+            final border = table[c.styleId].box.border;
+            return (c.first && _paintedSide(border?.top)) ||
+                (c.last && _paintedSide(border?.bottom));
+          }) &&
+          _onlyDecoratedText(item, table, hiddenElements, hiddenText[index])) {
+        frameLabels.add(index);
+      }
+      if (item.kind == BlockKind.listItem && !hiddenBlocks.contains(index)) {
+        final list = chain.reversed.where((c) => c.role == 'list').firstOrNull;
+        if (list != null) (listItems[list.elementId] ??= []).add(item);
+      }
       chains.add(chain);
     }
+    final imageWrappers = _imageOnlyWrappers(source, nodes, table, hiddenElements);
+    final imageBlocks = imageWrappers.values.toSet();
     _groupAnonymousFlow(nodes);
     final boundaries = <int, Set<int>>{};
+    final leadingBreaks = <int, int>{};
+    final blankLines = <int, Map<int, List<DisplayElement>>>{};
+    DisplayElement? previousBreak;
+    var firstBreakOffset = 0;
+    final pageBreaks = <String, Set<int>>{};
+    final softBreaks = <int, Set<int>>{};
+    final legends = <int, DisplayNode>{};
+    final clearBreaks = <int, Map<int, ClearSpec>>{};
+    void pageBreak(int index, int offset) {
+      if (index >= content.blocks.length) return;
+      if (offset > 0 && offset >= content.blocks[index].runLength) {
+        index++;
+        offset = 0;
+      }
+      while (hiddenBlocks.contains(index)) {
+        index++;
+        offset = 0;
+      }
+      if (index >= content.blocks.length) return;
+      (pageBreaks[content.blocks[index].id] ??= {}).add(offset);
+      if (offset > 0) (boundaries[index] ??= {}).add(offset);
+    }
+
     final emptyAt = <int, List<DisplayNode>>{};
+    final emptyGrids = {
+      for (final e
+          in (content.displaySourceJson?['emptyGrids'] as Map? ?? const {})
+              .entries)
+        int.parse(e.key as String): ContentTable.fromJson(
+          (e.value as Map).cast<String, dynamic>(),
+        ),
+    };
     final inlineEmpty = <int, List<DisplayNode>>{};
     for (final node in nodes) {
-      if (hidden(node)) continue;
+      if (hiddenElements.contains(node.element.id)) continue;
+      final e = node.element;
+      // 图片和公式可以不占正文字符，但仍隔开两边的换行。
+      if (e.role == 'image' || e.math != null) previousBreak = null;
+      final computed = table[e.styleId ?? 0];
+      final style = computed.block;
+      if (e.tag == 'legend' &&
+          node.parent?.element.tag == 'fieldset' &&
+          node.parent!.children.firstWhere((n) => n.element.tag == 'legend') ==
+              node) {
+        for (final r in e.ranges) {
+          legends.putIfAbsent(r.block, () => node);
+        }
+      }
+      if (e.tag == 'wbr') (softBreaks[e.anchor] ??= {}).add(e.anchorOffset);
+      // 相邻的 nowrap 元素可能合并为同一个文字 run。保留每组的起点，
+      // 这样两组放不下一行时仍可整组换行，组内嵌套的粗体等继续跟随原组。
+      if (computed.text.whiteSpace == WhiteSpaceSpec.nowrap &&
+          isInlineDisplay(node.display) &&
+          table[node.parent?.element.styleId ?? 0].text.whiteSpace !=
+              WhiteSpaceSpec.nowrap &&
+          e.ranges.isNotEmpty) {
+        final start = e.ranges.first;
+        (softBreaks[start.block] ??= {}).add(start.start);
+      }
+      if (style.breakBefore == 'page' || style.breakBefore == 'always') {
+        if (e.firstBlock == null || e.tag == 'mbp:pagebreak') {
+          pageBreak(e.anchor, e.anchorOffset);
+        } else {
+          pageBreak(e.firstBlock!, 0);
+        }
+      }
+      if (style.breakAfter == 'page' || style.breakAfter == 'always') {
+        if (e.lastBlock != null) {
+          pageBreak(e.lastBlock! + 1, 0);
+        } else {
+          pageBreak(e.anchor, e.anchorOffset);
+        }
+      }
+      if (e.tag == 'br' &&
+          style.clear != null &&
+          style.clear != ClearSpec.none) {
+        (clearBreaks[e.anchor] ??= {})[e.anchorOffset] = style.clear!;
+      }
       // 多个 br 可能在旧正文裁剪中没有留下换行字符，来源索引仍保存准确
       // 位置。只恢复显示边界，不改正文长度；已有换行由测量器去重。
       if (node.element.tag == 'br') {
@@ -138,6 +390,29 @@ class DisplayTree {
         // 空白兄弟段落中的 br 也可能指向下一块的 0 偏移；它并不属于
         // 下一段，不能用这个临时锚点取消下一段首行缩进。
         if (owner != null && parent == owner.id) {
+          if (e.anchorOffset == 0) {
+            leadingBreaks.update(
+              node.element.anchor,
+              (n) => n + 1,
+              ifAbsent: () => 1,
+            );
+          } else {
+            final prev = previousBreak;
+            // 旧正文只给连续空白保留一个位置。第二个 br 可能与第一个同位，
+            // 也可能紧跟第一个 br 自己占用的那个字符。
+            if (prev != null &&
+                prev.anchor == e.anchor &&
+                (prev.anchorOffset == e.anchorOffset ||
+                    (prev.anchorOffset + 1 == e.anchorOffset &&
+                        prev.ranges.any(
+                          (r) => r.block == e.anchor && r.end == e.anchorOffset,
+                        )))) {
+              ((blankLines[e.anchor] ??= {})[firstBreakOffset] ??= []).add(e);
+            } else {
+              firstBreakOffset = e.anchorOffset;
+            }
+          }
+          previousBreak = e;
           (boundaries[node.element.anchor] ??= {}).add(
             node.element.anchorOffset,
           );
@@ -162,11 +437,14 @@ class DisplayTree {
       // 同一根分隔线会被画两遍，还会多出一份上下外边距。其他只靠盒子占位的
       // 空容器仍按空元素处理。
       if (!insideTable &&
+          !imageBlocks.contains(node) &&
+          node.element.role != 'root' &&
           node.element.id != 0 &&
           node.isBlock &&
           (node.element.role != 'divider' ||
               !source.blockOwners.contains(node.element.id)) &&
-          node.element.firstBlock == null &&
+          (node.element.firstBlock == null ||
+              emptyGrids.containsKey(node.element.id)) &&
           (node.element.parent == null ||
               node.element.parent == 0 ||
               source.element(node.element.parent!)!.firstBlock != null)) {
@@ -192,6 +470,32 @@ class DisplayTree {
     }
     return DisplayTree(
       source: source,
+      frameLabels: frameLabels,
+      coverBlockId: standaloneCover(content, hiddenBlocks),
+      leadingBreaks: leadingBreaks,
+      blankLines: blankLines,
+      pageBreaks: pageBreaks,
+      clearBreaks: clearBreaks,
+      softBreaks: softBreaks,
+      legends: legends,
+      compactLists:
+          (content.displaySourceJson?['compactLists'] as List? ?? const [])
+              .cast<int>()
+              .toSet(),
+      listItems: listItems,
+      portraits: portraitEntries(source, content, hiddenBlocks, table),
+      openingArtwork: chapterOpeningArtwork(
+        source,
+        content,
+        hiddenBlocks,
+        table,
+      ),
+      galleryCaptions: figureCaptions(source, content, hiddenBlocks, table),
+      hiddenBlocks: hiddenBlocks,
+      hiddenElements: hiddenElements,
+      hiddenText: hiddenText,
+      hiddenBreaks: hiddenBreaks,
+      inlineLayoutCandidates: inlineLayoutCandidates,
       chains: chains,
       blockIndexById: indexById,
       nodes: nodes,
@@ -200,17 +504,45 @@ class DisplayTree {
           content.displaySourceJson?['css'] != null,
       boundaries: boundaries,
       emptyAt: emptyAt,
+      emptyGrids: emptyGrids,
+      emptyGridBlocks: {
+        for (final id in emptyGrids.keys)
+          for (final cap in nodes[id].children.where(
+            (n) => n.element.role == 'caption',
+          ))
+            if (cap.element.firstBlock != null)
+              for (
+                var i = cap.element.firstBlock!;
+                i <= cap.element.lastBlock!;
+                i++
+              )
+                content.blocks[i].id: content.blocks[i],
+      },
       textLengths: {
         for (var i = 0; i < content.blocks.length; i++)
           i: content.blocks[i].runLength,
       },
       flows: flows,
       inlineEmpty: inlineEmpty,
+      imageWrappers: imageWrappers,
       emptySpace: {
         for (final n in nodes)
           if (_hasEmptySpace(n, table)) n.element.id,
       },
     );
+  }
+
+  /// 目录指向隐藏锚点时，落到同章紧随其后的可见内容；章尾锚点则往前找。
+  int? visibleIndexForHidden(String blockId) {
+    final index = blockIndexById[blockId];
+    if (index == null || !hiddenBlocks.contains(index)) return null;
+    for (var i = index + 1; i < chains.length; i++) {
+      if (!hiddenBlocks.contains(i)) return i;
+    }
+    for (var i = index - 1; i >= 0; i--) {
+      if (!hiddenBlocks.contains(i)) return i;
+    }
+    return null;
   }
 
   /// 块内的显示边界只约束断行，不插入换行文字或改变 UTF-16 偏移。
@@ -250,8 +582,8 @@ class DisplayTree {
         );
   }
 
-  bool _emptyEdge(DisplayElement e, {required bool first}) =>
-      _edgeEmpties(e, first).isNotEmpty;
+  bool _emptyEdge(DisplayElement e, bool first, List<DisplayNode> merged) =>
+      _edgeEmpties(e, first).any((node) => !merged.contains(node));
 
   static bool _hasEmptySpace(DisplayNode node, StyleTable table) {
     if (node.element.firstBlock != null) return false;
@@ -300,7 +632,7 @@ class DisplayTree {
     }
     return [
       for (final e in ancestors.reversed)
-        if (e.id != 0 && nodes[e.id].isBlock)
+        if (e.id != 0 && e.role != 'root' && nodes[e.id].isBlock)
           DisplayContainer(
             elementId: e.id,
             styleId: e.styleId ?? 0,
@@ -314,24 +646,41 @@ class DisplayTree {
 
   List<DisplayContainer> chainOf(
     int blockIndex, {
+    Set<int> outOfFlow = const {},
+    List<DisplayNode> merged = const [],
     int sourceOffset = 0,
     int? sourceEnd,
   }) {
     if (blockIndex < 0 || blockIndex >= chains.length) return const [];
     final end = sourceEnd ?? textLengths[blockIndex] ?? 0;
+    // 定位图片不占父框的内边距，把首尾标记交给实际参与排列的正文。
+    bool edge(DisplayContainer c, bool first) {
+      if (first ? c.first : c.last) return true;
+      if (outOfFlow.isEmpty) return false;
+      final e = source!.elements[c.elementId];
+      final outer = first ? e.firstBlock : e.lastBlock;
+      if (outer == null) return false;
+      var at = outer;
+      while (at != blockIndex &&
+          (outOfFlow.contains(at) || hiddenBlocks.contains(at))) {
+        at += first ? 1 : -1;
+      }
+      return at == blockIndex;
+    }
+
     return [
       for (final c in chains[blockIndex])
         DisplayContainer(
           elementId: c.elementId,
           styleId: c.styleId,
           first:
-              c.first &&
+              edge(c, true) &&
               sourceOffset == 0 &&
-              !_emptyEdge(source!.elements[c.elementId], first: true),
+              !_emptyEdge(source!.elements[c.elementId], true, merged),
           last:
-              c.last &&
+              edge(c, false) &&
               end >= (textLengths[blockIndex] ?? 0) &&
-              !_emptyEdge(source!.elements[c.elementId], first: false),
+              !_emptyEdge(source!.elements[c.elementId], false, merged),
           role: c.role,
           tag: c.tag,
         ),
@@ -353,6 +702,54 @@ class DisplayTree {
             ),
     ];
   }
+}
+
+bool _paintedSide(BorderSideSpec? side) =>
+    side != null &&
+    side.isVisible &&
+    (side.color?.argb ?? 0xff000000) >>> 24 != 0;
+
+bool _onlyDecoratedText(
+  ContentBlock block,
+  StyleTable table,
+  Set<int> hidden,
+  List<(int, int)>? hiddenText,
+) {
+  final ranges = <(int, int)>[];
+  for (final span in block.inlineBoxes) {
+    if (hidden.contains(span.id) || span.start == span.end) continue;
+    final box = table[span.styleId ?? 0].box;
+    final border = box.border;
+    if ((box.background?.color?.argb ?? 0) >>> 24 != 0 ||
+        box.background?.imageUrl != null ||
+        (border != null &&
+            [
+              border.top,
+              border.right,
+              border.bottom,
+              border.left,
+            ].any(_paintedSide))) {
+      ranges.add((span.start, span.end));
+    }
+  }
+  if (ranges.isEmpty) return false;
+  // 嵌套和相邻的装饰可以合成一个角标；空白和隐藏文字不打断它。
+  // 只要还有可见正文未被覆盖，整段继续使用阅读器行距。
+  if (hiddenText != null) ranges.addAll(hiddenText);
+  ranges.sort((a, b) => a.$1.compareTo(b.$1));
+  String? text;
+  bool hasText(int from, int to) =>
+      from < to &&
+      (text ??= block.runs.map((r) => r.text).join())
+          .substring(from, to)
+          .trim()
+          .isNotEmpty;
+  var end = 0;
+  for (final range in ranges) {
+    if (hasText(end, range.$1)) return false;
+    if (range.$2 > end) end = range.$2;
+  }
+  return !hasText(end, block.runLength);
 }
 
 class DisplayContainer {

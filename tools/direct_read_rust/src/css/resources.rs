@@ -62,11 +62,16 @@ fn url_text(raw: &str, source: &str, paths: &mut HashSet<String>) -> String {
 }
 
 pub(super) fn local_path(raw: &str, source: &str) -> Option<String> {
+    local_entry(raw, source).map(|entry| format!("res/{entry}"))
+}
+
+// @import、背景图和字体同用 CSS 原始地址的归档解析规则。
+pub(super) fn local_entry(raw: &str, source: &str) -> Option<String> {
     let raw = raw.trim();
     if raw.is_empty()
         || raw.starts_with('#')
         || raw.starts_with("//")
-        || raw.contains(':')
+        || has_scheme(raw)
         || raw.contains('\\')
     {
         return None;
@@ -84,7 +89,7 @@ pub(super) fn local_path(raw: &str, source: &str) -> Option<String> {
         }
     }
     let decoded = String::from_utf8(bytes).ok()?;
-    if decoded.contains([':', '\\', '\0']) || decoded.starts_with("//") {
+    if decoded.contains(['\\', '\0']) || decoded.starts_with("//") || has_scheme(&decoded) {
         return None;
     }
     let (base, target) = if let Some(path) = decoded.strip_prefix('/') {
@@ -108,8 +113,23 @@ pub(super) fn local_path(raw: &str, source: &str) -> Option<String> {
     if parts.is_empty() {
         None
     } else {
-        Some(format!("res/{}", parts.join("/")))
+        Some(parts.join("/"))
     }
+}
+
+// 冒号只有出现在第一个路径片段的协议名后面才表示外部地址。
+// EPUB ZIP 中的 ../Images/…:….jpg 仍是内部条目，交给归档读取器处理。
+fn has_scheme(value: &str) -> bool {
+    let Some((name, _)) = value
+        .split('/')
+        .next()
+        .and_then(|part| part.split_once(':'))
+    else {
+        return false;
+    };
+    let mut bytes = name.bytes();
+    bytes.next().is_some_and(|b| b.is_ascii_alphabetic())
+        && bytes.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
 }
 
 #[cfg(test)]
@@ -123,11 +143,18 @@ mod tests {
         );
         assert!(s.contains("res/OEBPS/Images/Vol Title.PNG"));
         assert!(paths.contains("res/OEBPS/Images/Vol Title.PNG"));
+        assert_eq!(
+            local_path("../Images/_*%3A:.jpg", "OEBPS/CSS/main.css").as_deref(),
+            Some("res/OEBPS/Images/_*::.jpg")
+        );
         for raw in [
             "https://example.com/a.png",
             "file:///a.png",
             "../../../a.png",
             "%2e%2e/%2e%2e/a.png",
+            "https%3A//example.com/a.png",
+            "C:/a.png",
+            "%2F%2Fexample.com/a.png",
         ] {
             assert!(local_path(raw, "OEBPS/a.css").is_none());
         }

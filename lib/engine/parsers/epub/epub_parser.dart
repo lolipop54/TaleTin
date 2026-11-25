@@ -18,6 +18,7 @@ import '../../../core/diagnostics/import_timing.dart';
 import '../../../core/errors/import_error.dart';
 import '../../../core/io/source_fingerprint.dart';
 import '../../../core/io/source_digest.dart';
+import '../../../core/io/publication_cache_path.dart';
 import '../../../domain/models/book.dart';
 import '../../../domain/models/book_document.dart';
 import '../../../domain/models/source_content_index.dart';
@@ -25,6 +26,7 @@ import '../../../domain/services/book_parser.dart';
 import '../../../domain/services/toc_entry_index.dart';
 import 'epub_archive.dart';
 import 'epub_package.dart';
+import 'publication_style_tree.dart';
 import 'epub_source_reader.dart';
 import 'image_sniff.dart';
 import 'xhtml_blocks.dart';
@@ -75,6 +77,7 @@ class EpubParser {
             : EpubArchive.directory(publicationDirectory));
     final matches = SourcePositionMatcher(request.locationAnchors);
     archive.importTiming = timing;
+    PublicationStyleTree? styleTree;
     timing?.mark('zip_open');
     try {
       final opfPath = EpubPackage.readOpfPath(archive);
@@ -135,13 +138,14 @@ class EpubParser {
         final bytes = archive.readBytes(entryPath);
         if (entryPath == package.coverItem?.entryPath) onCover?.call(bytes);
         final size = sniffImageSize(bytes);
-        final target = p.join(resourceDir, entryPath);
+        final target = p.join(resourceDir, publicationCachePath(entryPath));
         File(target).parent.createSync(recursive: true);
         File(target).writeAsBytesSync(bytes, flush: false);
         final resolved = ResolvedImage(
           resourcePath: 'res/$entryPath',
           width: size.width,
           height: size.height,
+          svgRatioOnly: size.svgRatioOnly,
         );
         imageCache[entryPath] = resolved;
         return resolved;
@@ -203,11 +207,17 @@ class EpubParser {
         }
       }
 
-      // 统一 CSS 需要书内全部 CSS 文本，才能在规则原位置展开 @import。
+      // 统计 XHTML 时按引用建树，公共 CSS 和导入链在本书内去重。
+      if (request.indexedContent &&
+          request.format == BookFormat.epub &&
+          publicationCssMode != 'legacy') {
+        styleTree = PublicationStyleTree(resolveCssText, timing: timing);
+      }
       // 实际由 XhtmlBlockBuilder 按章收集本章真正引用的文件与 @import，避免每次
       // 转换都把整本书的样式表塞进元数据。
       final chapters = <Chapter>[];
       final coverPaths = <String>{};
+      final coverEntries = package.coverEntries;
       final sources = <String, List<Object>>{};
       final tocNodes = <TocNode>[];
       final spineHrefs = <String, String>{};
@@ -222,8 +232,10 @@ class EpubParser {
         spineHrefs[item.entryPath] = chapterId;
 
         final builder = XhtmlBlockBuilder(
+          legacyMobi: archive.legacyMobi,
           basePath: item.entryPath,
           resolveImage: resolveImage,
+          containsResource: archive.contains,
           importTiming: timing,
           styleTextResolver: resolveCssText,
           buildTextMap: false,
@@ -297,7 +309,9 @@ class EpubParser {
               paths,
               resolveImage,
               timing: timing,
+              legacyMobi: archive.legacyMobi,
               rawSources: rawHtml ? rawSources : null,
+              onStyleSources: styleTree?.chapter,
               statisticsOnly: matches.isEmpty,
               tocFragments: tocFragments,
               tocPositions: tocPositions,
@@ -328,7 +342,14 @@ class EpubParser {
           tables: result.tables,
           epubDetailsRevision: kEpubDetailsRevision,
           stylesJson: result.stylesJson,
-          displaySourceJson: result.displaySourceJson,
+          displaySourceJson: request.format.code == 'epub'
+              ? result.displayWithCover(
+                  coverEntries,
+                  item.entryPath,
+                  first: index == 0,
+                  title: title,
+                )
+              : result.displaySourceJson,
         );
         if (!matches.isEmpty) matches.add(chapterId, content.blocks);
         final contentPath = 'content/${request.contentVersion}/$chapterId.json';
@@ -424,6 +445,7 @@ class EpubParser {
             [path],
             resolveImage,
             timing: timing,
+            legacyMobi: archive.legacyMobi,
             rawSources: [archive.readBytes(path)],
             tocFragments: {path: fragments.toList()},
             tocPositions: tocPositions,
@@ -440,13 +462,19 @@ class EpubParser {
         sourceDigest = await sourceFileDigest(request.sourcePath);
       }
       timing?.mark('source_sha256');
+      if (styleTree != null && sourceDigest != null) {
+        styleTree.save(workDir, sourceDigest);
+        timing?.mark('css_tree_write');
+      }
       return BookDocument(
         title: metaTitle,
         author: metaAuthor,
         contentVersion: request.contentVersion,
         chapters: chapters,
         toc: tocNodes,
-        coverPath: cover?.resourcePath,
+        coverPath: cover == null
+            ? null
+            : 'res/${publicationCachePath(coverItem!.entryPath)}',
         coverWidth: cover?.width,
         coverHeight: cover?.height,
         warnings: warnings.toList(),
@@ -461,6 +489,9 @@ class EpubParser {
                   await File(request.sourcePath).stat(),
                 ),
                 chapters: sources,
+                coverEntries: request.format.code == 'epub'
+                    ? coverEntries
+                    : null,
                 tocPositions: {
                   for (final entry in spineHrefs.entries)
                     if (tocPositions.containsKey(entry.key))
@@ -475,13 +506,14 @@ class EpubParser {
                 mobiIndex: mobiIndex,
                 images: {
                   for (final image in imageCache.entries)
-                    image.key: [image.value.width, image.value.height],
+                    image.key: image.value.toIndex(),
                 },
               )
             : null,
       );
     } finally {
       timing?.mark('document_build');
+      styleTree?.close();
       archive.close();
       timing?.mark('zip_close');
       timing?.report(
@@ -530,6 +562,7 @@ class EpubParser {
             final item = package.spine[chapter.ordinal];
             final result =
                 XhtmlBlockBuilder(
+                  legacyMobi: archive.legacyMobi,
                   basePath: item.entryPath,
                   resolveImage: (path) => ResolvedImage(
                     resourcePath: 'res/$path',
@@ -622,18 +655,28 @@ class EpubParser {
       if (package.spine.any((item) => item.entryPath == navItem.entryPath)) {
         navigationDocuments?[navItem.entryPath] = source;
       }
-      entries = parseNavDocument(source, navItem.entryPath);
+      entries = availableTocEntries(
+        parseNavDocument(source, navItem.entryPath),
+        archive.contains,
+      );
     }
     if (entries.isEmpty) {
       final ncxItem = package.ncxItem;
       if (ncxItem != null && archive.contains(ncxItem.entryPath)) {
-        entries = parseNcxDocument(
-          archive.readText(ncxItem.entryPath),
-          ncxItem.entryPath,
+        entries = availableTocEntries(
+          parseNcxDocument(
+            archive.readText(ncxItem.entryPath),
+            ncxItem.entryPath,
+          ),
+          archive.contains,
         );
       }
     }
-    entries = mobiHtmlToc(archive, package) ?? entries;
+    final mobi = mobiHtmlToc(archive, package);
+    if (mobi != null) {
+      final available = availableTocEntries(mobi, archive.contains);
+      if (available.isNotEmpty) entries = available;
+    }
     _collectTitles(entries, titles);
     return entries;
   }

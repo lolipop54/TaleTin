@@ -7,6 +7,7 @@ import 'package:xml/xml.dart';
 import '../../../core/errors/import_error.dart';
 import '../../../core/diagnostics/import_timing.dart';
 import '../epub/epub_archive.dart';
+import 'kindle_media.dart';
 import 'mobi_splitter.dart';
 
 /// KF7 往往只有一个巨大的 HTML。按块边界分段后改写目录和全部链接，
@@ -97,13 +98,10 @@ Future<void> prepareMobiPublication(
     ).toString();
   }
 
-  String media(String value) => value
-      .replaceAll('amzn-kf8', kf8 ? 'screen' : 'taletin-kf8-disabled')
-      .replaceAll('amzn-mobi', kf8 ? 'taletin-mobi-disabled' : 'screen');
-  String stylesheet(String value) => value.replaceAllMapped(
-    RegExp(r'(@media\s+)([^{}]+)(\{)', caseSensitive: false),
-    (m) => '${m[1]}${media(m[2]!)}${m[3]}',
-  );
+  String media(String value) => kindleMedia(value, kf8: kf8);
+  String stylesheet(String value) =>
+      kindleMedia(value, kf8: kf8, stylesheet: true);
+
   final files = directory.listSync().whereType<File>().where((file) {
     final name = p.basename(file.path);
     return !splits.containsKey(name) &&

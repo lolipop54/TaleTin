@@ -25,13 +25,19 @@ abstract final class PublicationTypography {
           source
               .chainOfBlock(i)
               .any(
-                (e) => const {
-                  'table',
-                  'nav',
-                  'figure',
-                  'blockquote',
-                  'aside',
-                }.contains(e.tag),
+                (e) =>
+                    (e.id != owner.id &&
+                        e.tag != 'html' &&
+                        e.tag != 'body' &&
+                        (styles[e.id]?.box.background?.color != null ||
+                            styles[e.id]?.box.background?.imageUrl != null)) ||
+                    const {
+                      'table',
+                      'nav',
+                      'figure',
+                      'blockquote',
+                      'aside',
+                    }.contains(e.tag),
               )) {
         continue;
       }

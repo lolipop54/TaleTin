@@ -5,13 +5,21 @@
 library;
 
 import 'dart:typed_data';
+import 'dart:math' as math;
 
 import 'package:xml/xml.dart';
 
 class ImageSize {
-  const ImageSize(this.width, this.height);
+  const ImageSize(this.width, this.height, {this.svgRatioOnly});
   final int width;
   final int height;
+  final bool? svgRatioOnly;
+
+  List<int> toIndex() => [
+    width,
+    height,
+    if (svgRatioOnly != null) svgRatioOnly! ? 1 : 0,
+  ];
 }
 
 /// 按文件头判断图片格式与尺寸；不是已知位图格式时返回 null。
@@ -49,15 +57,22 @@ ImageSize? sniffSvgSize(Uint8List bytes) {
   try {
     // 只读取完整的根起始标签。截断整个 SVG 再按 XML 解析，会因缺少闭合
     // 标签失败，把较大的矢量图误记成 1×1，简化排版中几乎看不见。
-    final opening = RegExp(r'<svg\b[^>]*>', caseSensitive: false).firstMatch(head);
+    final opening = RegExp(
+      r'<svg\b[^>]*>',
+      caseSensitive: false,
+    ).firstMatch(head);
     if (opening == null) return null;
     final root = opening.group(0)!.replaceFirst(RegExp(r'/?>$'), '/>');
     final document = XmlDocument.parse(root);
     final svg = document.rootElement;
     final width = _parseLength(svg.getAttribute('width'));
     final height = _parseLength(svg.getAttribute('height'));
-    if (width != null && height != null && width > 0 && height > 0) {
-      return ImageSize(width, height);
+    if (width != null && height != null) {
+      return ImageSize(
+        _positivePixels(width),
+        _positivePixels(height),
+        svgRatioOnly: false,
+      );
     }
     final viewBox = svg.getAttribute('viewBox');
     if (viewBox != null) {
@@ -68,8 +83,36 @@ ImageSize? sniffSvgSize(Uint8List bytes) {
       if (parts.length == 4) {
         final w = double.tryParse(parts[2]);
         final h = double.tryParse(parts[3]);
-        if (w != null && h != null && w > 0 && h > 0) {
-          return ImageSize(w.round(), h.round());
+        if (w != null &&
+            h != null &&
+            w.isFinite &&
+            h.isFinite &&
+            w > 0 &&
+            h > 0) {
+          final ratio = w / h;
+          if (!ratio.isFinite || ratio <= 0) return null;
+          if (width != null) {
+            return ImageSize(
+              _positivePixels(width),
+              _positivePixels(width / ratio),
+              svgRatioOnly: false,
+            );
+          }
+          if (height != null) {
+            return ImageSize(
+              _positivePixels(height * ratio),
+              _positivePixels(height),
+              svgRatioOnly: false,
+            );
+          }
+          // 只记比例，不把 viewBox 的坐标单位当成像素宽高。
+          // 常见 viewBox 直接保存两个整数。小数不足一像素时等比放大取整。
+          final scale = math.min(w, h) < 1 ? 1000 / math.min(w, h) : 1.0;
+          return ImageSize(
+            _positivePixels(w * scale),
+            _positivePixels(h * scale),
+            svgRatioOnly: true,
+          );
         }
       }
     }
@@ -119,7 +162,9 @@ ImageSize _jpegSize(Uint8List b) {
         marker != 0xCC) {
       return ImageSize(_be16(b, index + 7), _be16(b, index + 5));
     }
-    if (marker == 0xD8 || marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7)) {
+    if (marker == 0xD8 ||
+        marker == 0x01 ||
+        (marker >= 0xD0 && marker <= 0xD7)) {
       index += 2;
       continue;
     }
@@ -167,11 +212,26 @@ int _le24(Uint8List b, int i) => b[i] | (b[i + 1] << 8) | (b[i + 2] << 16);
 int _le32(Uint8List b, int i) =>
     b[i] | (b[i + 1] << 8) | (b[i + 2] << 16) | (b[i + 3] << 24);
 
-int? _parseLength(String? value) {
+int _positivePixels(double value) =>
+    value.isFinite ? math.max(1, value.round()) : 1;
+
+double? _parseLength(String? value) {
   if (value == null) return null;
-  final match = RegExp(r'^\s*([0-9]*\.?[0-9]+)').firstMatch(value);
+  final match = RegExp(
+    r'^\s*(\+?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)([a-zA-Z]*)\s*$',
+  ).firstMatch(value);
   if (match == null) return null;
   final parsed = double.tryParse(match.group(1)!);
-  if (parsed == null || parsed <= 0) return null;
-  return parsed.round();
+  if (parsed == null || !parsed.isFinite || parsed <= 0) return null;
+  final factor = switch (match.group(2)!.toLowerCase()) {
+    '' || 'px' => 1.0,
+    'in' => 96.0,
+    'cm' => 96 / 2.54,
+    'mm' => 96 / 25.4,
+    'q' => 96 / 101.6,
+    'pt' => 96 / 72,
+    'pc' => 16.0,
+    _ => null,
+  };
+  return factor == null ? null : parsed * factor;
 }

@@ -35,6 +35,12 @@ Map<String, Object?> textSpecToJson(TextStyleSpec spec) => {
   if (spec.textTransform != null) 'tt': spec.textTransform!.name,
   if (spec.verticalAlign != null) 'va': spec.verticalAlign!.toJson(),
   if (spec.whiteSpace != null) 'wsp': spec.whiteSpace!.name,
+  'vi': ?spec.visitedInk?.toJson(),
+  'ai': ?spec.activeInk?.toJson(),
+  'lang': ?spec.language,
+  'em': ?spec.emphasis,
+  'ep': ?spec.emphasisPosition,
+  'ec': ?spec.emphasisColor?.toJson(),
   if (spec.hyphens != null) 'hy': spec.hyphens,
 };
 
@@ -59,6 +65,12 @@ TextStyleSpec textSpecFromJson(Object? json) {
     verticalAlign: verticalAlignFromJson(json['va']),
     whiteSpace: _byName(WhiteSpaceSpec.values, json['wsp']),
     hyphens: json['hy'] as String?,
+    visitedInk: ColorValue.fromJson(json['vi']),
+    activeInk: ColorValue.fromJson(json['ai']),
+    language: json['lang'] as String?,
+    emphasis: json['em'] as String?,
+    emphasisPosition: json['ep'] as String?,
+    emphasisColor: ColorValue.fromJson(json['ec']),
   );
 }
 
@@ -71,6 +83,7 @@ Map<String, Object?> boxSpecToJson(BoxStyleSpec spec) => {
   if (spec.shadow != null)
     'sh': [for (final value in spec.shadow!) value.toJson()],
   if (spec.overflow != null) 'o': spec.overflow,
+  if (spec.decorationBreak != null) 'db': spec.decorationBreak,
 };
 
 BoxStyleSpec boxSpecFromJson(Object? json) {
@@ -82,6 +95,7 @@ BoxStyleSpec boxSpecFromJson(Object? json) {
     radii: CornerRadii.fromJson(json['r']),
     shadow: _shadowsFromJson(json['sh']),
     overflow: json['o'] as String?,
+    decorationBreak: json['db'] as String?,
   );
 }
 
@@ -131,6 +145,7 @@ Map<String, Object?> sizeSpecToJson(SizeStyleSpec spec) => {
   if (spec.maxWidth != null) 'maxw': spec.maxWidth!.toJson(),
   if (spec.maxHeight != null) 'maxh': spec.maxHeight!.toJson(),
   if (spec.boxSizing != null) 'bs': spec.boxSizing!.name,
+  if (spec.bleed != null) 'bleed': spec.bleed,
   if (spec.objectFit != null) 'of': spec.objectFit,
 };
 
@@ -144,6 +159,7 @@ SizeStyleSpec sizeSpecFromJson(Object? json) {
     maxWidth: lengthFromJson(json['maxw']),
     maxHeight: lengthFromJson(json['maxh']),
     boxSizing: _byName(BoxSizingSpec.values, json['bs']),
+    bleed: json['bleed'] as int?,
     objectFit: json['of'] as String?,
   );
 }
@@ -152,7 +168,9 @@ SizeStyleSpec sizeSpecFromJson(Object? json) {
 Map<String, Object?> tableSpecToJson(TableStyleSpec spec) => {
   if (spec.borderCollapse != null) 'bc': spec.borderCollapse,
   if (spec.borderSpacing != null) 'bsp': spec.borderSpacing!.toJson(),
+  if (spec.borderSpacingY != null) 'bspy': spec.borderSpacingY!.toJson(),
   if (spec.tableLayout != null) 'tl': spec.tableLayout,
+  if (spec.direction != null) 'dir': spec.direction,
   if (spec.captionSide != null) 'cs': spec.captionSide,
   if (spec.emptyCells != null) 'ec': spec.emptyCells,
 };
@@ -162,7 +180,9 @@ TableStyleSpec tableSpecFromJson(Object? json) {
   return TableStyleSpec(
     borderCollapse: json['bc'] as String?,
     borderSpacing: lengthFromJson(json['bsp']),
+    borderSpacingY: lengthFromJson(json['bspy']),
     tableLayout: json['tl'] as String?,
+    direction: json['dir'] as String?,
     captionSide: json['cs'] as String?,
     emptyCells: json['ec'] as String?,
   );

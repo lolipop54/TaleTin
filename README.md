@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="https://flutter.dev"><img src="https://img.shields.io/badge/Flutter-blue?style=plastic" alt="Flutter"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=plastic" alt="License: MIT"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPLv3-blue?style=plastic" alt="License: GPL-3.0-only"></a>
   <img src="https://img.shields.io/badge/Platform-Android-lightgrey?style=plastic" alt="Platform: Android">
 </p>
 
@@ -256,6 +256,8 @@ TaleTin 使用了 Flutter、Riverpod、Drift、flutter_inappwebview、audio_serv
 
 ## 开源协议
 
-本项目自有代码采用 [MIT License](LICENSE) 开源，Copyright (c) 2026 lolipop54。
+自 TaleTin v1.2.7 起，官方发布的自有应用代码（包括简化排版引擎与 Rust 正文库）采用 [GNU 通用公共许可证第 3 版（GPL-3.0-only）](LICENSE)。Copyright (c) 2026 lolipop54。
+
+GPL-3.0 允许商用和收费分发。向他人分发受 GPL-3.0 约束的应用或修改版本时，应按 GPL-3.0 向接收者提供对应源码。分发 APK 或 Windows 安装包时，应在下载位置提供对应源码的获取方式。此前按 MIT 发布的副本仍可按原许可使用。
 
 第三方依赖、字体及其他资源遵循各自的许可协议。MOBI 原生适配及 libmobi 使用 LGPL-3.0-or-later，相关声明见 [MOBI 许可](tools/mobi_native/LICENSE)、[libmobi 许可](tools/mobi_native/third_party/libmobi/COPYING)、[GPL 完整文本](tools/mobi_native/third_party/COPYING-GPL-3.0) 和 [miniz 许可](tools/mobi_native/third_party/MINIZ-LICENSE)；PDFium 声明见 [PDFium 许可](assets/licenses/PDFium-LICENSE.txt)。离线词库的来源与许可见 [词库来源及许可](assets/licenses/Offline-dictionary-sources.txt)。请保留这些声明及随源码提供的其他许可文件。

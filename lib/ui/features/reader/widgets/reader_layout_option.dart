@@ -1,5 +1,6 @@
 import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'package:taletin/ui/core/widgets/gt_switch.dart';
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -91,7 +92,7 @@ class _LayoutOptionState extends ConsumerState<ReaderLayoutOption> {
     final current = ref
         .read(readerSettingsProvider(widget.bookId))
         .requireValue;
-    if (current.settings.spreadEnabled) return true;
+    if (current.originalSpreadCurlOnly) return true;
     final freePdf = current.freePdfView(
       fixedView: ref.read(pdfFixedViewModeProvider),
     );
@@ -135,10 +136,9 @@ class _LayoutOptionState extends ConsumerState<ReaderLayoutOption> {
     final freePdf = current.freePdfView(
       fixedView: ref.watch(pdfFixedViewModeProvider),
     );
-    final spread = current.settings.spreadEnabled;
     return ReaderTurnChoices(
-      selected: spread ? PageTurnEffect.curl : _effective(_effect, freePdf),
-      curlOnly: spread,
+      selected: _effective(_effect, freePdf),
+      curlOnly: current.originalSpreadCurlOnly,
       effects: freePdf
           ? PageTurnEffect.pdfFreeViewEffects
           : PageTurnEffect.values,
@@ -154,6 +154,7 @@ class _LayoutOptionState extends ConsumerState<ReaderLayoutOption> {
         .requireValue;
     final saved = current.fontSettings;
     final vm = ref.read(readerSettingsProvider(widget.bookId).notifier);
+    final canRotate = defaultTargetPlatform != TargetPlatform.windows;
     Widget option(
       String label,
       String key,
@@ -191,15 +192,16 @@ class _LayoutOptionState extends ConsumerState<ReaderLayoutOption> {
               saved.bookEdges,
               vm.setBookEdges,
             ),
-          option(
-            '横屏',
-            'reader-landscape-switch',
-            saved.landscape,
-            vm.setLandscape,
-          ),
-          if (!current.pdfMode)
+          if (canRotate)
             option(
-              '横屏双翻页',
+              '横屏',
+              'reader-landscape-switch',
+              saved.landscape,
+              vm.setLandscape,
+            ),
+          if (canRotate && !current.pdfMode)
+            option(
+              '横屏双列排版',
               'reader-landscape-spread-switch',
               saved.landscapeSpread,
               vm.setLandscapeSpread,

@@ -1,4 +1,4 @@
-// Copyright (c) 2026 GT Reader contributors. MIT license, see LICENSE.
+// Copyright (c) 2026 GT Reader contributors. GPL-3.0-only, see LICENSE.
 // TreeSink uses the public html5ever interface. The arena owns all nodes so disposal
 // clears edges before dropping nodes; deeply nested input cannot recurse during Drop.
 use html5ever::{
@@ -56,6 +56,11 @@ impl Dom {
     }
     /// 样式程序只保存选择器所需节点和属性，不保存正文文字。
     pub fn style_nodes(&self) -> serde_json::Value {
+        let needs_direction = self
+            .nodes
+            .borrow()
+            .iter()
+            .any(|n| attr(n, "dir").is_some_and(|d| d.eq_ignore_ascii_case("auto")));
         serde_json::json!(
             self.nodes
                 .borrow()
@@ -73,7 +78,7 @@ impl Dom {
                             ])
                         })
                         .collect();
-                    serde_json::json!([
+                    let mut record = serde_json::json!([
                         n.id,
                         n.parent.borrow().upgrade().map(|p| p.id),
                         n.name.as_ref().map(|q| q.local.to_string()),
@@ -81,7 +86,20 @@ impl Dom {
                         attrs,
                         !n.text.borrow().is_empty(),
                         n.comment
-                    ])
+                    ]);
+                    // 分开保存纯空白与可见文字，使图片段在屏幕尺寸变化后仍能识别。
+                    let text = n.text.borrow();
+                    if !text.is_empty() && text.trim().is_empty() {
+                        record.as_array_mut().unwrap().push(true.into());
+                    }
+                    if needs_direction && !text.trim().is_empty() {
+                        // 只存首个强方向的类别，重排时不用缓存第二份正文。
+                        record.as_array_mut().unwrap().extend([
+                            false.into(),
+                            strong_direction(&text).unwrap_or("neutral").into(),
+                        ]);
+                    }
+                    record
                 })
                 .collect::<Vec<_>>()
         )
@@ -110,8 +128,15 @@ impl Dom {
             nodes.push(Self::node(
                 id,
                 name,
-                if record[5].as_bool() == Some(true) {
-                    "x".into()
+                if record[7].as_bool() == Some(true) {
+                    " ".into()
+                } else if record[5].as_bool() == Some(true) {
+                    match record[8].as_str() {
+                        Some("rtl") => "א",
+                        Some("neutral") => "1",
+                        _ => "x",
+                    }
+                    .into()
                 } else {
                     String::new()
                 },
@@ -328,6 +353,33 @@ impl TreeSink for Dom {
 pub fn tag(node: &Handle) -> &str {
     node.name.as_ref().map(|n| n.local.as_ref()).unwrap_or("")
 }
+fn strong_direction(text: &str) -> Option<&'static str> {
+    use unicode_bidi::{BidiClass, bidi_class};
+    text.chars().find_map(|c| match bidi_class(c) {
+        BidiClass::L => Some("ltr"),
+        BidiClass::R | BidiClass::AL => Some("rtl"),
+        _ => None,
+    })
+}
+
+pub fn auto_direction(node: &Handle) -> &'static str {
+    let mut stack: Vec<_> = node.children.borrow().iter().rev().cloned().collect();
+    while let Some(n) = stack.pop() {
+        if n.comment
+            || matches!(tag(&n), "script" | "style" | "bdi" | "textarea")
+            || attr(&n, "dir")
+                .is_some_and(|v| matches!(v.to_ascii_lowercase().as_str(), "auto" | "rtl" | "ltr"))
+        {
+            continue;
+        }
+        if let Some(d) = strong_direction(&n.text.borrow()) {
+            return d;
+        }
+        stack.extend(n.children.borrow().iter().rev().cloned());
+    }
+    "ltr"
+}
+
 pub fn attr(node: &Handle, key: &str) -> Option<String> {
     node.attrs
         .borrow()

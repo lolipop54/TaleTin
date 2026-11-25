@@ -17,6 +17,9 @@ class DriftReadingControlsRepository implements ReadingControlsRepository {
     final value =
         jsonDecode(row.read<String>('value_json')) as Map<String, dynamic>;
     return ReadingControls(
+      progressStyle: value['progressStyle'] == ReadingProgressStyle.pages.name
+          ? ReadingProgressStyle.pages
+          : ReadingProgressStyle.percentage,
       keepAwake: value['keepAwake'] == true,
       volumeKeys: value['volumeKeys'] == true,
       swipeUpToExit: value['swipeUpToExit'] == true,
@@ -35,6 +38,7 @@ class DriftReadingControlsRepository implements ReadingControlsRepository {
     ON CONFLICT(scope,scope_id,key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at''',
     [
       jsonEncode({
+        'progressStyle': value.progressStyle.name,
         'keepAwake': value.keepAwake,
         'volumeKeys': value.volumeKeys,
         'swipeUpToExit': value.swipeUpToExit,

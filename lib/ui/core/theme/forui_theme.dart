@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:forui/forui.dart';
 
@@ -8,9 +9,14 @@ import 'gt_tokens.dart';
 class GtForuiTheme extends StatelessWidget {
   const GtForuiTheme({super.key, required this.child});
   final Widget child;
-  static final _themes = <(Brightness, String?, GtColors), FThemeData>{};
+  static final _themes = <(Brightness, String?, GtColors, bool), FThemeData>{};
 
-  static FThemeData _create(GtColors c, Brightness brightness, String? family) {
+  static FThemeData _create(
+    GtColors c,
+    Brightness brightness,
+    String? family,
+    bool windows,
+  ) {
     final base = brightness == Brightness.dark
         ? FTheme.neutral.dark.touch
         : FTheme.neutral.light.touch;
@@ -42,8 +48,14 @@ class GtForuiTheme extends StatelessWidget {
           typography: typography,
           touch: true,
         ).copyWith(
-          tappableStyle: const FTappableStyleDelta.delta(
+          tappableStyle: FTappableStyleDelta.delta(
             motion: FTappableMotion.none,
+            // 按钮、列表操作和菜单项共用可用与禁用的鼠标反馈。
+            cursor: windows
+                ? FVariants.raw(SystemMouseCursors.click, {
+                    FTappableVariant.disabled: SystemMouseCursors.basic,
+                  })
+                : null,
           ),
         );
     return FThemeData(
@@ -61,13 +73,17 @@ class GtForuiTheme extends StatelessWidget {
       theme.brightness,
       theme.textTheme.bodyMedium?.fontFamily,
       context.gtColors,
+      defaultTargetPlatform == TargetPlatform.windows,
     );
     // 应用主题过渡可能产生临时颜色，限制缓存数量，避免不断积累。
     if (!_themes.containsKey(key) && _themes.length >= 16) {
       _themes.remove(_themes.keys.first);
     }
     return FTheme(
-      data: _themes.putIfAbsent(key, () => _create(key.$3, key.$1, key.$2)),
+      data: _themes.putIfAbsent(
+        key,
+        () => _create(key.$3, key.$1, key.$2, key.$4),
+      ),
       // Material 已负责主题过渡，不给 Forui 再加一段错开的颜色动画。
       motion: const FThemeMotion(duration: Duration.zero),
       child: FTooltipGroup(child: child),

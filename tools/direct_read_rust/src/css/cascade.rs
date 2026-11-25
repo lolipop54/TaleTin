@@ -16,6 +16,10 @@ impl Candidate {
         // 每层未分层的声明排在其所有子层之后；important 的层顺序反转。
         let mut layer = self.layer.clone();
         layer.push(u32::MAX);
+        // 表现属性早于所有作者层，连第一层的通配选择器也可以覆盖它。
+        if self.author && self.order == 0 && !self.inline {
+            layer.clear();
+        }
         if self.important {
             layer.iter_mut().for_each(|v| *v = u32::MAX - *v);
         }

@@ -1,4 +1,4 @@
-// Copyright (c) 2026 GT Reader contributors. MIT license, see LICENSE.
+// Copyright (c) 2026 GT Reader contributors. GPL-3.0-only, see LICENSE.
 mod chinese_selection;
 mod css;
 mod display_source;
@@ -8,6 +8,7 @@ mod html;
 mod html_anchors;
 mod inflate;
 mod mathml;
+mod line_breaks;
 mod mobi_html;
 mod mobi_html_batch;
 mod note_links;

@@ -5,6 +5,8 @@
 /// 阅读主题只是换颜色，不进分页缓存键，换主题不重排（设计文档 6.4）。
 library;
 
+import 'book.dart';
+
 /// 排版模式（设计文档 2.4「排版模式」）。
 ///
 /// - [simplified]：简化排版，Flutter 自研分页（电子书默认）；
@@ -175,8 +177,12 @@ class ReadingSettings {
   /// PDF 独立保存模式。旧设置没有这一项时默认显示原页。
   final ReadingLayoutMode pdfLayoutMode;
 
-  ReadingLayoutMode layoutModeFor({required bool pdf}) =>
-      pdf ? pdfLayoutMode : layoutMode.forBuild(pdf: false);
+  /// TXT 始终按简化排版显示，兼容版为 EPUB 保存的原书模式也不影响它。
+  ReadingLayoutMode layoutModeForBook(BookFormat? format) => switch (format) {
+    BookFormat.txt => ReadingLayoutMode.simplified,
+    BookFormat.pdf => pdfLayoutMode,
+    _ => layoutMode.forBuild(pdf: false),
+  };
 
   final PageTurnEffect pageTurnEffect;
 

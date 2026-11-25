@@ -1,3 +1,5 @@
+import 'reader_link_ink.dart';
+
 import 'package:flutter/material.dart';
 
 import 'page_canvas.dart';
@@ -122,7 +124,13 @@ class _PreparedPageViewState extends State<PreparedPageView> {
 }
 
 class _PreparedPainter extends CustomPainter {
-  const _PreparedPainter(this.page, this.appearance);
+  _PreparedPainter(this.page, this.appearance)
+    : super(
+        repaint: ReaderLinkInk.appearance(
+          appearance.layout.bookId,
+          appearance.layout.content,
+        )?.state,
+      );
   final PreparedPage page;
   final PageCanvas appearance;
 

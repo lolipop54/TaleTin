@@ -37,6 +37,7 @@ Map<String, int> tocBookCoverBoundaries(
     var isCover = knownCoverPaths?.contains(path) ?? false;
     if (knownCoverPaths == null || !chapterIds.containsKey(path)) {
       final parsed = XhtmlBlockBuilder(
+        legacyMobi: archive.legacyMobi,
         basePath: path,
         buildTextMap: false,
         statisticsOnly: true,

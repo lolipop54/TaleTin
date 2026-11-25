@@ -1,5 +1,6 @@
 import 'package:taletin/core/diagnostics/app_errors.dart';
 import 'package:taletin/ui/core/widgets/gt_button.dart';
+import 'package:taletin/ui/core/widgets/edge_to_edge_sheet.dart';
 import 'package:flutter/material.dart';
 
 
@@ -32,7 +33,9 @@ class EncodingSheet extends StatefulWidget {
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => EncodingSheet(items: items, preparation: preparation),
+      builder: (_) => EdgeToEdgeSheet(
+        child: EncodingSheet(items: items, preparation: preparation),
+      ),
     );
   }
 

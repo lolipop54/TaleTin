@@ -72,28 +72,32 @@ Future<LocalFileScanSnapshot?> scanLocalFiles(
   unreadable.addAll(previous?.roots.difference(rootPaths) ?? {});
   // 记录拔出卡的原扫描范围，重复刷新时也继续保留，重新挂载后才能确认。
   rootPaths.addAll(previous?.roots ?? {});
+  var lastProgress = 0;
   while (pending.isNotEmpty) {
     if (cancelled()) return null;
-    final directory = pending.removeLast();
-    if (directories.containsKey(directory.path)) continue;
-    directories[directory.path] = directory;
-    try {
-      final children = await files.list(
-        directory.path,
-        counts: false,
-        extensions: extensions,
-      );
-      for (final child in children) {
-        if (child.directory) {
-          pending.add(child);
-        } else if (extensions.contains(child.extension)) {
-          found[child.path] = child;
-        }
-      }
-    } catch (_) {
-      unreadable.add(directory.path);
+    // 控制每次原生调用的目录数，两批之间可取消、更新进度。
+    final batch = <String>[];
+    while (pending.isNotEmpty && batch.length < 24) {
+      final directory = pending.removeLast();
+      if (directories.containsKey(directory.path)) continue;
+      directories[directory.path] = directory;
+      batch.add(directory.path);
     }
-    if (directories.length % 20 == 0) onProgress(directories.length);
+    if (batch.isEmpty) continue;
+    final children = await files.scanDirectories(batch, extensions);
+    if (cancelled()) return null;
+    unreadable.addAll(children.unavailable);
+    for (final child in children.entries) {
+      if (child.directory) {
+        pending.add(child);
+      } else {
+        found[child.path] = child;
+      }
+    }
+    if (directories.length - lastProgress >= 20) {
+      lastProgress = directories.length;
+      onProgress(lastProgress);
+    }
   }
   if (cancelled()) return null;
   if (!await files.hasAccess()) throw StateError('文件访问权限已关闭');

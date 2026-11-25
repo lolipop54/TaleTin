@@ -10,6 +10,7 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 import '../platform/channels/reading_window.dart';
 import '../platform/channels/reading_fonts.dart';
+import '../platform/channels/windows_app_storage.dart';
 import '../data/services/imported_font_store.dart';
 
 import '../platform/channels/original_webview_warmup.dart';
@@ -42,6 +43,7 @@ import '../data/services/tts/listening_controller.dart';
 import '../data/services/tts/listening_audio_focus.dart';
 import '../data/services/tts/native_tts_engine.dart';
 import '../platform/tts/native_tts_channel.dart';
+import '../platform/tts/windows_listening_engine.dart';
 import '../platform/tts/native_listening_deadline.dart';
 import '../data/repositories/drift_reading_settings_repository.dart';
 import '../data/repositories/drift_reading_position_repository.dart';
@@ -143,8 +145,16 @@ Future<BootstrapResult> prepareApp({
   Directory? cacheRoot,
   bool recoverPending = true,
 }) async {
-  final supportDir = supportRoot ?? await getApplicationSupportDirectory();
-  final cacheDir = cacheRoot ?? await getApplicationCacheDirectory();
+  final windowsRoot = windowsAppStorageRoot;
+  // 桌面书库可能很大。数据与缓存放在同一个本机磁盘，恢复时可直接移动目录。
+  final supportDir = supportRoot ??
+      (windowsRoot == null
+          ? await getApplicationSupportDirectory()
+          : Directory(p.join(windowsRoot, 'data')));
+  final cacheDir = cacheRoot ??
+      (windowsRoot == null
+          ? await getApplicationCacheDirectory()
+          : Directory(p.join(windowsRoot, 'cache')));
   await supportDir.create(recursive: true);
   await cacheDir.create(recursive: true);
   if (recoverPending) {
@@ -206,7 +216,9 @@ Future<BootstrapResult> prepareApp({
     );
 
     // 听书的后台媒体服务：这里初始化一次，之后重试启动、重建页面都复用它
-    final listeningHandler = await startListeningAudioService();
+    final listeningHandler = Platform.isWindows
+        ? ListeningAudioHandler()
+        : await startListeningAudioService();
     final libraryRoot = (await storage.libraryRoot()).path;
     final positions = ReadingPositionCoordinator(
       DriftReadingPositionRepository(database),
@@ -214,20 +226,21 @@ Future<BootstrapResult> prepareApp({
     );
     final automaticTasks = _automaticTasks;
     if (listeningHandler.service == null) {
-      final ttsChannel = NativeTtsChannel();
+      final windowsEngine = Platform.isWindows ? WindowsListeningEngine(listeningHandler) : null;
+      final ttsChannel = windowsEngine == null ? NativeTtsChannel() : null;
       final speechContents = contents;
-      final focus = await ListeningAudioFocus.create(
+      final focus = windowsEngine != null ? null : await ListeningAudioFocus.create(
         pause: () async => listeningHandler.service?.pause(),
         hold: listeningHandler.holdForInterruption,
         resume: listeningHandler.resumeAfterInterruption,
       );
       listeningHandler.attachController(
         ListeningController(
-          engine: NativeTtsEngine(ttsChannel),
+          engine: windowsEngine ?? NativeTtsEngine(ttsChannel!),
           pauseAutomaticReading: automaticTasks.stopAll,
           audioFocus: focus,
           onContentChanged: speechContents.invalidate,
-          deadline: NativeListeningDeadline(ttsChannel),
+          deadline: windowsEngine ?? NativeListeningDeadline(ttsChannel!),
           settingsRepository: DriftTtsSettingsRepository(database),
           source: BookListeningSource(
             books: DriftBookRepository(database),
@@ -244,6 +257,7 @@ Future<BootstrapResult> prepareApp({
         ),
       );
       boundHandler = listeningHandler;
+      windowsEngine?.bindMedia();
     }
 
     statistics = ReadingStatisticsService(
@@ -254,7 +268,9 @@ Future<BootstrapResult> prepareApp({
     statistics.setIdleMinutes(
       (await DriftStatisticsSettingsRepository(database).load()).idleMinutes,
     );
-    statistics.attachListening(listeningHandler.service!);
+    if (listeningHandler.service case final service?) {
+      statistics.attachListening(service);
+    }
     achievements = AchievementService(DriftAchievementRepository(database));
     await achievements.initialize();
     final fileGate = LibraryFileGate();

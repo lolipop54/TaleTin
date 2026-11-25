@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/material.dart';
 
 import 'gt_tokens.dart';
@@ -103,6 +104,7 @@ abstract final class GtTheme {
     GtColors c,
     String? fontFamily,
   ) {
+    final windows = defaultTargetPlatform == TargetPlatform.windows;
     final colorScheme = ColorScheme(
       brightness: brightness,
       primary: c.actionPrimary,
@@ -154,7 +156,13 @@ abstract final class GtTheme {
         thickness: 1,
         space: 1,
       ),
+      iconButtonTheme: IconButtonThemeData(
+        style: windows
+            ? const ButtonStyle(mouseCursor: WidgetStateMouseCursor.clickable)
+            : null,
+      ),
       switchTheme: SwitchThemeData(
+        mouseCursor: windows ? WidgetStateMouseCursor.clickable : null,
         thumbColor: WidgetStateProperty.resolveWith(
           (states) =>
               states.contains(WidgetState.selected) ? c.onPrimary : c.surface,

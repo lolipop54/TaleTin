@@ -15,7 +15,7 @@ class ListeningRateView extends ConsumerWidget {
     final speech = ref.watch(listeningViewStateProvider).requireValue;
     final preferences = ref.watch(listeningPreferencesProvider).requireValue;
     return Scaffold(
-      appBar: GtAppBar(title: const Text('语速')),
+      appBar: GtAppBar.settings(title: const Text('语速')),
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(20),

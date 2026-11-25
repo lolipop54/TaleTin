@@ -52,10 +52,11 @@ extension _ReaderPagePreparation on _PageAreaState {
           : neighbors.last.layout.page(neighbors.last.pageIndex),
     );
     if (_windowKey == key) return;
+    if (widget.settings.settings.pageTurnEffect == PageTurnEffect.curl) {
+      unawaited(PageCurlTexture.warmUp());
+    }
     _windowKey = key;
     _textPreparationTimer?.cancel();
-    _preparedLayout = source;
-    _preparedPage = index;
     // 当前页自己的材料已就绪。邻页解码慢时仍可先交付当前画面。
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || _windowKey != key) return;
@@ -99,11 +100,21 @@ extension _ReaderPagePreparation on _PageAreaState {
   ]) {
     if (!mounted || _windowKey != key) return;
     if (index == neighbors.length) {
-      _prepareRasterWindow(key, [
+      final pages = [
         current,
         if (neighbors.isNotEmpty)
           _rasterBackward ? neighbors.last : neighbors.first,
-      ], source);
+      ];
+      // 图文混排的两页会一起移动。只预绘有图的一侧，会把另一侧的整页
+      // 文字与纸纹留到第一帧；两页都只有文字时仍沿用静态正文图层。
+      if (widget.settings.settings.pageTurnEffect == PageTurnEffect.slide) {
+        final configuration = createLocalImageConfiguration(context);
+        if (!pages.any((page) => _pageMaterials.hasBookImages(page, configuration))) {
+          source.resumeBackground();
+          return;
+        }
+      }
+      _prepareRasterWindow(key, pages, source);
       return;
     }
     final busy =
@@ -141,7 +152,8 @@ extension _ReaderPagePreparation on _PageAreaState {
     if (!mounted || _windowKey != key) return;
     final effect = widget.settings.settings.pageTurnEffect;
     if (index == pages.length ||
-        (effect != PageTurnEffect.curl && effect != PageTurnEffect.cover)) {
+        (effect != PageTurnEffect.curl && effect != PageTurnEffect.cover &&
+            effect != PageTurnEffect.slide)) {
       source.resumeBackground();
       return;
     }

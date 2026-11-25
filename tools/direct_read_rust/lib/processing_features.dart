@@ -1,4 +1,4 @@
-// Copyright (c) 2026 GT Reader contributors. MIT license, see LICENSE.
+// Copyright (c) 2026 GT Reader contributors. GPL-3.0-only, see LICENSE.
 /// Four independent switches used by the isolated, same-APK ablation experiment.
 /// Normal builds always enable all optimizations; they cannot change this mask.
 abstract final class ProcessingFeatures {

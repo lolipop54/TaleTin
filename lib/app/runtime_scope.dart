@@ -9,6 +9,9 @@ import '../data/services/file_layout_checkpoint_store.dart';
 import '../platform/channels/reading_fonts.dart';
 import 'bootstrap.dart';
 import 'di/achievement_providers.dart';
+import 'di/reading_controls_providers.dart';
+import '../data/services/book_page_counter.dart';
+import '../data/services/reader_page_counts.dart';
 import 'di/app_providers.dart';
 import 'di/statistics_providers.dart';
 import 'di/theme_providers.dart';
@@ -21,6 +24,15 @@ final restorationNoticeProvider = Provider<String?>((_) => null);
 
 /// 每个运行实例使用自己的容器，旧仓库不会随界面重建被重复使用。
 List<Override> runtimeOverrides(BootstrapResult result) => [
+  if (Platform.isAndroid || Platform.isWindows) ...[
+    readerPageCountsProvider.overrideWith(
+      (_) => ReaderPageCounts(result.libraryRoot, result.cacheRoot),
+    ),
+    bookPageCounterFactoryProvider.overrideWith((ref) {
+      final counts = ref.watch(readerPageCountsProvider);
+      return () => BookPageCounter(shared: counts);
+    }),
+  ],
   libraryFileGateProvider.overrideWithValue(result.fileGate),
   chapterContentRepositoryProvider.overrideWithValue(result.contents),
   epubSourceRepositoryProvider.overrideWithValue(result.originals),
@@ -42,6 +54,7 @@ List<Override> runtimeOverrides(BootstrapResult result) => [
     FileLayoutCheckpointStore(
       '${result.cacheRoot}/layout_checkpoints',
       fontFingerprint: ReadingFonts.layoutFingerprint,
+      spreadFontFingerprint: ReadingFonts.spreadFingerprint,
     ),
   ),
   globalReadingPreferencesProvider.overrideWithValue(result.globalPreferences),

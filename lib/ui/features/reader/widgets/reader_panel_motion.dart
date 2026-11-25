@@ -5,7 +5,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../engine/layout/layout_work_gate.dart';
+import '../../../core/theme/gt_tokens.dart';
 import '../../../core/widgets/frame_fade.dart';
+import 'reader_desktop_layout.dart';
 
 /// 工具栏尺寸供控制层、主面板与子面板共用，弹层的底边始终贴在工具栏上沿。
 const readerToolbarHeight = 87.0;
@@ -47,6 +49,20 @@ double readerPanelBottom(BuildContext context) => math.max(
   MediaQuery.viewInsetsOf(context).bottom,
 );
 
+/// 安全区跟着面板一起滑入；侧边只画纸面，按钮与正文放在两侧系统栏之间。
+class ReaderPanelSurface extends StatelessWidget {
+  const ReaderPanelSurface({super.key, required this.child});
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => readerUsesDesktopPanels
+      ? DesktopReaderPanelSurface(child: child)
+      : ColoredBox(
+          color: context.gtColors.surface,
+          child: SafeArea(top: false, bottom: false, child: child),
+        );
+}
+
 /// 裁切边界就是工具栏上沿，滑出的面板不会越过这条边界盖住工具栏。
 class ReaderPanelViewport extends StatelessWidget {
   const ReaderPanelViewport({super.key, required this.child});
@@ -55,6 +71,29 @@ class ReaderPanelViewport extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final media = MediaQuery.of(context);
+    if (readerUsesDesktopPanels) {
+      final width = math.min(
+        420.0,
+        math.max(0.0, media.size.width - 2 * readerDesktopPanelMargin),
+      );
+      return Positioned(
+        key: const ValueKey('windows-reader-panel-viewport'),
+        width: width,
+        right: readerDesktopPanelMargin,
+        top: readerDesktopHeaderHeight + readerDesktopPanelMargin,
+        bottom: readerDesktopProgressHeight + readerDesktopPanelMargin,
+        child: LayoutBuilder(
+          builder: (context, bounds) => MediaQuery(
+            data: media.copyWith(
+              size: bounds.biggest,
+              padding: EdgeInsets.zero,
+              viewInsets: EdgeInsets.zero,
+            ),
+            child: Align(alignment: Alignment.topRight, child: child),
+          ),
+        ),
+      );
+    }
     return Positioned(
       left: 0,
       right: 0,
@@ -74,7 +113,7 @@ class ReaderPanelViewport extends StatelessWidget {
                     media.padding.top,
               ),
             ),
-            padding: EdgeInsets.zero,
+            padding: EdgeInsets.only(left: media.padding.left, right: media.padding.right),
             viewInsets: EdgeInsets.zero,
           ),
           child: FrameFade(
@@ -164,14 +203,18 @@ class _ReaderPanelMotionState extends State<ReaderPanelMotion> {
     switchInCurve: Curves.easeOutCubic,
     switchOutCurve: Curves.easeInCubic,
     layoutBuilder: (current, previous) => Stack(
-      alignment: Alignment.bottomCenter,
+      alignment: readerUsesDesktopPanels
+          ? Alignment.topRight
+          : Alignment.bottomCenter,
       children: [...previous, ?current],
     ),
     transitionBuilder: (child, animation) => FadeTransition(
       opacity: animation,
       child: SlideTransition(
         position: Tween(
-          begin: const Offset(0, 1),
+          begin: readerUsesDesktopPanels
+              ? const Offset(.06, 0)
+              : const Offset(0, 1),
           end: Offset.zero,
         ).animate(animation),
         // 位移与透明度逐帧变化，面板文字和列表无需跟着重新绘制。

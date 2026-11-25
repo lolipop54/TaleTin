@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -5,12 +7,20 @@ import 'package:flutter/services.dart';
 import 'app/bootstrap.dart';
 import 'app/app_error_hooks.dart';
 import 'core/diagnostics/app_opening_diagnostics.dart';
+import 'core/diagnostics/reader_turn_state_diagnostics.dart';
 import 'engine/layout/math_typesetting.dart';
 import 'data/services/flutter_tex_formula_renderer.dart';
 import 'data/services/offline_dictionary.dart';
+import 'data/services/book_page_worker.dart';
+
+@pragma('vm:entry-point')
+Future<void> bookPageWorker(List<String> args) => runBookPageWorker(args);
 
 void main() => runWithAppErrors(() {
   installOpeningDiagnostics();
+  if (readerTurnStateDiagnosticsEnabled) {
+    unawaited(ReaderTurnStateDiagnostics.startWindowsTrace());
+  }
   MathTypesetting.renderer = FlutterTexFormulaRenderer();
   LicenseRegistry.addLicense(() async* {
     yield LicenseEntryWithLineBreaks([

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../domain/models/annotation.dart';
@@ -15,6 +16,7 @@ import 'selection_actions.dart';
 import 'selection_handles.dart';
 import 'thought_marker.dart';
 import 'thought_popover.dart';
+import 'reader_link_cursor.dart';
 
 part 'scroll_selection_drag.dart';
 
@@ -22,7 +24,7 @@ typedef ScrollDecoration = ({SelectionRange range, Color color, String? noteId})
 class ScrollSelectionBackend {
   const ScrollSelectionBackend({required this.motion, required this.hit,
     required this.initialRange, required this.measure, required this.move,
-    this.decorate, this.measureSync, this.contentTap, this.native = false});
+    this.decorate, this.measureSync, this.contentTap, this.contentLinkAt, this.native = false});
   final Listenable motion;
   final Future<Locator?> Function(Offset) hit;
   final Future<SelectionRange?> Function(Offset) initialRange;
@@ -32,6 +34,7 @@ class ScrollSelectionBackend {
   final Future<void> Function(List<ScrollDecoration>)? decorate;
   final bool native;
   final Future<bool> Function(Offset)? contentTap;
+  final bool Function(Offset)? contentLinkAt;
 }
 
 /// 两种滚动正文共用菜单和手柄；保存仍走已有笔记流程。
@@ -135,6 +138,20 @@ class ScrollSelectionLayerState extends ConsumerState<ScrollSelectionLayer>
     if (_range != null) { ref.read(readerProvider.notifier).clearSelection(); return true; }
     return false;
   }
+  bool _hasLinkAt(Offset point) {
+    final state = ref.read(readerProvider);
+    if (state.controlsVisible || _range != null) return false;
+    for (var i = 0; i < _marks.length && i < _geometry.length; i++) {
+      final mark = _marks[i], geometry = _geometry[i];
+      if (mark.hasBody && mark.id != searchPreviewId &&
+          geometry.end != null && geometry.rects.isNotEmpty &&
+          thoughtMarkerRect(geometry.rects.last, context.size!.width).inflate(8).contains(point)) {
+        return true;
+      }
+    }
+    return widget.backend.contentLinkAt?.call(point) ?? false;
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(readerProvider);
@@ -155,7 +172,9 @@ class ScrollSelectionLayerState extends ConsumerState<ScrollSelectionLayer>
       if (widget.backend.decorate != null) unawaited(widget.backend.decorate!(_decorations));
       _schedule();
     }
-    return ListenableBuilder(listenable: widget.backend.motion, builder: (context, _) {
+    // 没有选区、标注或朗读时，列表自己滚动即可。保持同一列表实例，开始选文时再跟踪坐标。
+    final followsMotion = widget.backend.native || _range != null || _marks.isNotEmpty || _speechRange != null;
+    return ListenableBuilder(listenable: followsMotion ? widget.backend.motion : kAlwaysDismissedAnimation, builder: (context, _) {
       // Flutter 正文已有行坐标，同一帧使用新排版坐标，避免旧高亮留在新正文上。
       if (widget.backend.measureSync case final measure?) {
         final ranges = [?_range, for (final mark in _marks) mark.range, ?_speechRange];
@@ -172,7 +191,9 @@ class ScrollSelectionLayerState extends ConsumerState<ScrollSelectionLayer>
             if (await widget.backend.contentTap?.call(event.localPosition) == true || !mounted) return;
             ref.read(automaticReadingProvider(widget.bookId).notifier).centerTap();
           }
-        }, child: widget.child)),
+        }, child: defaultTargetPlatform == TargetPlatform.windows && !widget.backend.native
+            ? ReaderLinkCursor(isLink: _hasLinkAt, child: widget.child)
+            : widget.child)),
       if (_range != null && _geometry.isNotEmpty) ...[
         if (!state.selectionFromMark) ...[
           if ((_dragPoint != null && !_dragAtEnd ? _dragPoint : _geometry.first.start) case final start?) _handle(start, false, _geometry.first.startHeight),

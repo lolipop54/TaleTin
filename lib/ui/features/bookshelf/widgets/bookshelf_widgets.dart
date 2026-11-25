@@ -37,7 +37,11 @@ class BookTile extends ConsumerWidget {
     this.coverOverlay,
     this.onTapOverride,
     this.coverBytes,
+    this.gridWidth,
   });
+
+  /// 正常网格已经算好列宽，单独展示的条目才需要读取布局约束。
+  final double? gridWidth;
   final Uint8List? coverBytes;
   final Widget? coverOverlay;
   final VoidCallback? onTapOverride;
@@ -92,126 +96,124 @@ class BookTile extends ConsumerWidget {
         ? (colors.subtle, colors.textSecondary)
         : (colors.actionPrimary, colors.onPrimary);
 
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final w = constraints.maxWidth;
-        final scaler = MediaQuery.textScalerOf(context);
-        final titleStyle = GtText.bookTitle(
-          selected ? colors.actionPrimary : colors.textPrimary,
-          family: Theme.of(context).textTheme.bodyMedium?.fontFamily,
-        ).copyWith(fontSize: titleFontSize, height: titleLineHeight);
-        return GtButton.raw(
-          borderRadius: BorderRadius.circular(GtRadius.control),
-          onPressed:
-              onTapOverride ??
-              () => selecting
-                  ? ref
-                        .read(bookshelfProvider.notifier)
-                        .toggleSelection(book.id)
-                  : openShelfBook(context, ref, book),
-          onLongPress: coverOverlay != null
-              ? null
-              : () => ref
-                    .read(bookshelfProvider.notifier)
-                    .beginSelection(book.id),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // 封面吃掉文字区之外的剩余高度：格子高度一致，行内封面等大
-              Expanded(
-                child: Stack(
-                  clipBehavior: Clip.none,
-                  children: [
-                    // 多选模式下用勾选圆点替代进度角标，避免两套标记叠在一起
-                    if (!selecting && coverOverlay == null)
-                      Positioned(
-                        top: -CoverFlag.flagHeight,
-                        left: w * 0.65,
-                        child: FractionalTranslation(
-                          translation: const Offset(-0.5, 0),
-                          child: CoverFlag(
-                            label: book.flagLabel,
-                            background: flagBg,
-                            foreground: flagFg,
+    Widget buildTile(BuildContext context, double w) {
+      final scaler = MediaQuery.textScalerOf(context);
+      final titleStyle = GtText.bookTitle(
+        selected ? colors.actionPrimary : colors.textPrimary,
+        family: Theme.of(context).textTheme.bodyMedium?.fontFamily,
+      ).copyWith(fontSize: titleFontSize, height: titleLineHeight);
+      return GtButton.raw(
+        borderRadius: BorderRadius.circular(GtRadius.control),
+        onPressed:
+            onTapOverride ??
+            () => selecting
+                ? ref.read(bookshelfProvider.notifier).toggleSelection(book.id)
+                : openShelfBook(context, ref, book),
+        onLongPress: coverOverlay != null
+            ? null
+            : () =>
+                  ref.read(bookshelfProvider.notifier).beginSelection(book.id),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 封面吃掉文字区之外的剩余高度：格子高度一致，行内封面等大
+            Expanded(
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  // 多选模式下用勾选圆点替代进度角标，避免两套标记叠在一起
+                  if (!selecting && coverOverlay == null)
+                    Positioned(
+                      top: -CoverFlag.flagHeight,
+                      left: w * 0.65,
+                      child: FractionalTranslation(
+                        translation: const Offset(-0.5, 0),
+                        child: CoverFlag(
+                          label: book.flagLabel,
+                          background: flagBg,
+                          foreground: flagFg,
+                        ),
+                      ),
+                    ),
+                  // 封面后画，标签底沿不覆盖书本（含分数像素边缘）。
+                  Positioned.fill(
+                    child: BookCover(
+                      bookId: book.id,
+                      format: book.format,
+                      pinned: book.isPinned,
+                      title: book.title,
+                      author: book.author,
+                      imagePath: coverFile,
+                      preset: book.coverChoice?.preset,
+                      showImageText: book.coverChoice?.imagePath != null,
+                      imageBytes: coverBytes,
+                      displayWidth: gridWidth,
+                    ),
+                  ),
+                  if (coverOverlay case final overlay?)
+                    Positioned.fill(child: overlay),
+                  if (book.status == BookStatus.contentMissing)
+                    const Positioned.fill(child: InvalidBookOverlay()),
+                  if (selected && coverOverlay == null)
+                    Positioned.fill(
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: colors.scrim.withValues(alpha: 0.28),
+                          borderRadius: BorderRadius.circular(GtRadius.cover),
+                          border: Border.all(
+                            color: colors.actionPrimary,
+                            width: 2,
                           ),
                         ),
                       ),
-                    // 封面后画，标签底沿不覆盖书本（含分数像素边缘）。
-                    Positioned.fill(
-                      child: Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          BookCover(
-                            bookId: book.id,
-                            format: book.format,
-                            pinned: book.isPinned,
-                            title: book.title,
-                            author: book.author,
-                            imagePath: coverFile,
-                            preset: book.coverChoice?.preset,
-                            showImageText: book.coverChoice?.imagePath != null,
-                            imageBytes: coverBytes,
-                          ),
-                          ?coverOverlay,
-                          if (book.status == BookStatus.contentMissing)
-                            const InvalidBookOverlay(),
-                          if (selected && coverOverlay == null)
-                            DecoratedBox(
-                              decoration: BoxDecoration(
-                                color: colors.scrim.withValues(alpha: 0.28),
-                                borderRadius: BorderRadius.circular(
-                                  GtRadius.cover,
-                                ),
-                                border: Border.all(
-                                  color: colors.actionPrimary,
-                                  width: 2,
-                                ),
-                              ),
-                            ),
-                        ],
-                      ),
                     ),
-                    if (selecting && coverOverlay == null)
-                      Positioned(
-                        top: 4,
-                        right: 4,
-                        child: _SelectionDot(selected: selected),
-                      ),
-                  ],
-                ),
+                  if (selecting && coverOverlay == null)
+                    Positioned(
+                      top: 4,
+                      right: 4,
+                      child: _SelectionDot(selected: selected),
+                    ),
+                ],
               ),
-              const SizedBox(height: GtSpacing.s2),
-              // 固定整个文字区高度，让Text自己排一次；作者仍紧跟实际书名，
-              // 短书名余量留在底部，不再为了算余量额外创建TextPainter。
-              SizedBox(
-                height: textBlockHeight(scaler),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      book.title,
-                      maxLines: titleMaxLines,
-                      overflow: TextOverflow.ellipsis,
-                      style: titleStyle,
+            ),
+            const SizedBox(height: GtSpacing.s2),
+            // 固定整个文字区高度，让Text自己排一次；作者仍紧跟实际书名，
+            // 短书名余量留在底部，不再为了算余量额外创建TextPainter。
+            SizedBox(
+              height: textBlockHeight(scaler),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    book.title,
+                    maxLines: titleMaxLines,
+                    overflow: TextOverflow.ellipsis,
+                    style: titleStyle,
+                  ),
+                  const SizedBox(height: GtSpacing.s1),
+                  Text(
+                    book.authorLabel,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: GtText.caption(colors.textMuted).copyWith(
+                      fontSize: authorFontSize,
+                      height: authorLineHeight,
                     ),
-                    const SizedBox(height: GtSpacing.s1),
-                    Text(
-                      book.authorLabel,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: GtText.caption(colors.textMuted).copyWith(
-                        fontSize: authorFontSize,
-                        height: authorLineHeight,
-                      ),
-                    ),
-                  ],
-                ),
+                  ),
+                ],
               ),
-            ],
-          ),
-        );
-      },
-    );
+            ),
+          ],
+        ),
+      );
+    }
+
+    final width = gridWidth;
+    return width == null
+        ? LayoutBuilder(
+            builder: (context, box) => buildTile(context, box.maxWidth),
+          )
+        : buildTile(context, width);
   }
 }
 

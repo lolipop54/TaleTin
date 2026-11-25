@@ -125,6 +125,7 @@ class ThoughtPopover extends StatelessWidget {
                 ),
                 GtButton.icon(
                   tooltip: '关闭想法',
+                  showTooltipOnWindows: false,
                   onPressed: () => Navigator.pop(context),
                   icon: Icon(Icons.close, color: theme.primary, size: 20),
                 ),
@@ -152,6 +153,7 @@ class ThoughtPopover extends StatelessWidget {
                 child: GtButton(
                   onPressed: onAction,
                   tooltip: actionLabel,
+                  showTooltipOnWindows: false,
                   child: Text(
                     actionLabel!,
                     style: style.copyWith(

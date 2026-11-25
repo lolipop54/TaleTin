@@ -1,4 +1,4 @@
-// Copyright (c) 2026 GT Reader contributors. MIT license, see LICENSE.
+// Copyright (c) 2026 GT Reader contributors. GPL-3.0-only, see LICENSE.
 use super::*;
 
 pub fn parse_color(value: &str) -> Option<Color> {
@@ -10,28 +10,19 @@ pub fn parse_color(value: &str) -> Option<Color> {
         return Some(Color::Argb(0));
     }
     if let Some(hex) = text.strip_prefix('#') {
-        return parse_hex_color(hex).map(Color::Argb);
+        let (r, g, b, alpha) = cssparser::color::parse_hash_color(hex.as_bytes()).ok()?;
+        return Some(Color::Argb(u32::from_be_bytes([
+            (alpha * 255.0).round() as u8,
+            r,
+            g,
+            b,
+        ])));
     }
     if text.starts_with("rgb") {
         return parse_rgb(&text).map(Color::Argb);
     }
-    named_color(&text).map(Color::Argb)
-}
-
-fn parse_hex_color(hex: &str) -> Option<u32> {
-    match hex.len() {
-        3 => {
-            let r = u8::from_str_radix(&hex[0..1], 16).ok()?;
-            let g = u8::from_str_radix(&hex[1..2], 16).ok()?;
-            let b = u8::from_str_radix(&hex[2..3], 16).ok()?;
-            Some(0xFF000000 | ((r * 17) as u32) << 16 | ((g * 17) as u32) << 8 | (b * 17) as u32)
-        }
-        6 => u32::from_str_radix(hex, 16)
-            .ok()
-            .map(|value| 0xFF000000 | value),
-        8 => u32::from_str_radix(hex, 16).ok(),
-        _ => None,
-    }
+    let (r, g, b) = cssparser::color::parse_named_color(&text).ok()?;
+    Some(Color::Argb(u32::from_be_bytes([255, r, g, b])))
 }
 
 fn parse_rgb(text: &str) -> Option<u32> {
@@ -79,44 +70,16 @@ fn parse_rgb(text: &str) -> Option<u32> {
     Some((alpha << 24) | (r << 16) | (g << 8) | b)
 }
 
-fn named_color(name: &str) -> Option<u32> {
-    let table: HashMap<&'static str, u32> = HashMap::from([
-        ("black", 0xFF000000),
-        ("silver", 0xFFC0C0C0),
-        ("gray", 0xFF808080),
-        ("grey", 0xFF808080),
-        ("white", 0xFFFFFFFF),
-        ("maroon", 0xFF800000),
-        ("red", 0xFFFF0000),
-        ("purple", 0xFF800080),
-        ("fuchsia", 0xFFFF00FF),
-        ("green", 0xFF008000),
-        ("lime", 0xFF00FF00),
-        ("olive", 0xFF808000),
-        ("yellow", 0xFFFFFF00),
-        ("navy", 0xFF000080),
-        ("blue", 0xFF0000FF),
-        ("teal", 0xFF008080),
-        ("aqua", 0xFF00FFFF),
-        ("orange", 0xFFFFA500),
-        ("brown", 0xFFA52A2A),
-        ("pink", 0xFFFFC0CB),
-        ("gold", 0xFFFFD700),
-        ("beige", 0xFFF5F5DC),
-        ("ivory", 0xFFFFFFF0),
-        ("khaki", 0xFFF0E68C),
-        ("salmon", 0xFFFA8072),
-        ("crimson", 0xFFDC143C),
-        ("darkred", 0xFF8B0000),
-        ("darkblue", 0xFF00008B),
-        ("darkgreen", 0xFF006400),
-        ("darkgray", 0xFFA9A9A9),
-        ("darkgrey", 0xFFA9A9A9),
-        ("lightgray", 0xFFD3D3D3),
-        ("lightgrey", 0xFFD3D3D3),
-        ("lightblue", 0xFFADD8E6),
-        ("lightgreen", 0xFF90EE90),
-        ("transparent", 0x00000000),
-    ]);
-    table.get(name).copied()
+#[cfg(test)]
+mod alpha_tests {
+    use super::*;
+
+    #[test]
+    fn css_hex_alpha_is_the_last_channel() {
+        assert_eq!(parse_color("#1357"), Some(Color::Argb(0x77113355)));
+        assert_eq!(parse_color("#2468ac80"), Some(Color::Argb(0x802468ac)));
+        assert_eq!(parse_color("#字"), None);
+        assert_eq!(parse_color("RebeccaPurple"), Some(Color::Argb(0xff663399)));
+        assert_eq!(parse_color("AliceBlue"), Some(Color::Argb(0xfff0f8ff)));
+    }
 }

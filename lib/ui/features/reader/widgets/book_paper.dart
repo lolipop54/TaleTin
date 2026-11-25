@@ -214,6 +214,38 @@ void paintBookPaper(
   }
 }
 
+/// 双页可能跨章。各半页独立决定是否让已绘制的书内纸面透过书边和中缝。
+void paintSpreadEdges(
+  Canvas canvas,
+  Size size,
+  Color paper,
+  ui.Image? texture, {
+  required bool leftChapterPaper,
+  required bool rightChapterPaper,
+}) {
+  void paint(bool preserve) => BookPaperPainter(
+    paper,
+    backgroundImage: texture,
+    spread: true,
+    decorationOnly: true,
+    preserveBackground: preserve,
+  ).paint(canvas, size);
+  if (leftChapterPaper == rightChapterPaper) {
+    paint(leftChapterPaper);
+    return;
+  }
+  final half = size.width / 2;
+  for (final (x, preserve) in [
+    (0.0, leftChapterPaper),
+    (half, rightChapterPaper),
+  ]) {
+    canvas.save();
+    canvas.clipRect(Rect.fromLTWH(x, 0, half, size.height));
+    paint(preserve);
+    canvas.restore();
+  }
+}
+
 class BookPaperPainter extends CustomPainter {
   const BookPaperPainter(
     this.paper, {

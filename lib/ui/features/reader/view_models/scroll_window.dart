@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/widgets.dart';
 
@@ -8,6 +9,7 @@ import '../../../../domain/services/txt_chapter_sections.dart';
 import '../../../../engine/layout/layout_options.dart';
 import '../../../../engine/layout/scroll_chapter.dart';
 import '../../../../engine/layout/block_measurement_cache.dart';
+import '../../../../engine/layout/measured_paragraphs.dart';
 import '../../../../engine/normalization/locator_mapper.dart';
 import '../widgets/reader_performance.dart';
 
@@ -87,6 +89,28 @@ class _AnchorScrollPosition extends ScrollPositionWithSingleContext {
   bool alignAfterLayout = false;
   double? _correctedPixels;
 
+  void landAt(double target) {
+    goIdle();
+    pendingCorrection = 0;
+    _correctedPixels = null;
+    // 此时目标正文已备好。即使复用同一棵列表，也要通知视口按新位置布局。
+    if (pixels != target) forcePixels(target);
+  }
+
+  @override
+  ScrollHoldController hold(VoidCallback holdCancelCallback) {
+    final held = super.hold(holdCancelCallback);
+    final binding = WidgetsBinding.instance;
+    if (binding.resamplingEnabled) {
+      // 惯性刚结束或被手指按停时，给取样器接下来两个刷新时刻，让已到达的
+      // 触摸及时交给正常的拖动识别；手指按住不动时不持续请求刷新。
+      binding.scheduleFrameCallback((_) {
+        if (identical(activity, held)) binding.scheduleFrame();
+      });
+    }
+    return held;
+  }
+
   @override
   bool applyViewportDimension(double viewportDimension) {
     if (pendingCorrection != 0) {
@@ -128,7 +152,9 @@ class ScrollWindow extends ChangeNotifier {
     this.loadTxtSections,
     this.prepareFonts,
     this.prepareResources,
+    this.preparePaperHeight,
     this.onError,
+    this.paragraphs,
   });
   final String bookId;
   final int version;
@@ -136,24 +162,49 @@ class ScrollWindow extends ChangeNotifier {
   final Future<ChapterContent> Function(Chapter) load;
   final Future<TxtChapterSource?> Function(Chapter)? loadTxtSections;
   final PreparePublicationFonts? prepareFonts;
+  final Future<double?> Function(String path, double width)? preparePaperHeight;
   final void Function(ChapterContent, Locator, int?) onPosition;
   final Future<void> Function(ScrollChapter, double, double)? prepareResources;
   final void Function(Object, StackTrace)? onError;
   final controller = _AnchorScrollController();
   final _measurements = BlockMeasurementCache();
+  final MeasuredParagraphs? paragraphs;
   List<ScrollEntry> entries = [];
-  Map<Key, int> _cellIndices = {};
-  Key keyAt(int index) {
-    final value = cellAt(index), cell = value.cell;
-    return ValueKey(
-      'scroll-${value.entry.index}-${cell.block.id}-${cell.offset}-${cell.from}',
-    );
-  }
-
-  int? indexOfKey(Key key) => _cellIndices[key];
+  final _recent = <_ScrollKey, ScrollEntry>{};
+  List<double> cellOffsets = const [0];
+  // 正文、章首装饰和容器留白可能共用同一原文位置。列表按已排好的单元本身
+  // 复用，增删前后章时仍能找回同一个单元；重新排版则交给新的单元绘制。
+  Map<ScrollCell, int> _cellIndices = Map.identity();
+  Key keyAt(int index) => ObjectKey(cellAt(index).cell);
+  int? indexOfKey(Key key) => key is ObjectKey ? _cellIndices[key.value] : null;
   void _replace(List<ScrollEntry> next) {
+    final visibleKeys = {for (final entry in next) entry.key};
+    for (final entry in entries) {
+      // 两章共用现有块测量缓存的段数和字数预算；超长章离屏后正常释放。
+      if (visibleKeys.contains(entry.key) ||
+          entry.layout.content.displaySourceJson == null ||
+          entry.layout.cells.length > _measurements.capacity ~/ 2 ||
+          chapters[entry.index].textLength > _measurements.maxTextUnits ~/ 2) {
+        continue;
+      }
+      // 精排短章来回滚动时复用已测好的格子与字体。只留两份离屏排版，不持有解码位图。
+      _recent.remove(entry.key);
+      _recent[entry.key] = entry;
+      if (_recent.length > 2) _recent.remove(_recent.keys.first);
+    }
+    _recent.removeWhere((key, _) => visibleKeys.contains(key));
     entries = next;
-    _cellIndices = {for (var i = 0; i < cellCount; i++) keyAt(i): i};
+    final offsets = <double>[0];
+    final indices = Map<ScrollCell, int>.identity();
+    // 换章时一次遍历同时生成高度和位置索引，避免为每一段再从窗口开头找所属章节。
+    for (final entry in next) {
+      for (final cell in entry.layout.cells) {
+        indices[cell] = offsets.length - 1;
+        offsets.add(offsets.last + cell.height);
+      }
+    }
+    cellOffsets = offsets;
+    _cellIndices = indices;
   }
 
   LayoutOptions? options;
@@ -166,10 +217,12 @@ class ScrollWindow extends ChangeNotifier {
   bool get reachesBookEnd =>
       entries.isNotEmpty && entries.last.atEnd(chapters.length);
   bool get isReady => options != null && !_opening && !_landing;
+  bool get isLanding => _landing;
   bool _disposed = false;
   int _request = 0;
   int? _appliedJump;
-  int get cellCount => entries.fold(0, (n, e) => n + e.layout.cells.length);
+  Locator? _landingAnchor;
+  int get cellCount => cellOffsets.length - 1;
   double get height => entries.fold(0, (n, e) => n + e.layout.height);
 
   ({ScrollEntry entry, ScrollCell cell}) cellAt(int index) {
@@ -232,6 +285,11 @@ class ScrollWindow extends ChangeNotifier {
     if (options?.layoutSignature == value.layoutSignature) {
       final held = entries.where((entry) => entry.key == key).firstOrNull;
       if (held != null) return held;
+      final recent = _recent[key];
+      if (recent != null &&
+          recent.layout.options?.layoutSignature == value.layoutSignature) {
+        return recent;
+      }
     }
     final (index, section, part) = key;
     final source = await _txtSource(index);
@@ -265,6 +323,8 @@ class ScrollWindow extends ChangeNotifier {
         chapterStart: chapterStart,
         chapterEnd: chapterEnd,
         measurementCache: _measurements,
+        paragraphs: paragraphs,
+        preparePaperHeight: preparePaperHeight,
       ),
     );
     return (
@@ -354,23 +414,26 @@ class ScrollWindow extends ChangeNotifier {
           .fold<double>(0, (sum, e) => sum + e.layout.height);
       final heldY =
           heldBefore +
-          (held == null || anchor == null ? 0 : held.layout.offsetOf(anchor));
+          (held == null || anchor == null ? 0 : held.layout.viewportOffsetOf(anchor));
       final covered =
           entries.isNotEmpty &&
           (entries.first.atStart || heldY >= value.contentHeight) &&
           (reachesBookEnd || height - heldY >= value.contentHeight * 2);
       if (held != null && controller.hasClients && (covered || animated)) {
-        final local = anchor == null ? 0.0 : held.layout.offsetOf(anchor);
-        await prepareResources?.call(held.layout, local, value.contentHeight);
+        final offset = heldY.clamp(
+          controller.position.minScrollExtent,
+          controller.position.maxScrollExtent,
+        ).toDouble();
+        await _prepareWindowResources(
+          entries, offset, value.contentHeight, request,
+        );
         if (_disposed || request != _request) return;
         _appliedJump = jumpToken;
+        _landingAnchor = anchor;
         if (animated) {
           // 听书复用当前列表，逐帧平移；完成前不回报中途的页首位置。
           await controller.animateTo(
-            (heldBefore + local).clamp(
-              controller.position.minScrollExtent,
-              controller.position.maxScrollExtent,
-            ),
+            offset,
             duration: const Duration(milliseconds: 320),
             curve: Curves.easeInOutCubic,
           );
@@ -379,11 +442,11 @@ class ScrollWindow extends ChangeNotifier {
           report();
           return;
         }
-        _commitOffset(heldBefore + local);
+        _commitOffset(offset);
         return;
       }
       final target = await _prepare(key, value, request);
-      final local = anchor == null ? 0.0 : target.layout.offsetOf(anchor);
+      final local = anchor == null ? 0.0 : target.layout.viewportOffsetOf(anchor);
       final next = await _around(
         target,
         local,
@@ -398,22 +461,19 @@ class ScrollWindow extends ChangeNotifier {
       final before = next
           .where((e) => e.before(key))
           .fold<double>(0, (sum, e) => sum + e.layout.height);
-      final offset = before + local;
-      for (final entry in next) {
-        await prepareResources?.call(
-          entry.layout,
-          entry.before(key)
-              ? entry.layout.height - value.contentHeight
-              : entry.key == key
-              ? offset - before
-              : 0,
-          value.contentHeight,
-        );
-      }
+      // 新列表尚未布局，书尾可滚动的距离取新正文的长度。
+      final total = next.fold<double>(
+        0, (sum, entry) => sum + entry.layout.height,
+      );
+      final offset = (before + local)
+          .clamp(0.0, math.max(0.0, total - value.contentHeight))
+          .toDouble();
+      await _prepareWindowResources(next, offset, value.contentHeight, request);
       if (_disposed || request != _request) return;
       options = value;
       _center = key;
       _appliedJump = jumpToken;
+      _landingAnchor = anchor;
       _replace(next);
       _commitOffset(offset);
     } on ScrollPreparationCancelled {
@@ -434,9 +494,7 @@ class ScrollWindow extends ChangeNotifier {
     if (controller.hasClients) {
       final position = controller.position as _AnchorScrollPosition;
       if (stop) {
-        position.goIdle();
-        position.pendingCorrection = 0;
-        position.correctBy(offset - controller.offset);
+        position.landAt(offset);
       } else {
         position.alignAfterLayout = entries.any((entry) => entry.sectioned);
         position.pendingCorrection += offset - controller.offset;
@@ -481,6 +539,36 @@ class ScrollWindow extends ChangeNotifier {
     return null;
   }
 
+  /// 关闭大图时按图片实际绘制范围判断，跨章、仅露出一部分的图片也算可见。
+  bool showsImage(Locator locator) {
+    if (!isReady || !controller.hasClients) return false;
+    final width = options!.contentWidth;
+    var top = controller.offset;
+    final viewportHeight = controller.position.viewportDimension;
+    for (final entry in entries) {
+      final layout = entry.layout;
+      final bottom = top + viewportHeight;
+      if (bottom <= 0) break;
+      if (layout.content.chapterId == locator.chapterId &&
+          top < layout.height &&
+          layout.cells.isNotEmpty) {
+        final viewport = Rect.fromLTWH(0, top, width, viewportHeight);
+        for (var i = layout.cellAt(top);
+            i < layout.cells.length && layout.starts[i] < bottom; i++) {
+          final origin = Offset(0, layout.starts[i]);
+          for (final image in layout.cells[i].positionedImages(width)) {
+            if (image.block.blockId == locator.blockId &&
+                viewport.overlaps(image.rect.shift(origin))) {
+              return true;
+            }
+          }
+        }
+      }
+      top -= layout.height;
+    }
+    return false;
+  }
+
   void report() {
     if (_opening || _landing) return;
     final current = visible();
@@ -494,8 +582,10 @@ class ScrollWindow extends ChangeNotifier {
         contentVersion: version,
         chapterId: chapters[current.entry.index].id,
       ),
+      landing: _landingAnchor,
     );
-    onPosition(layout.content, locator, _appliedJump);
+    if (!identical(locator, _landingAnchor)) _landingAnchor = null;
+    onPosition(layout.content, layout.withViewport(locator, current.local), _appliedJump);
     if (watch != null) {
       readerPerf('simplified.scroll.report', watch.elapsedMicroseconds);
     }
@@ -543,15 +633,9 @@ class ScrollWindow extends ChangeNotifier {
         if (e.before(key)) newBefore += e.layout.height;
       }
       final offset = controller.offset + newBefore - oldBefore;
-      var before = 0.0;
-      for (final entry in next) {
-        await prepareResources?.call(
-          entry.layout,
-          offset - before,
-          options!.contentHeight,
-        );
-        before += entry.layout.height;
-      }
+      await _prepareWindowResources(
+        next, offset, options!.contentHeight, request,
+      );
       if (_disposed || request != _request) return;
       // 图片等待期间也可能继续拖动，最后补偿必须使用此刻的位置。
       final latest = visible()?.entry.key;
@@ -578,6 +662,20 @@ class ScrollWindow extends ChangeNotifier {
       onError?.call(error, stack);
     }),
   );
+
+  // 脚注可能在章尾。复用已排好的列表时，同屏下一章的图片也要随正文一起交付。
+  // 图片加载器按各章与目标视口的距离选图，远处的资源不会解码。
+  Future<void> _prepareWindowResources(
+    List<ScrollEntry> window, double offset, double viewport, int request,
+  ) async {
+    final prepare = prepareResources;
+    if (prepare == null) return;
+    for (final entry in window) {
+      if (_disposed || request != _request) return;
+      await prepare(entry.layout, offset, viewport);
+      offset -= entry.layout.height;
+    }
+  }
 
   Future<List<ScrollEntry>> _around(
     ScrollEntry target,
@@ -635,6 +733,7 @@ class ScrollWindow extends ChangeNotifier {
     _disposed = true;
     _request++;
     _measurements.clear();
+    _recent.clear();
     controller.dispose();
     super.dispose();
   }

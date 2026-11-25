@@ -11,11 +11,13 @@ import '../../../core/theme/gt_tokens.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/widgets/book_cover.dart';
 import '../../../core/widgets/book_cover_resources.dart';
+import '../../../core/widgets/edge_to_edge_sheet.dart';
 import '../../../core/widgets/gt_button.dart';
+import '../../../core/widgets/gt_dialog_action.dart';
 import '../view_models/book_cover_controller.dart';
 
 int _columns(double width, TextScaler scale) =>
-    (width / (100 + scale.scale(12))).floor().clamp(2, 5);
+    (width / (100 + scale.scale(12))).floor().clamp(2, 8);
 
 Future<void> showBookCoverSheet(
   BuildContext context,
@@ -23,49 +25,12 @@ Future<void> showBookCoverSheet(
   List<Book> books, {
   bool global = false,
 }) async {
-  if (books.isEmpty && !global) return;
-  await BookCoverResources.prepare();
-  if (!context.mounted) return;
-  if (PresetFonts.included) PresetFonts.prepare('gt-preset-lxgwzhenkai');
-  final root = ref.read(libraryRootPathProvider);
-  final defaults = global
-      ? await ref.read(bookCoverRepositoryProvider).loadGlobal()
-      : null;
-  if (!context.mounted) return;
-  final book = global
-      ? _preview(BookFormat.txt, defaults?[BookFormat.txt])
-      : books.first;
-  final original = book.coverPath == null
-      ? null
-      : p.join(root, book.id, book.coverPath!);
-  final current = ref.read(bookCoverFileProvider)(book);
-  final width = MediaQuery.sizeOf(context).width;
-  final columns = _columns(width, MediaQuery.textScalerOf(context));
-  final coverWidth = (width - 40 - (columns - 1) * 20) / columns;
-  final decodeWidth = (coverWidth * MediaQuery.devicePixelRatioOf(context))
-      .round();
-  // 默认图和当前导入图先解码，再整体推入选择页。
-  for (final path in {
-    original,
-    current,
-    if (defaults != null)
-      ...defaults.values.map(
-        (c) => c.imagePath == null ? null : p.join(root, c.imagePath!),
-      ),
-  }.nonNulls) {
-    if (!context.mounted) return;
-    await precacheImage(
-      BookCover.imageProvider(path, decodeWidth, custom: path != original),
-      context,
-      onError: (_, _) {},
-    );
-  }
-  if (!context.mounted) return;
+  final page = await prepareBookCoverSheet(context, ref, books, global: global);
+  if (!context.mounted || page == null) return;
   await showModalBottomSheet<void>(
     context: context,
     useRootNavigator: true,
     isScrollControlled: true,
-    useSafeArea: true,
     showDragHandle: false,
     enableDrag: false,
     isDismissible: false,
@@ -74,12 +39,73 @@ Future<void> showBookCoverSheet(
     sheetAnimationStyle: MediaQuery.disableAnimationsOf(context)
         ? AnimationStyle.noAnimation
         : null,
-    builder: (_) => BookCoverSheet(
-      books: global ? [book] : books,
-      globalChoices: defaults,
-      originalPath: original,
-      currentPath: current,
-    ),
+    builder: (_) => EdgeToEdgeSheet(fullHeight: true, child: page),
+  );
+}
+
+/// 弹层与桌面设置子页共用图库准备过程，按即将显示的列宽解码。
+Future<BookCoverSheet?> prepareBookCoverSheet(
+  BuildContext context,
+  WidgetRef ref,
+  List<Book> books, {
+  bool global = false,
+  double? width,
+}) async {
+  if (books.isEmpty && !global) return null;
+  await BookCoverResources.prepare();
+  if (!context.mounted) return null;
+  if (PresetFonts.included) PresetFonts.prepare('gt-preset-lxgwzhenkai');
+  final root = ref.read(libraryRootPathProvider);
+  final repository = ref.read(bookCoverRepositoryProvider);
+  final images = await repository.images();
+  final defaults = await repository.loadGlobal();
+  final updated = <Book>[];
+  if (!global) {
+    // 打开图库时可能已把旧版封面迁到共享目录，使用更新后的选择。
+    final choices = await repository.loadBooks(books.map((book) => book.id));
+    for (final book in books) {
+      updated.add(
+        book.copyWith(coverChoice: choices[book.id] ?? defaults[book.format]),
+      );
+    }
+  }
+  if (!context.mounted) return null;
+  final book = global
+      ? _preview(BookFormat.txt, defaults[BookFormat.txt])
+      : updated.first;
+  final original = book.coverPath == null
+      ? null
+      : p.join(root, book.id, book.coverPath!);
+  final current = ref.read(bookCoverFileProvider)(book);
+  final window = Navigator.of(context, rootNavigator: true).context;
+  final available = width ??
+      (MediaQuery.sizeOf(window).width - MediaQuery.paddingOf(window).horizontal);
+  final columns = _columns(available, MediaQuery.textScalerOf(context));
+  final coverWidth = (available - 40 - (columns - 1) * 20) / columns;
+  final decodeWidth = (coverWidth * MediaQuery.devicePixelRatioOf(context))
+      .round();
+  // 默认图和当前导入图先解码，再整体推入选择页。
+  for (final path in {
+    original,
+    current,
+    if (global)
+      ...defaults.values.map(
+        (c) => c.imagePath == null ? null : p.join(root, c.imagePath!),
+      ),
+  }.nonNulls) {
+    if (!context.mounted) return null;
+    await precacheImage(
+      BookCover.imageProvider(path, decodeWidth, custom: path != original),
+      context,
+      onError: (_, _) {},
+    );
+  }
+  if (!context.mounted) return null;
+  return BookCoverSheet(
+    books: global ? [book] : updated,
+    globalChoices: global ? defaults : null,
+    originalPath: original,
+    images: images,
   );
 }
 
@@ -89,11 +115,12 @@ class BookCoverSheet extends ConsumerStatefulWidget {
     required this.books,
     this.globalChoices,
     this.originalPath,
-    this.currentPath,
+    this.images = const [],
   });
   final List<Book> books;
   final Map<BookFormat, BookCoverChoice>? globalChoices;
-  final String? originalPath, currentPath;
+  final String? originalPath;
+  final List<String> images;
   @override
   ConsumerState<BookCoverSheet> createState() => _BookCoverSheetState();
 }
@@ -102,67 +129,121 @@ class _BookCoverSheetState extends ConsumerState<BookCoverSheet> {
   bool busy = false;
   BookFormat format = BookFormat.txt;
   late final defaults = {...?widget.globalChoices};
+  late final _imported = [...widget.images];
+  late List<Book> _books = widget.books;
   bool get global => widget.globalChoices != null;
-  Book get book =>
-      global ? _preview(format, defaults[format]) : widget.books.first;
-  String? get currentPath => global
-      ? (book.coverChoice?.imagePath == null
-            ? null
-            : p.join(
-                ref.read(libraryRootPathProvider),
-                book.coverChoice!.imagePath!,
-              ))
-      : widget.currentPath;
+  Book get book => global ? _preview(format, defaults[format]) : _books.first;
 
-  Future<void> choose(BookCoverPreset? preset, {bool import = false}) async {
+  Future<void> choose(BookCoverPreset? preset, {String? image}) =>
+      _run(() async {
+        final repo = ref.read(bookCoverRepositoryProvider);
+        if (global) {
+          final selectedFormat = format;
+          await repo.saveGlobal(
+            selectedFormat,
+            preset: preset,
+            existingImage: image,
+          );
+          if (mounted) {
+            setState(
+              () => defaults[selectedFormat] = BookCoverChoice(
+                preset: preset,
+                imagePath: image,
+              ),
+            );
+          }
+        } else {
+          await repo.save(
+            widget.books.map((book) => book.id),
+            preset: preset,
+            existingImage: image,
+          );
+          if (mounted) Navigator.pop(context);
+        }
+      });
+
+  Future<void> _import() => _run(() async {
+    try {
+      final added = await ref.read(bookCoverControllerProvider).import();
+      if (!mounted || added.isEmpty) return;
+      setState(() => _imported.addAll(added));
+    } on FormatException catch (error) {
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          backgroundColor: context.gtColors.surface,
+          title: Text(error.message),
+          actions: [
+            GtDialogAction(
+              label: '确定',
+              onPressed: () => Navigator.pop(context),
+            ),
+          ],
+        ),
+      );
+    }
+  }, operation: '导入封面失败');
+
+  Future<void> _delete(String image, String label) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: context.gtColors.surface,
+        title: Text('删除$label？'),
+        content: const Text('图片将从共享图库移除。使用这张图的书籍和格式将恢复默认封面。'),
+        actions: [
+          GtDialogAction(
+            label: '取消',
+            onPressed: () => Navigator.pop(context, false),
+          ),
+          GtDialogAction(
+            label: '删除',
+            role: GtDialogActionRole.danger,
+            onPressed: () => Navigator.pop(context, true),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await _run(() async {
+      final repository = ref.read(bookCoverRepositoryProvider);
+      await repository.removeImage(image);
+      final updatedDefaults = await repository.loadGlobal();
+      final choices = global
+          ? const <String, BookCoverChoice>{}
+          : await repository.loadBooks(_books.map((book) => book.id));
+      if (!mounted) return;
+      setState(() {
+        _imported.remove(image);
+        defaults
+          ..clear()
+          ..addAll(updatedDefaults);
+        if (!global) {
+          _books = [
+            for (final book in _books)
+              book.copyWith(
+                coverChoice:
+                    choices[book.id] ??
+                    updatedDefaults[book.format] ??
+                    const BookCoverChoice(),
+              ),
+          ];
+        }
+      });
+    }, operation: '删除封面失败');
+  }
+
+  Future<void> _run(
+    Future<void> Function() action, {
+    String operation = '更换封面失败',
+  }) async {
     if (busy) return;
     setState(() => busy = true);
     try {
-      final controller = ref.read(bookCoverControllerProvider);
-      final ids = widget.books.map((b) => b.id).toList();
-      final changed = import
-          ? await controller.import(ids, format: global ? format : null)
-          : await (global
-                    ? ref
-                          .read(bookCoverRepositoryProvider)
-                          .saveGlobal(format, preset: preset)
-                    : controller.select(ids, preset))
-                .then((_) => true);
-      if (mounted && changed) {
-        if (!global) {
-          Navigator.pop(context);
-        } else {
-          final next = await ref.read(bookCoverRepositoryProvider).loadGlobal();
-          final image = next[format]?.imagePath;
-          if (mounted && image != null) {
-            final width = MediaQuery.sizeOf(context).width;
-            final columns = _columns(width, MediaQuery.textScalerOf(context));
-            final pixels =
-                ((width - 40 - (columns - 1) * 20) /
-                        columns *
-                        MediaQuery.devicePixelRatioOf(context))
-                    .round();
-            await precacheImage(
-              BookCover.imageProvider(
-                p.join(ref.read(libraryRootPathProvider), image),
-                pixels,
-                custom: true,
-              ),
-              context,
-              onError: (_, _) {},
-            );
-          }
-          if (mounted) {
-            setState(() {
-              defaults
-                ..clear()
-                ..addAll(next);
-            });
-          }
-        }
-      }
+      await action();
     } catch (error, stack) {
-      AppErrors.report(error, stack, operation: '更换封面失败');
+      AppErrors.report(error, stack, operation: operation);
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -172,10 +253,13 @@ class _BookCoverSheetState extends ConsumerState<BookCoverSheet> {
   Widget build(BuildContext context) {
     final colors = context.gtColors;
     final book = this.book;
-    final choices = widget.books
+    final choices = _books
         .map((b) => (b.coverChoice?.preset, b.coverChoice?.imagePath))
         .toSet();
     final same = global || choices.length == 1;
+    final selectedImage = book.coverChoice?.imagePath;
+    final root = ref.watch(libraryRootPathProvider);
+    final firstImage = BookCoverPreset.values.length + 1;
     return PopScope(
       canPop: !busy,
       child: SizedBox(
@@ -193,6 +277,7 @@ class _BookCoverSheetState extends ConsumerState<BookCoverSheet> {
                     GtButton.icon(
                       onPressed: busy ? null : () => Navigator.pop(context),
                       tooltip: '返回',
+                      showTooltipOnWindows: false,
                       icon: Icon(Icons.arrow_back, color: colors.textPrimary),
                     ),
                     const SizedBox(width: 8),
@@ -242,29 +327,38 @@ class _BookCoverSheetState extends ConsumerState<BookCoverSheet> {
                             scale.scale(14) * 1.5 +
                             10,
                       ),
-                      itemCount: BookCoverPreset.values.length + 2,
+                      itemCount: firstImage + _imported.length + 1,
                       itemBuilder: (_, index) {
-                        final custom =
-                            index == BookCoverPreset.values.length + 1;
-                        final preset = index == 0 || custom
-                            ? null
-                            : BookCoverPreset.values[index - 1];
-                        final label = custom ? '自定义' : preset?.label ?? '默认封面';
+                        final add = index == firstImage + _imported.length;
+                        final image = index >= firstImage && !add
+                            ? _imported[index - firstImage]
+                            : null;
+                        final preset = index > 0 && index < firstImage
+                            ? BookCoverPreset.values[index - 1]
+                            : null;
+                        final label = add
+                            ? '导入封面'
+                            : image != null
+                            ? '自定义 ${index - firstImage + 1}'
+                            : preset?.label ?? '默认封面';
                         final selected =
                             same &&
-                            (custom
-                                ? book.coverChoice?.imagePath != null
-                                : preset == null
-                                ? book.coverChoice?.preset == null &&
-                                      book.coverChoice?.imagePath == null
-                                : book.coverChoice?.preset == preset);
+                            !add &&
+                            selectedImage == image &&
+                            (image != null ||
+                                book.coverChoice?.preset == preset);
                         return GtButton.raw(
                           key: ValueKey(
-                            'cover-${custom ? 'custom' : preset?.code ?? 'default'}',
+                            'cover-${add ? 'custom' : image ?? preset?.code ?? 'default'}',
                           ),
                           onPressed: busy
                               ? null
-                              : () => choose(preset, import: custom),
+                              : add
+                              ? _import
+                              : () => choose(preset, image: image),
+                          onLongPress: busy || image == null
+                              ? null
+                              : () => _delete(image, label),
                           borderRadius: BorderRadius.zero,
                           child: Column(
                             children: [
@@ -272,8 +366,7 @@ class _BookCoverSheetState extends ConsumerState<BookCoverSheet> {
                                 child: Stack(
                                   fit: StackFit.expand,
                                   children: [
-                                    if (custom &&
-                                        book.coverChoice?.imagePath == null)
+                                    if (add)
                                       DecoratedBox(
                                         decoration: BoxDecoration(
                                           border: Border.all(
@@ -292,10 +385,10 @@ class _BookCoverSheetState extends ConsumerState<BookCoverSheet> {
                                         title: book.title,
                                         author: book.author,
                                         preset: preset,
-                                        showImageText: custom,
+                                        showImageText: image != null,
                                         radius: 0,
-                                        imagePath: custom
-                                            ? currentPath
+                                        imagePath: image != null
+                                            ? p.join(root, image)
                                             : index == 0
                                             ? widget.originalPath
                                             : null,

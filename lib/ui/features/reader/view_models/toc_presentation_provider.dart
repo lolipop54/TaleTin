@@ -46,8 +46,12 @@ final tocVolumesProvider = Provider.autoDispose
       }
       return ref.watch(_tree(input));
     });
-List<TocVolume> _build(TocTreeInput input) =>
-    buildTocVolumes(input.$1, input.$2, txtSections: input.$3);
+List<TocVolume> _build(TocTreeInput input) => buildTocVolumes(
+  input.$1,
+  input.$2,
+  txtSections: input.$3,
+  fillNumberedGaps: false,
+);
 
 // 展开集合为 null 时，由搜索结果决定默认开合；大目录仍在后台一起准备。
 typedef TocRowsInput = (List<TocVolume>, Set<int>?, String, bool, Set<String>?);

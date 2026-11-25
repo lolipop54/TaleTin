@@ -8,144 +8,69 @@
 ///    从章首重放，不需要第二套回填算法（实现计划 5.4）。
 library;
 
+import 'dart:collection';
 import 'dart:ui' show Offset, Rect, Size;
 import 'dart:math' as math;
 
 import '../../domain/models/book_document.dart';
 import '../../domain/models/locator.dart';
+import 'container_flow_sizing.dart';
+import 'compact_image_policy.dart';
+import 'parallel_flow_layout.dart';
+import 'gallery_layout.dart';
+import 'collapsed_table_borders.dart';
+import 'block_flow_spacing.dart';
+import 'block_measure.dart';
+import 'vertical_margins.dart';
 import 'measured_block.dart';
 import 'table_layout.dart';
 import 'parallel_flow_slices.dart';
+import 'styled_table_pages.dart';
 
-/// 页内一个片段：某个块在该页上的连续若干行（或整块图片/分隔线）。
-class PageFragment {
-  const PageFragment({
-    required this.block,
-    required this.lineFrom,
-    required this.lineTo,
-    required this.y,
-    required this.height,
-    this.tableFrame,
-    this.frameOnly = false,
-    this.tableTopEdge = true,
-    this.tableBottomEdge = true,
-  });
-
-  /// 整块放入（图片、分隔线、标题）：
-  /// 文本块的行范围就是它的全部行，图片与分隔线没有行。
-  PageFragment.whole(MeasuredBlock block, {required double y})
-    : this(
-        block: block,
-        lineFrom: 0,
-        lineTo: block.lines.length,
-        y: y,
-        height: block.height,
-      );
-
-  final MeasuredBlock block;
-
-  /// 行范围 [lineFrom, lineTo)；整块放入时两者都是 0
-  final int lineFrom;
-  final int lineTo;
-
-  /// 页内顶部偏移
-  final double y;
-
-  /// 本片段占用的高度
-  final double height;
-  final Rect? tableFrame;
-  final bool frameOnly;
-  final bool tableTopEdge, tableBottomEdge;
-
-  Size? get imageSize => block.imageSize;
-
-  /// 页内图片的真实位置；横屏按高度缩小时仍位于容器中央。
-  Rect? imageRectIn(double availableWidth) =>
-      frameOnly ? null : block.imageRectIn(availableWidth, top: y);
-
-  /// 页内一点落在哪张行内图片上；没有命中时返回 null。
-  ///
-  /// 坐标与绘制一致：片段顶部 + 行高 + 图片在行内的偏移。
-  Iterable<({InlineImagePlacement image, Rect rect})>
-  get positionedInlineImages sync* {
-    if (frameOnly || block.lines.isEmpty) return;
-    final width = block.layoutWidth;
-    if (width == null) return;
-    var top = y + block.textTopOf(lineFrom);
-    for (var line = lineFrom; line < lineTo; line++) {
-      final left = block.inset + block.horizontalOffset(line, width);
-      for (final image in block.inlineImagesInLines(line, line + 1)) {
-        yield (
-          image: image,
-          rect: Offset(left + image.left, top + image.top) & image.size,
-        );
-      }
-      top += block.lines[line].height;
-    }
-  }
-
-  InlineImagePlacement? inlineImageAt(Offset point) => positionedInlineImages
-      .where((p) => p.rect.contains(point))
-      .firstOrNull
-      ?.image;
-
-  /// 是否为跨页片段的后续部分（首行缩进只出现在 lineFrom == 0 的那一片）
-  bool get isContinuation => block.lines.isNotEmpty && lineFrom > 0;
-
-  @override
-  String toString() =>
-      'Fragment(${block.blockId}[$lineFrom,$lineTo)@$y,${height.toStringAsFixed(1)})';
-}
-
-/// 页首/页尾锚点：还没有摘录，摘录由上层（章节排版服务）补齐。
-class PageAnchor {
-  const PageAnchor({
-    required this.blockId,
-    required this.utf16Offset,
-    this.affinity = LocatorAffinity.center,
-  });
-
-  final String blockId;
-  final int utf16Offset;
-  final LocatorAffinity affinity;
-}
-
-/// 一页的排版结果（不含章节信息，章节信息由上层附上）。
-class PageSlice {
-  const PageSlice({
-    required this.index,
-    required this.fragments,
-    required this.usedHeight,
-    required this.start,
-    required this.end,
-  });
-
-  /// 章内页序，从 0 开始
-  final int index;
-  final List<PageFragment> fragments;
-  final double usedHeight;
-
-  /// 本页第一个字符与最后一个字符的位置
-  final PageAnchor start;
-  final PageAnchor end;
-}
+part 'page_slice.dart';
+part 'container_page_geometry.dart';
+part 'compact_illustration.dart';
 
 /// 一页的构建过程（页内已用高度只在构建期可变）。
 class _PageBuilder {
+  _PageBuilder(this.paint);
+  final bool paint;
+  bool _empty = true;
   final List<PageFragment> fragments = [];
+  final List<PageFragment> repeatedHeader = [];
   double usedHeight = 0;
+  double flowBottom = 0;
 
-  bool get isEmpty => fragments.isEmpty;
-  bool get isNotEmpty => fragments.isNotEmpty;
+  bool get isEmpty => _empty;
+  bool get isNotEmpty => !_empty;
 
-  void add(PageFragment fragment) {
-    fragments.add(fragment);
-    usedHeight = math.max(usedHeight, fragment.y + fragment.height);
+  void add(PageFragment fragment, {bool advanceFlow = true}) {
+    if (paint) fragments.add(fragment);
+    advance(fragment.y + fragment.height, advanceFlow: advanceFlow);
   }
 
-  PageSlice build(int index) => PageSlice(
+  void advance(double bottom, {bool advanceFlow = true}) {
+    _empty = false;
+    usedHeight = math.max(usedHeight, bottom);
+    // 下一块从当前块的末边出发。向上叠放时，最远绘制位置仍应留给整页。
+    if (advanceFlow) flowBottom = bottom;
+  }
+
+  PageSlice build(int index, List<MeasuredBlock> pageImages) => PageSlice(
     index: index,
-    fragments: List.unmodifiable(fragments),
+    paintFragments: repeatedHeader.isEmpty
+        ? null
+        : List.unmodifiable([
+            ...repeatedHeader,
+            ...fragments,
+            for (final image in pageImages)
+              PageFragment.whole(image, y: image.pageTop!),
+          ]),
+    fragments: List.unmodifiable([
+      ...fragments,
+      for (final image in pageImages)
+        PageFragment.whole(image, y: image.pageTop!),
+    ]),
     usedHeight: usedHeight,
     start: _startAnchor(
       fragments
@@ -222,9 +147,26 @@ class _ListMeasuredBlocks implements MeasuredBlockSource {
 }
 
 class ChapterPaginator {
-  ChapterPaginator({required this.pageHeight, this.gapBefore});
+  ChapterPaginator({
+    required this.pageHeight,
+    this.gapBefore,
+    this.measurer,
+    this.pageImages = const [],
+    this.backgroundOnlyAnchor,
+    this.containerSizing,
+    this.chapterStarts = const {},
+    this.compactIllustrations = true,
+    this.parallelFlow,
+  });
 
+  final Set<String> chapterStarts;
+  final bool compactIllustrations;
+  final ParallelFlowLayout? parallelFlow;
   final double pageHeight;
+  final BlockMeasurer? measurer;
+  final List<MeasuredBlock> pageImages;
+  final String? Function()? backgroundOnlyAnchor;
+  final ContainerFlowSizing? Function()? containerSizing;
 
   /// 块之间的段距；为空时用固定值（测试与纯算术场景）
   final double Function(MeasuredBlock previous, MeasuredBlock current)?
@@ -246,16 +188,82 @@ class ChapterPaginator {
     int firstBlock = 0,
     int firstLine = 0,
     void Function(int page, int block, int line)? onBoundary,
-  }) sync* {
+    void Function()? onPageSealed,
+    void Function(int)? releaseBefore,
+  }) {
+    final pages = _steps(
+      blocks,
+      firstPage,
+      firstBlock,
+      firstLine,
+      onBoundary,
+      onPageSealed,
+      releaseBefore,
+    );
+    return onPageSealed == null
+        ? _positionBoxBackgrounds(pages, pageHeight)
+        : pages;
+  }
+
+  Iterable<PageSlice?> _steps(
+    MeasuredBlockSource blocks,
+    int firstPage,
+    int firstBlock,
+    int firstLine,
+    void Function(int page, int block, int line)? onBoundary,
+    void Function()? onPageSealed,
+    void Function(int)? releaseBefore,
+  ) sync* {
     var pageCount = firstPage;
-    var page = _PageBuilder();
+    var page = _PageBuilder(onPageSealed == null);
+    var keepHeadingsThrough = -1;
+    final sizing = containerSizing?.call();
+    var tails = const <ContainerFlowTail>[];
+    MeasuredBlock? tailAnchor;
+    double? chapterTopMargin;
+    void placeTails() {
+      for (final tail in tails) {
+        // 和普通块的定高规则一样，分页只在正文所在页补留白。
+        // 超出页底的纯空白没有可保存的原文位置。
+        final extent = math.min(tail.height, pageHeight - page.flowBottom);
+        if (extent <= 0) break;
+        page.add(
+          PageFragment.containerTail(
+            tailAnchor!,
+            tail,
+            page.flowBottom,
+            extent,
+          ),
+        );
+      }
+      tails = const [];
+    }
 
     PageSlice? flush({int? block, int line = 0}) {
+      final images = pageCount == 0 ? pageImages : const <MeasuredBlock>[];
+      if (onPageSealed != null) {
+        if (page.isNotEmpty || images.isNotEmpty) {
+          pageCount++;
+          onPageSealed();
+          page = _PageBuilder(false);
+        }
+        return null;
+      }
+      if (page.isEmpty && images.isNotEmpty) {
+        // 只有一张绝对定位图片的章也需要能够打开并定位。
+        page.add(PageFragment.whole(images.first, y: images.first.pageTop!));
+        return page.build(pageCount++, images.skip(1).toList());
+      }
       if (page.isEmpty) return null;
-      final result = page.build(pageCount++);
-      page = _PageBuilder();
+      final result = page.build(pageCount++, images);
+      page = _PageBuilder(onPageSealed == null);
       // 整页封口，且下一步位于普通块或段落续行时才可从空页重启。
-      if (block != null) onBoundary?.call(pageCount, block, line);
+      if (block != null &&
+          onBoundary != null &&
+          !_continuesBackground(result, pageHeight) &&
+          (sizing?.canRestartAt(blocks[block].blockId, line) ?? true)) {
+        onBoundary(pageCount, block, line);
+      }
       return result;
     }
 
@@ -263,44 +271,114 @@ class ChapterPaginator {
     /// 空页不再换（否则会死循环），返回空页时的实际可用高度由调用方兜底。
     PageSlice? ensure(double needed, int block) {
       if (page.isEmpty) return null;
-      if (page.usedHeight + needed <= pageHeight + _epsilon) return null;
+      if (page.flowBottom + needed <= pageHeight + _epsilon) return null;
       return flush(block: block);
     }
 
-    /// 续页页首不加段距；章首保留作者的正上外边距。
+    /// 续页页首不重复加段距。章首作者边距可伸入纸面的上方留白。
     double offsetIn(double gap) => page.isEmpty
-        ? (pageCount == 0 ? math.max(0, blocks[0].marginTop) : 0.0)
-        : page.usedHeight + gap;
+        ? (pageCount == 0 ? chapterTopMargin! : 0.0)
+        : page.flowBottom + gap;
 
     for (var i = firstBlock; blocks.has(i); i++) {
-      final block = blocks[i];
-      final gap = _gapBetween(blocks, i);
+      releaseBefore?.call(i);
+      placeTails();
+      var block = blocks[i];
+      if (block.isPageImage || block.collapsesThrough) continue;
+      final forced = measurer?.displayTree?.pageBreaks[block.blockId];
+      if ((forced?.contains(0) == true ||
+              chapterStarts.contains(block.blockId)) &&
+          !block.isDecoration &&
+          page.isNotEmpty) {
+        yield flush(block: i);
+      }
+      var flowStart = i;
+      while (blocks[flowStart].positionedOverlay &&
+          blocks.has(flowStart + 1) &&
+          blocks[flowStart + 1].tableId == block.tableId) {
+        flowStart++;
+      }
+      var gap = _gapBetween(blocks, flowStart);
+      // 页尾纯装饰可以收短留白；避免为了空白把整个题花送到下一页页首。
+      if (gap > 0 &&
+          page.isNotEmpty &&
+          page.flowBottom + gap + block.height > pageHeight &&
+          block.height + page.flowBottom <= pageHeight &&
+          block.lines.length == 1 &&
+          block.containerBoxes.any((frame) => frame.lineTo == 1) &&
+          measurer?.isClosingFloatOrnament(block) == true) {
+        gap = pageHeight - block.height - page.flowBottom;
+      }
+      chapterTopMargin ??= gap;
 
       if (block.tableId != null) {
-        final group = <MeasuredBlock>[block];
+        var group = <MeasuredBlock>[block];
         while (blocks.has(i + 1) && blocks[i + 1].tableId == block.tableId) {
           group.add(blocks[++i]);
         }
+        if (sizing != null && !block.isParallelFlow) {
+          tails = sizing.add(group, gap: gap, height: tableHeight(group));
+          tailAnchor = group.last;
+        }
         if (block.isParallelFlow) {
+          final natural = group;
+          final fit = compactIllustrations && parallelFlow != null
+              ? parallelFlow!.fitForPage(natural, measurer!, offsetIn(gap))
+              : FloatPageFit(natural);
+          group = fit.blocks;
           // 浮动插图在页尾放不下时，和旁边的首行一起移到续页，
           // 避免左边先显示诗句、右边的图到下一页才出现。
-          final imageBottom = group
-              .where((b) => b.imageSize != null && b.tableBounds!.top < .1)
-              .fold(
-                0.0,
-                (bottom, b) => math.max(bottom, b.tableBounds!.bottom),
-              );
-          if (imageBottom > 0 && imageBottom <= pageHeight) {
-            yield ensure(gap + imageBottom, i - group.length + 1);
+          final imageBottom = fit.leadingImageBottom;
+          if (imageBottom > 0 &&
+              (imageBottom <= pageHeight || fit.hasContinuableCaption)) {
+            final before = pageCount;
+            final previous = ensure(gap + imageBottom, i - group.length + 1);
+            if (pageCount != before) {
+              yield previous;
+              // 若同排的另一张图仍装不下，移到新页后重新按新页余量试排。
+              group = compactIllustrations && parallelFlow != null
+                  ? parallelFlow!.fitForPage(natural, measurer!, 0).blocks
+                  : natural;
+            }
+          }
+          if (sizing != null) {
+            tails = sizing.add(group, gap: gap, height: tableHeight(group));
+            tailAnchor = group.last;
           }
           final flowPages = parallelFlowPages(group, offsetIn(gap), pageHeight);
           for (var p = 0; p < flowPages.length; p++) {
             if (p > 0) yield flush();
-            for (final fragment in flowPages[p]) {
-              page.add(fragment);
+            final fragments = flowPages[p];
+            if (fragments.isEmpty) continue;
+            var bottom = double.negativeInfinity;
+            for (final fragment in fragments) {
+              page.add(fragment, advanceFlow: false);
+              if (!fragment.block.positionedOverlay) {
+                bottom = math.max(bottom, fragment.y + fragment.height);
+              }
             }
+            if (bottom.isFinite) page.flowBottom = bottom;
           }
           yield null;
+          continue;
+        }
+        if (block.tableUnit == 0) {
+          var current = 0;
+          for (final slice in styledTablePages(
+            group,
+            offsetIn(gap),
+            pageHeight,
+          )) {
+            if (slice.page > current) yield flush();
+            current = slice.page;
+            if (page.paint) page.repeatedHeader.addAll(slice.repeatedHeader);
+            for (final fragment in slice.fragments) {
+              page.add(fragment, advanceFlow: false);
+            }
+            page.flowBottom = slice.bottom;
+            page.usedHeight = math.max(page.usedHeight, slice.bottom);
+            yield null;
+          }
           continue;
         }
         var from = 0.0;
@@ -313,7 +391,7 @@ class ChapterPaginator {
               yield flush();
               continue;
             }
-            to = math.min(height, from + group.first.tableUnit);
+            to = math.min(height, from + block.tableUnit);
           }
           for (final fragment in tableFragments(
             group,
@@ -322,8 +400,9 @@ class ChapterPaginator {
             y,
             pageHeight: pageHeight,
           )) {
-            page.add(fragment);
+            page.add(fragment, advanceFlow: false);
           }
+          page.flowBottom = y + to - from;
           from = to;
           if (from < height - _epsilon) yield flush();
           yield null;
@@ -331,33 +410,100 @@ class ChapterPaginator {
         continue;
       }
 
+      // 片段 y 是所有绘制与定位消费者共同使用的原点。续页只补当前仍打开的 clone 盒。
+      double contentOffset(int line) =>
+          offsetIn(gap) +
+          (page.isEmpty && pageCount > 0
+              ? _cloneInsets(block, line, top: true)
+              : 0);
+      final after = _cloneInsets(
+        block,
+        math.max(0, block.lines.length - 1),
+        top: false,
+      );
+      var imageTail = after;
+      if (block.imageSize != null && block.pageTop == null) {
+        imageTail = _imageTail(blocks, i, after);
+        final available = pageHeight - contentOffset(0) - imageTail;
+        if (page.isNotEmpty &&
+            block.height > available &&
+            _canCompactImage(blocks, i)) {
+          block = _fitImageOnPage(block, available);
+        }
+      }
+      if (sizing != null) {
+        tails = sizing.add([block], gap: gap, height: block.height);
+        tailAnchor = block;
+      }
       if (block.pageTop != null && block.height <= pageHeight) {
-        final target = math.max(offsetIn(gap), block.pageTop!);
-        if (target + block.height > pageHeight + _epsilon && page.isNotEmpty) {
+        final target = math.max(contentOffset(0), block.pageTop!);
+        if (target + block.height + after > pageHeight + _epsilon &&
+            page.isNotEmpty) {
           yield flush(block: i);
         }
         page.add(
-          PageFragment.whole(block, y: math.max(offsetIn(gap), block.pageTop!)),
+          PageFragment.whole(
+            block,
+            y: math.max(contentOffset(0), block.pageTop!),
+          ),
         );
         yield null;
         continue;
       }
       if (block.lines.isEmpty) {
-        // 图片、分隔线、空块：整块放入
-        // 图片属于它之前的内容。后面出现新标题不能反向绑定图片，
-        // 否则连续插图会留下足以容纳下一张图的大块空白。
-        yield ensure(gap + block.height, i);
-        page.add(PageFragment.whole(block, y: offsetIn(gap)));
+        yield ensure(gap + block.height + imageTail, i);
+        page.add(PageFragment.whole(block, y: contentOffset(0)));
         yield null;
         continue;
       }
 
-      if (block.kind == BlockKind.heading) {
+      final entry = measurer?.displayTree?.portraits[block.blockId];
+      if (page.isNotEmpty &&
+          entry?.name.id == block.blockId &&
+          !(i == firstBlock && firstLine > 0) &&
+          blocks.has(i + 2)) {
+        final image = blocks[i + 1], bio = blocks[i + 2];
+        if (image.imageSize != null &&
+            image.blockId == entry!.portrait.id &&
+            bio.blockId == entry.bio.id &&
+            bio.lines.isNotEmpty) {
+          final keep =
+              block.height +
+              _gapBetween(blocks, i + 1) +
+              image.height +
+              _gapBetween(blocks, i + 2) +
+              biographyStartHeight(bio);
+          if (keep <= pageHeight + _epsilon) yield ensure(gap + keep, i);
+        }
+      }
+      if (block.kind == BlockKind.heading &&
+          (forced == null || forced.every((o) => o == 0))) {
+        if (compactIllustrations && !(i == firstBlock && firstLine > 0)) {
+          if (i > keepHeadingsThrough) {
+            final group = _headingGroup(blocks, i, contentOffset(0));
+            if (group != null) {
+              final keep =
+                  group.minimum <=
+                      pageHeight - _cloneInsets(block, 0, top: true)
+                  ? group.minimum
+                  : group.headings;
+              yield ensure(gap + keep, i);
+              keepHeadingsThrough = group.last;
+            }
+          }
+          if (i <= keepHeadingsThrough &&
+              contentOffset(0) + block.height + after <=
+                  pageHeight + _epsilon) {
+            page.add(PageFragment.whole(block, y: contentOffset(0)));
+            yield null;
+            continue;
+          }
+        }
         // 防孤悬：标题与下一块首行同页；标题本身高过一页时退化为按行切
-        final keep = block.height + _firstLineOfNext(blocks, i, gap);
+        final keep = block.height + _firstLineOfNext(blocks, i);
         if (keep <= pageHeight) {
-          yield ensure(gap + keep, i);
-          page.add(PageFragment.whole(block, y: offsetIn(gap)));
+          yield ensure(gap + keep + after, i);
+          page.add(PageFragment.whole(block, y: contentOffset(0)));
           yield null;
           continue;
         }
@@ -366,9 +512,19 @@ class ChapterPaginator {
       // 文本块按行填充，可跨页
       var lineIndex = i == firstBlock ? firstLine : 0;
       while (lineIndex < block.lines.length) {
-        final offset = offsetIn(gap);
+        final offset = contentOffset(lineIndex);
         final available = pageHeight - offset;
         var picked = _linesThatFit(block, lineIndex, available);
+        if (forced != null) {
+          for (var k = 1; k < picked; k++) {
+            if (forced.contains(
+              block.lines[lineIndex + k].start - block.displayPrefixLength,
+            )) {
+              picked = k;
+              break;
+            }
+          }
+        }
         if (picked == 0) {
           if (page.isEmpty) {
             // 单行都比一页高（超小窗口）：强制放一行，保证一定推进
@@ -387,15 +543,19 @@ class ChapterPaginator {
         if (lineIndex + picked >= block.lines.length) {
           height += block.bodyBottom;
         }
-        page.add(
-          PageFragment(
-            block: block,
-            lineFrom: lineIndex,
-            lineTo: lineIndex + picked,
-            y: offset,
-            height: height,
-          ),
-        );
+        if (page.paint) {
+          page.add(
+            PageFragment(
+              block: block,
+              lineFrom: lineIndex,
+              lineTo: lineIndex + picked,
+              y: offset,
+              height: height,
+            ),
+          );
+        } else {
+          page.advance(offset + height);
+        }
         lineIndex += picked;
         // 续页片段不带段距：gap 只在块的第一片上生效
         if (lineIndex < block.lines.length) {
@@ -405,22 +565,75 @@ class ChapterPaginator {
       }
     }
 
-    if (page.isNotEmpty) yield flush();
+    placeTails();
+    if (page.isNotEmpty || (pageCount == 0 && pageImages.isNotEmpty)) {
+      yield flush();
+    } else if (pageCount == 0) {
+      // 普通正文、空盒或定位图片已能生成页面时，背景直接画在已有页面上。
+      final id = backgroundOnlyAnchor?.call();
+      if (id != null) {
+        if (onPageSealed != null) {
+          onPageSealed();
+          return;
+        }
+        final anchor = PageAnchor(blockId: id, utf16Offset: 0);
+        yield PageSlice(
+          index: 0,
+          fragments: const [],
+          usedHeight: pageHeight,
+          start: anchor,
+          end: anchor,
+        );
+      }
+    }
   }
 
   /// 第 [index] 块之前的段距；页首的块不加（页首本来就靠边）
   double _gapBetween(MeasuredBlockSource blocks, int index) {
-    if (index <= 0) return 0;
+    var previous = index - 1;
+    VerticalMargin? intervening;
+    while (previous >= 0) {
+      final block = blocks[previous];
+      if (block.collapsesThrough) {
+        final edges = block.leadingMargin.join(block.trailingMargin);
+        intervening = intervening?.join(edges) ?? edges;
+      } else if (!block.isPageImage && !block.positionedOverlay) {
+        break;
+      }
+      previous--;
+    }
+    final current = blocks[index];
+    if (previous < 0) {
+      return resolveBlockGap(
+        null,
+        current,
+        baseline: 0,
+        intervening: intervening,
+      );
+    }
     final custom = gapBefore;
-    if (custom == null) return _fallbackGap;
-    return custom(blocks[index - 1], blocks[index]);
+    final predecessor = blocks[previous];
+    if (measurer case final flow?) {
+      return flow.gapBefore(predecessor, current, intervening: intervening);
+    }
+    final baseline = custom?.call(predecessor, current) ?? _fallbackGap;
+    return intervening == null
+        ? baseline
+        : resolveBlockGap(
+            predecessor,
+            current,
+            baseline: baseline,
+            intervening: intervening,
+          );
   }
 
   /// 标题后的「下一块首行」高度（含段距），用于防孤悬判定。
-  double _firstLineOfNext(MeasuredBlockSource blocks, int index, double gap) {
-    if (!blocks.has(index + 1)) return 0;
-    final next = blocks[index + 1];
-    final nextGap = _gapBetween(blocks, index + 1);
+  double _firstLineOfNext(MeasuredBlockSource blocks, int index) {
+    final nextIndex = _nextFlowIndex(blocks, index);
+    if (!blocks.has(nextIndex)) return 0;
+    final next = blocks[nextIndex];
+    if (_breaksBefore(next)) return 0;
+    final nextGap = _gapBetween(blocks, nextIndex);
     if (next.lines.isNotEmpty) return nextGap + next.lines.first.height;
     // 图片不可拆，整块算上（图片块自己会做整组判定，这里只取一次高度）
     return nextGap + next.height;
@@ -433,9 +646,14 @@ class ChapterPaginator {
     if (from == 0) limit -= block.bodyTop;
     var used = 0.0;
     var count = 0;
+    final cloned = block.hasClonedBox;
     for (var i = from; i < block.lines.length; i++) {
       final next = used + block.lines[i].height;
-      if (next > limit + _epsilon) break;
+      final bottom = cloned
+          ? _cloneInsets(block, i, top: false) +
+                (i + 1 == block.lines.length ? block.bodyBottom : 0)
+          : 0.0;
+      if (next + bottom > limit + _epsilon) break;
       used = next;
       count++;
     }

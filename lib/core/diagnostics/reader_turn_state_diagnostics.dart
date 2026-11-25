@@ -2,6 +2,9 @@ import 'dart:async';
 import 'dart:collection';
 import 'dart:io';
 
+import 'package:flutter/gestures.dart';
+import 'package:flutter/services.dart';
+
 import '../../engine/layout/chapter_layout.dart' show LayoutCancelled;
 import 'app_errors.dart';
 
@@ -71,6 +74,10 @@ class ReaderTurnStateRecorder {
     'displayedPage',
     'pageMatches',
     'viewportMatches',
+    'width',
+    'height',
+    'pixelRatio',
+    'entries',
     'materialsReady',
     'dragAccepted',
     'pointerCancelled',
@@ -118,6 +125,16 @@ class ReaderTurnStateRecorder {
     'cancelReason',
     'x',
     'y',
+    'wheelId',
+    'signalUs',
+    'device',
+    'dx',
+    'dy',
+    'modifier',
+    'routeCurrent',
+    'exiting',
+    'anchorPresent',
+    'turning',
   };
   static Map<String, Object?> _safe(Map<String, Object?> values) => {
     for (final entry in values.entries)
@@ -167,7 +184,10 @@ class ReaderTurnStateRecorder {
   void record(String event, [Map<String, Object?> details = const {}]) {
     final snapshot =
         !incidentsOnly &&
-        (event.endsWith('pointer.down') ||
+        (event == 'wheel.reader' ||
+            event == 'wheel.finished' ||
+            event == 'wheel.rejected' ||
+            event.endsWith('pointer.down') ||
             event.contains('step.waiting:') ||
             event.contains('step.error:') ||
             event.startsWith('pageTurn.action') ||
@@ -175,7 +195,14 @@ class ReaderTurnStateRecorder {
             event.startsWith('display.') ||
             event.endsWith('.attach') ||
             event.endsWith('.detach'));
-    final entry = _entry(event, details, snapshot: snapshot);
+    final wheelId = readerTurnStateDiagnosticsEnabled
+        ? Zone.current[#readerWheel]
+        : null;
+    final entry = _entry(
+      event,
+      wheelId == null ? details : {...details, 'wheelId': wheelId},
+      snapshot: snapshot,
+    );
     if (incidentsOnly) {
       // 普通翻页只保留最近的步骤，不做快照，也不触发磁盘写入。
       if (_recent.length == 64) _recent.removeFirst();
@@ -246,6 +273,7 @@ class ReaderTurnStateRecorder {
     'kind': 'readerTurnState',
     'schema': 1,
     'session': session,
+    if (readerTurnStateDiagnosticsEnabled) 'pid': pid,
     'time': DateTime.now().toIso8601String(),
     'elapsedMs': _elapsedMs,
     'event': event,
@@ -392,12 +420,60 @@ class ReaderTurnStateRecorder {
 }
 
 abstract final class ReaderTurnStateDiagnostics {
+  static Future<void> startWindowsTrace() async {
+    if (!readerTurnStateDiagnosticsEnabled || !Platform.isWindows) return;
+    GestureBinding.instance.pointerRouter.addGlobalRoute(_globalWheel);
+    try {
+      final path = await AppErrors.store.windowsReaderTracePath();
+      await const MethodChannel('gtreader/windows_reader_trace')
+          .invokeMethod<void>('start', path);
+    } on Exception catch (error, stack) {
+      AppErrors.report(
+        error,
+        stack,
+        operation: '启动 Windows 窗口诊断失败',
+        notify: false,
+      );
+    }
+  }
+
+  static void _globalWheel(PointerEvent event) {
+    if (event is PointerScrollEvent) wheelSignal('flutter', event);
+  }
+
+  // 命中测试会产生同一信号的坐标变换副本。用原始事件把正文、解析器和落页串起来。
+  static int wheelId(PointerEvent e) => identityHashCode(e.original ?? e);
+
+  static void wheelSignal(
+    String stage,
+    PointerScrollEvent event, [
+    Map<String, Object?> details = const {},
+  ]) {
+    record('wheel.$stage', {
+      ...details,
+      'wheelId': wheelId(event),
+      'signalUs': event.timeStamp.inMicroseconds,
+      'pointerKind': event.kind.name,
+      'device': event.device,
+      'x': event.position.dx,
+      'y': event.position.dy,
+      'dx': event.scrollDelta.dx,
+      'dy': event.scrollDelta.dy,
+    });
+  }
+
+  static bool get tracingWheel =>
+      readerTurnStateDiagnosticsEnabled && Zone.current[#readerWheel] != null;
+
   static bool get enabled =>
       readerTurnStateDiagnosticsEnabled || Platform.isAndroid;
   static ReaderTurnStateRecorder? _recorder;
   static ReaderTurnStateRecorder get _log =>
       _recorder ??= ReaderTurnStateRecorder(
-        append: (records) => AppErrors.store.appendReaderTurnState(records),
+        append: (records) => AppErrors.store.appendReaderTurnState(
+          records,
+          includeWheel: readerTurnStateDiagnosticsEnabled,
+        ),
         incidentsOnly: !readerTurnStateDiagnosticsEnabled,
       );
   static void attach(

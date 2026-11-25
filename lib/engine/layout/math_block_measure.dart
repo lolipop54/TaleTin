@@ -99,7 +99,9 @@ extension MathBlockMeasurement on BlockMeasurer {
     }
     final result = <_InlineSpec>[];
     for (final e in source.elements.where(
-      (e) => tree.formulas.containsKey(e.id),
+      (e) =>
+          tree.formulas.containsKey(e.id) &&
+          !tree.hiddenElements.contains(e.id),
     )) {
       final ranges = e.ranges.where((r) => r.block == index).toList();
       if (ranges.isEmpty) continue;

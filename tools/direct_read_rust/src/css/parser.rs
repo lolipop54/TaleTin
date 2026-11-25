@@ -1,4 +1,4 @@
-// Copyright (c) 2026 GT Reader contributors. MIT license, see LICENSE.
+// Copyright (c) 2026 GT Reader contributors. GPL-3.0-only, see LICENSE.
 //! 统一的 CSS 语法入口：一份样式表（外部文件、章节 `<style>` 或行内 `style`）
 //! 都用同一个 tokenizer 和声明解析器，不再在 Dart、Rust 各写一遍 `split(';')`。
 //!
@@ -6,6 +6,7 @@
 //! `@media`／`@supports` 保留条件块，由实际纸面环境求值后递归收集命中的规则。
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use cssparser::{
     AtRuleParser, CowRcStr, DeclarationParser, ParseError, Parser, ParserState,
@@ -25,7 +26,7 @@ pub struct StyleSource {
     pub inline: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Declaration {
     pub name: String,
     pub value: String,
@@ -40,6 +41,7 @@ pub struct Rule {
     pub order: u32,
     /// 规则来自第几个来源，诊断和缓存身份使用。
     pub source: usize,
+    pub path: Arc<str>,
 }
 
 #[derive(Debug, Default)]
@@ -107,7 +109,7 @@ impl<'a> SheetContext<'a> {
         let mut input = Parser::new(text);
         let mut rule_parser = SheetRuleParser {
             index,
-            path: path.to_owned(),
+            path: Arc::from(path),
         };
         let source_path = path.to_owned();
         for item in StyleSheetParser::new(&mut input, &mut rule_parser) {
@@ -183,7 +185,10 @@ impl<'a> SheetContext<'a> {
                 return;
             }
         }
-        let path = resolve_path(from, &target);
+        let Some(path) = super::resources::local_entry(&target, from) else {
+            self.sheet.skipped_rules += 1;
+            return;
+        };
         let Some(text) = self.files.get(&path) else {
             self.sheet.skipped_rules += 1;
             return;
@@ -201,7 +206,7 @@ impl<'a> SheetContext<'a> {
     }
 }
 
-enum SheetItem {
+pub(super) enum SheetItem {
     Layer(String, Option<String>),
     Rule(Rule),
     Import(String),
@@ -210,9 +215,9 @@ enum SheetItem {
     Conditional(String, String, String),
 }
 
-struct SheetRuleParser {
-    index: usize,
-    path: String,
+pub(super) struct SheetRuleParser {
+    pub(super) index: usize,
+    pub(super) path: Arc<str>,
 }
 
 impl<'i> AtRuleParser<'i> for SheetRuleParser {
@@ -327,6 +332,7 @@ impl<'i> QualifiedRuleParser<'i> for SheetRuleParser {
                 .collect(),
             order: 0,
             source: self.index,
+            path: Arc::clone(&self.path),
         }))
     }
 }
@@ -471,31 +477,12 @@ fn consume_remaining(
     Ok(())
 }
 
-fn import_target(prelude: &str) -> Option<(String, String)> {
+pub(super) fn import_target(prelude: &str) -> Option<(String, String)> {
     let mut input = Parser::new(prelude);
     let target = input.expect_url_or_string().ok()?.to_string();
     let start = input.position();
     consume_remaining(&mut input).ok()?;
     Some((target, input.slice_from(start).trim().to_owned()))
-}
-
-/// 相对当前条目解析路径，处理 `./`／`../`，不访问文件系统。
-pub fn resolve_path(from: &str, target: &str) -> String {
-    if target.starts_with('/') {
-        return target.trim_start_matches('/').to_owned();
-    }
-    let mut parts: Vec<&str> = from.split('/').collect();
-    parts.pop();
-    for part in target.split('/') {
-        match part {
-            "" | "." => {}
-            ".." => {
-                parts.pop();
-            }
-            value => parts.push(value),
-        }
-    }
-    parts.join("/")
 }
 
 #[cfg(test)]

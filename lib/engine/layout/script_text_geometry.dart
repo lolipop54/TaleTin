@@ -10,6 +10,7 @@ extension ScriptTextGeometry on MeasuredBlock {
     required Offset origin,
     required TextScaler scaler,
     Color? color,
+    Color Function(Color)? adaptColor,
     required void Function(TextPainter, Offset, int, int) visit,
   }) {
     var cursor = 0;
@@ -19,10 +20,13 @@ extension ScriptTextGeometry on MeasuredBlock {
       if (!run.isScript) continue;
       final from = math.max(start, runStart), to = math.min(end, cursor);
       if (from >= to) continue;
+      final ink = runStyles[i].color ?? color;
       final painter = TextPainter(
         text: TextSpan(
           text: run.text.substring(from - runStart, to - runStart),
-          style: runStyles[i].copyWith(color: color),
+          style: runStyles[i].copyWith(
+            color: ink == null ? null : adaptColor?.call(ink) ?? ink,
+          ),
         ),
         textDirection: TextDirection.ltr,
         textScaler: scaler,
@@ -48,6 +52,7 @@ extension ScriptTextGeometry on MeasuredBlock {
     required TextPainter linePainter,
     required Offset origin,
     required Color color,
+    Color Function(Color)? adaptColor,
     required TextScaler textScaler,
   }) {
     if (!hasScript) return;
@@ -58,6 +63,7 @@ extension ScriptTextGeometry on MeasuredBlock {
       origin: origin,
       scaler: textScaler,
       color: color,
+      adaptColor: adaptColor,
       visit: (p, at, _, _) => p.paint(canvas, at),
     );
   }
@@ -69,6 +75,7 @@ extension ScriptTextGeometry on MeasuredBlock {
     required TextPainter segmentPainter,
     required Offset origin,
     required Color color,
+    Color Function(Color)? adaptColor,
     required TextScaler textScaler,
   }) {
     if (!hasScript) return;
@@ -79,6 +86,7 @@ extension ScriptTextGeometry on MeasuredBlock {
       origin: origin,
       scaler: textScaler,
       color: color,
+      adaptColor: adaptColor,
       visit: (p, at, _, _) => p.paint(canvas, at),
     );
   }

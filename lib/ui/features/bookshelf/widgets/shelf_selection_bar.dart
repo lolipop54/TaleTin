@@ -106,6 +106,7 @@ class _ShelfSelectionBarState extends ConsumerState<ShelfSelectionBar> {
         child: GtButton.raw(
           key: ValueKey(key),
           tooltip: label,
+          showTooltipOnWindows: false,
           borderRadius: BorderRadius.zero,
           onPressed: press,
           child: Padding(
@@ -255,7 +256,7 @@ class _ShelfSelectionBarState extends ConsumerState<ShelfSelectionBar> {
       builder: (dialogContext) => AlertDialog(
         title: Text('删除 ${selected.length} 本书籍？'),
         content: Text(
-          '会清理正文、封面、阅读进度、笔记、单书设置和统计，不能恢复；不删除手机目录中的原文件，'
+          '会清理正文、封面、阅读进度、笔记、单书设置和统计，不能恢复；不删除目录中的原文件，'
           '共约 ${formatBytes(size)}，删除后书架不再显示。',
           style: GtText.body(context.gtColors.textSecondary)
               .copyWith(fontSize: 14, height: 1.6),

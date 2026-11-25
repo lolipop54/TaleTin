@@ -11,6 +11,7 @@ extension _ReaderPageContent on _PageAreaState {
     final resolve = ref.read(chapterContentRepositoryProvider);
     final bookId = widget.bookId;
     final version = session.book.contentVersion;
+    final pullingBookmark = BookmarkPullScope.activeOf(context);
 
     // 书页包括顶部信息、正文及底部状态，静态页与翻页共用完整画布。
     // 正文仍按扣除信息区后的尺寸排版，选区坐标也使用相同原点。
@@ -120,9 +121,8 @@ extension _ReaderPageContent on _PageAreaState {
           : null,
       onReady: source.samePageAs(layout, index, session.pageIndex)
           ? () {
+              _pagePrepared(source, index);
               if (!ReaderDeliveryExperiments.incremental) {
-                _preparedLayout = source;
-                _preparedPage = index;
                 return;
               }
               final reader = ref.read(readerSessionProvider(bookId).notifier);
@@ -135,6 +135,7 @@ extension _ReaderPageContent on _PageAreaState {
             }
           : null,
       textCache: _textCache,
+      paperSize: MediaQuery.sizeOf(context),
       information: readerInformation(
         context,
         ref,
@@ -143,16 +144,18 @@ extension _ReaderPageContent on _PageAreaState {
         widget.settings.theme,
         session.chapters.indexWhere((c) => c.id == source.chapterId),
         source.progressOfPage(index),
+        simplifiedPage: true,
         bookmarked:
-            ref
-                .watch(bookmarksProvider(bookId))
-                .value
-                ?.any(
-                  (mark) =>
-                      mark.locator.chapterId == source.chapterId &&
-                      source.pageIndexOf(mark.locator) == index,
-                ) ??
-            false,
+            !pullingBookmark &&
+            (ref
+                    .watch(bookmarksProvider(bookId))
+                    .value
+                    ?.any(
+                      (mark) =>
+                          mark.locator.chapterId == source.chapterId &&
+                          source.pageIndexOf(mark.locator) == index,
+                    ) ??
+                false),
         showReturnProgress:
             source.chapterId == session.chapter.id &&
             index == session.pageIndex,
@@ -214,7 +217,17 @@ extension _ReaderPageContent on _PageAreaState {
           }
         });
 
+    final currentCanvas = content(layout, session.pageIndex);
+    Offset originFor(Size size) => Offset(
+      (size.width - layout.contentSize.width) / 2,
+      (size.height -
+              layout.contentSize.height +
+              (currentCanvas.information?.top ?? 0) -
+              (currentCanvas.information?.bottom ?? 0)) /
+          2,
+    );
     final manual = PageTurnArea(
+      deferBookFontRefresh: true,
       key: _inputKey,
       inputRevision: settings,
       effect: settings.pageTurnEffect,
@@ -233,16 +246,8 @@ extension _ReaderPageContent on _PageAreaState {
         }
         await auto.discard();
         if (!mounted) return true;
-        final canvas = content(layout, session.pageIndex);
-        final size = context.size!;
-        final origin = Offset(
-          (size.width - layout.contentSize.width) / 2,
-          (size.height -
-                  layout.contentSize.height +
-                  (canvas.information?.top ?? 0) -
-                  (canvas.information?.bottom ?? 0)) /
-              2,
-        );
+        final canvas = currentCanvas;
+        final origin = originFor(context.size!);
         final localPoint = point - origin;
         for (final marker in canvas.thoughtMarkers) {
           if (!marker.rect.inflate(8).contains(localPoint)) continue;
@@ -279,37 +284,36 @@ extension _ReaderPageContent on _PageAreaState {
         }
         // 脚注标记：先弹脚注内容，不直接跳页；气泡右下角再提供“跳转”。
         // 按矩形命中（脚注标记很小，按字符反查容易点偏）。
-        final link = readerLinkNearPoint(layout, session.pageIndex, localPoint);
-        if (link != null) {
-          {
-            if (!mounted) return true;
-            final box = context.findRenderObject()! as RenderBox;
-            final shown = await openReaderLink(
-              context,
-              ref: ref,
-              bookId: bookId,
-              chapters: session.chapters,
-              link: link.link,
-              footnote: link.footnote,
-              anchor: box.localToGlobal(point),
-              theme: widget.settings.theme,
-            );
-            if (!shown && mounted) {
-              ref
-                  .read(readerProvider.notifier)
-                  .showNotice(link.footnote ? '没有找到脚注内容' : '书内链接读取失败，请重试');
-            }
-            return true;
+        final link = readerPageHit(layout, session.pageIndex, localPoint);
+        if (link != null && !link.image) {
+          if (!mounted) return true;
+          final box = context.findRenderObject()! as RenderBox;
+          final shown = await openReaderLink(
+            context,
+            ref: ref,
+            bookId: bookId,
+            chapters: session.chapters,
+            link: link.link!,
+            footnote: link.footnote,
+            anchor: box.localToGlobal(origin + link.anchor),
+            theme: widget.settings.theme,
+          );
+          if (!shown && mounted) {
+            ref
+                .read(readerProvider.notifier)
+                .showNotice(link.footnote ? '没有找到脚注内容' : '书内链接读取失败，请重试');
           }
+          return true;
         }
         // 关闭大图时，保留上面的链接等操作，其余按普通书页点击处理。
+        final imagePoint = link?.image == true ? link!.anchor : localPoint;
         final viewImages =
             ref.read(readingControlsProvider).value?.imageViewing != false;
         // 行内图片（生僻字）只做单张大图预览，不进入连续图片窗口：
         // 它混在正文里，前后通常都是文字，不是漫画分页序列。
         for (final fragment in layout.page(session.pageIndex)!.fragments) {
           if (!mounted) return true;
-          final image = fragment.inlineImageAt(localPoint);
+          final image = fragment.inlineImageAt(imagePoint);
           if (image == null) continue;
           if (await openReaderImageNote(
             context,
@@ -317,7 +321,8 @@ extension _ReaderPageContent on _PageAreaState {
             bookId: bookId,
             chapters: session.chapters,
             link: image.noteLink,
-            point: point,
+            noteText: image.noteText,
+            point: origin + imagePoint,
             theme: widget.settings.theme,
           )) {
             return true;
@@ -337,18 +342,24 @@ extension _ReaderPageContent on _PageAreaState {
           }
           return true;
         }
-        for (final fragment in layout.page(session.pageIndex)!.fragments) {
+        for (final fragment
+            in layout
+                .page(session.pageIndex)!
+                .paintedImages
+                .toList()
+                .reversed) {
           if (!mounted) return true;
           final path = fragment.block.resourcePath;
           final rect = fragment.imageRectIn(layout.contentSize.width);
-          if (rect != null && path != null && rect.contains(localPoint)) {
+          if (rect != null && path != null && rect.contains(imagePoint)) {
             if (await openReaderImageNote(
               context,
               ref: ref,
               bookId: bookId,
               chapters: session.chapters,
               link: fragment.block.noteLink,
-              point: point,
+              noteText: fragment.block.noteText,
+              point: origin + imagePoint,
               theme: widget.settings.theme,
             )) {
               return true;
@@ -385,22 +396,40 @@ extension _ReaderPageContent on _PageAreaState {
         }
         return page(target.layout, target.pageIndex);
       },
-      prepareFold: (direction) async {
+      prepareFold: (direction) {
         final forward = direction == PageTurnDirection.forward;
-        try {
-          final target = await adjacent(forward);
-          if (!mounted || target == null) return null;
-          return await FoldFrames.load(
-            content(layout, session.pageIndex),
+        final target = forward ? peekNext : peekPrevious;
+        if (settings.pageTurnEffect == PageTurnEffect.curl && target != null) {
+          final configuration = createLocalImageConfiguration(context);
+          final to = _pageMaterials.find(
             content(target.layout, target.pageIndex),
-            createLocalImageConfiguration(context),
-            rasterCache: _rasterCache,
-            materialCache: _pageMaterials,
+            configuration,
           );
-        } finally {
-          // 只合并本轮解析与动画；取消或图片失败后的新手势必须可以重新补图。
-          adjacentTasks.remove(forward);
+          if (to != null) {
+            final from = _pageMaterials.find(currentCanvas, configuration);
+            if (from != null) {
+              adjacentTasks.remove(forward);
+              from.prepareText();
+              to.prepareText();
+              return FoldFrames(from, to, _rasterCache);
+            }
+            to.dispose();
+          }
         }
+        return adjacent(forward)
+            .then<FoldFrames?>((target) {
+              if (!mounted || target == null) return null;
+              return FoldFrames.load(
+                content(layout, session.pageIndex),
+                content(target.layout, target.pageIndex),
+                createLocalImageConfiguration(context),
+                rasterCache: _rasterCache,
+                materialCache: _pageMaterials,
+              );
+            })
+            .whenComplete(() {
+              adjacentTasks.remove(forward);
+            });
       },
       // 翻页动画期间暂停菜单与手柄触摸，手柄外观已在书页画布中。
       traceLabel: 'simplified',
@@ -414,7 +443,7 @@ extension _ReaderPageContent on _PageAreaState {
         _setPageTurning(false);
       },
       turnId: '${layout.chapterId}#${session.pageIndex}',
-      currentPage: page(layout, session.pageIndex),
+      currentPage: currentCanvas,
       nextPage: peekNext == null
           ? null
           : page(peekNext.layout, peekNext.pageIndex),
@@ -430,6 +459,12 @@ extension _ReaderPageContent on _PageAreaState {
         }
         ref.read(automaticReadingProvider(bookId).notifier).centerTap();
       },
+      onPreparedTurn: (from, to) => ref
+          .read(readerSessionProvider(bookId).notifier)
+          .commitManualPage(
+            (layout: from.page.layout, pageIndex: from.page.pageIndex),
+            (layout: to.page.layout, pageIndex: to.page.pageIndex),
+          ),
       onTurn: (direction) async {
         final notifier = ref.read(readerSessionProvider(bookId).notifier);
         final result = direction == PageTurnDirection.forward
@@ -476,6 +511,8 @@ extension _ReaderPageContent on _PageAreaState {
                     .requireValue
                     .settings,
                 contentSize: layout.contentSize,
+                paperInset: layout.options.paperInset,
+                paperBottomInset: layout.options.paperBottomInset,
                 textScaler: layout.options.textScaler,
                 // 与当前排版用同一个「是否补章题」开关，签名才有可比性。
                 insertChapterTitle: layout.options.insertChapterTitle,
@@ -484,7 +521,34 @@ extension _ReaderPageContent on _PageAreaState {
       bounds: Offset.zero & size,
       paper: widget.settings.theme.background,
       line: widget.settings.theme.secondary,
-      child: manual,
+      child: ReaderLinkPress(
+        bookId: bookId,
+        hit: (point) =>
+            _pageTurning || selection != null || widget.state.controlsVisible
+            ? null
+            : readerLinkNearPoint(
+                layout,
+                session.pageIndex,
+                point - originFor(pageSize),
+              )?.link,
+        child: readerUsesDesktopPanels
+            ? ReaderLinkCursor(
+                isLink: (point) {
+                  if (_pageTurning ||
+                      selection != null ||
+                      widget.state.controlsVisible) {
+                    return false;
+                  }
+                  final local = point - originFor(pageSize);
+                  return currentCanvas.thoughtMarkers.any(
+                        (marker) => marker.rect.inflate(8).contains(local),
+                      ) ||
+                      readerPageLinkAt(layout, session.pageIndex, local);
+                },
+                child: manual,
+              )
+            : manual,
+      ),
       prepare: (_) async {
         final notifier = ref.read(readerSessionProvider(bookId).notifier);
         final target = await notifier.prepareAdjacent(true);
@@ -518,6 +582,7 @@ extension _ReaderPageContent on _PageAreaState {
                   nextPage: target.pageIndex,
                   content: targetContent!,
                 ),
+          footerTarget: target,
           targetPage: target == null
               ? null
               : (target.layout.chapterId, target.pageIndex),

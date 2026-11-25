@@ -1,10 +1,10 @@
 import 'dart:async';
+import 'dart:ui' as ui;
 
 import 'turn_trace.dart';
+import '../../../../core/diagnostics/app_errors.dart';
 import '../../../../core/diagnostics/reader_turn_state_diagnostics.dart';
 import '../../../../engine/layout/layout_work_gate.dart';
-
-import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -55,12 +55,16 @@ class ReaderDisplayTransition extends StatefulWidget {
     this.loadingRevision,
     this.reflow,
     this.viewport,
+    this.spread,
     this.appearance,
     this.onReadable,
     this.onPresented,
     this.onWorkChanged,
   });
   final Object display;
+
+  /// 简化分页的单页／双页切换在新布局上屏后直接交接。
+  final bool? spread;
 
   /// 字体、字号和间距重排仍只保留旧页，不增加淡化。
   final Object? reflow;
@@ -120,9 +124,8 @@ class _ReaderDisplayTransitionState extends State<ReaderDisplayTransition>
     _opacity.stop();
     _opacity.value = 1;
     try {
-      await _capture(widget.captureNative);
+      await _capture(widget.captureNative, forJump: true);
     } catch (_) {
-      widget.onWorkChanged?.call(false);
       _finished?.complete();
       _finished = null;
       rethrow;
@@ -183,6 +186,9 @@ class _ReaderDisplayTransitionState extends State<ReaderDisplayTransition>
       traceTurn('load display-change ${widget.display}');
       _smooth = true;
       unawaited(_capture(old.captureNative));
+    } else if (old.spread != widget.spread) {
+      _smooth = false;
+      unawaited(_capture(old.captureNative));
     } else if (old.reflow != widget.reflow || old.viewport != widget.viewport) {
       unawaited(_capture(old.captureNative));
     } else if (!_capturing) {
@@ -191,7 +197,10 @@ class _ReaderDisplayTransitionState extends State<ReaderDisplayTransition>
     _scheduleReady();
   }
 
-  Future<void> _capture(Future<NativeReadingFrame?> Function() native) async {
+  Future<void> _capture(
+    Future<NativeReadingFrame?> Function() native, {
+    bool forJump = false,
+  }) async {
     LayoutWorkGate.hold(_layoutWorkOwner);
     widget.onWorkChanged?.call(true);
     // 连续调整时继续保留最初的确认画面，不再截取尚未准备好的中间正文。
@@ -213,6 +222,45 @@ class _ReaderDisplayTransitionState extends State<ReaderDisplayTransition>
     }
     final version = _version;
     _capturing = true;
+    final ui.Image image;
+    try {
+      image = await _captureImage(native);
+    } catch (error, stack) {
+      if (!mounted || version != _version) return;
+      setState(() {
+        _capturing = false;
+        // 跨屏或改变窗口大小时，旧正文可能还无法截图。此时让新正文继续
+        // 准备，沿用加载层保护交接，避免始终停留在旧尺寸并拦住操作。
+        _loading = !forJump && widget.loadingBackground != null;
+        _smooth = false;
+        _showLatest();
+      });
+      if (_loading) {
+        _scheduleReady();
+      } else {
+        LayoutWorkGate.release(_layoutWorkOwner);
+        widget.onWorkChanged?.call(false);
+      }
+      if (forJump) rethrow;
+      AppErrors.report(error, stack, operation: '截取阅读切换画面失败', notify: false);
+      return;
+    }
+    if (!mounted || version != _version) {
+      image.dispose();
+      return;
+    }
+    setState(() {
+      _cover?.dispose();
+      _cover = image;
+      _capturing = false;
+      _showLatest();
+    });
+    _scheduleReady();
+  }
+
+  Future<ui.Image> _captureImage(
+    Future<NativeReadingFrame?> Function() native,
+  ) async {
     final boundary =
         _boundary.currentContext!.findRenderObject() as RenderRepaintBoundary;
     final size = boundary.size;
@@ -227,13 +275,10 @@ class _ReaderDisplayTransitionState extends State<ReaderDisplayTransition>
       frame = await traceTurnStep('load capture-native', native);
     } catch (_) {
       base.dispose();
-      _capturing = false;
-      widget.onWorkChanged?.call(false);
-      if (mounted) setState(_showLatest);
       rethrow;
     }
-    ui.Image image = base;
-    if (frame != null) {
+    if (frame == null) return base;
+    try {
       final recorder = ui.PictureRecorder();
       // 单独录制整页，原生正文按原位置覆盖进去。
       final pageCanvas = Canvas(recorder)..scale(ratio);
@@ -251,25 +296,18 @@ class _ReaderDisplayTransitionState extends State<ReaderDisplayTransition>
         Paint(),
       );
       final picture = recorder.endRecording();
-      image = await picture.toImage(
-        (size.width * ratio).ceil(),
-        (size.height * ratio).ceil(),
-      );
-      picture.dispose();
+      try {
+        return await picture.toImage(
+          (size.width * ratio).ceil(),
+          (size.height * ratio).ceil(),
+        );
+      } finally {
+        picture.dispose();
+      }
+    } finally {
       frame.image.dispose();
       base.dispose();
     }
-    if (!mounted || version != _version) {
-      image.dispose();
-      return;
-    }
-    setState(() {
-      _cover?.dispose();
-      _cover = image;
-      _capturing = false;
-      _showLatest();
-    });
-    _scheduleReady();
   }
 
   void _scheduleReady() {

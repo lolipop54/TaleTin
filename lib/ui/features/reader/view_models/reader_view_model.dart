@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../app/di/sample_data.dart';
@@ -182,13 +183,14 @@ class ReaderViewModel extends Notifier<ReaderState> {
   void closePanel({bool collapseControls = false}) {
     final hideControls =
         collapseControls ||
-        switch (state.panel) {
-          ReaderPanel.brightness ||
-          ReaderPanel.tts ||
-          ReaderPanel.auto ||
-          ReaderPanel.typography => true,
-          _ => false,
-        };
+        (defaultTargetPlatform != TargetPlatform.windows &&
+            switch (state.panel) {
+              ReaderPanel.brightness ||
+              ReaderPanel.tts ||
+              ReaderPanel.auto ||
+              ReaderPanel.typography => true,
+              _ => false,
+            });
     state = state.copyWith(
       panel: ReaderPanel.none,
       panelCovered: false,

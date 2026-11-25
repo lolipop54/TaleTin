@@ -27,8 +27,6 @@ class ResolvedBlockStyle {
     this.rawBox,
     this.rawTextShadow,
     this.rawMargin,
-    this.rawImageWidth,
-    this.rawImageMaxWidth,
     this.rawLine,
     this.nest = 0,
   });
@@ -68,8 +66,6 @@ class ResolvedBlockStyle {
     rawBox: LegacyStyleAdapter.boxOf(style.box),
     rawTextShadow: LegacyStyleAdapter.shadowOf(style.text.shadow),
     rawMargin: LegacyStyleAdapter.marginOf(style.block.margin),
-    rawImageWidth: LegacyStyleAdapter.imageLengthOf(style.size.width),
-    rawImageMaxWidth: LegacyStyleAdapter.imageLengthOf(style.size.maxWidth),
     rawLine: block.line,
     nest: nestOverride ?? block.nest,
   );
@@ -107,10 +103,6 @@ class ResolvedBlockStyle {
 
   /// 四边外边距 `[上, 右, 下, 左]`（百分之一 em）。
   final List<int>? rawMargin;
-
-  /// 图片显式宽度／最大宽度 `[数值, 单位]`（单位 1 百分比、2 em、3 px）。
-  final List<int>? rawImageWidth;
-  final List<int>? rawImageMaxWidth;
 
   /// 分隔线线型 `[宽度(百分之一 em), 样式, 颜色]`（结构字段，仍在块上）。
   final List<int>? rawLine;

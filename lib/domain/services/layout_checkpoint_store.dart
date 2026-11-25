@@ -28,6 +28,14 @@ abstract interface class LayoutCheckpointStore {
     Map<String, Object?> checkpoint,
   );
 
+  Future<String?> spreadIdentity(
+    String source,
+    String layout,
+    String? fontFamily,
+  );
+  Future<Map<int, int>> readSpreadRuns(String bookId, String key);
+  Future<void> writeSpreadRuns(String bookId, String key, Map<int, int> runs);
+
   /// 调用方先作废生产者；等待已接受写入收尾后再删除可重建文件。
   Future<void> clear([String? bookId]);
 }

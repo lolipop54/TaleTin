@@ -35,51 +35,61 @@ class ReaderFontControls extends StatelessWidget {
       supportsOriginalFont: supportsOriginalFont,
     );
     final name = choices[selected] ?? selected;
-    final fill = Color.lerp(ReaderSheet.backgroundOf(context), colors.textPrimary, .07)!;
+    final fill = Color.lerp(
+      ReaderSheet.backgroundOf(context),
+      colors.textPrimary,
+      .07,
+    )!;
     final scaler = MediaQuery.textScalerOf(context);
     // 大字号下保留完整A按钮和数值；只有字体名称允许省略。
     final stepWidth = (scaler.scale(12) * 2 + 12).clamp(52.0, 100.0);
     final numberWidth = (scaler.scale(14) * 2 + 4).clamp(32.0, 80.0);
-    Widget button(String text, VoidCallback? action, {bool font = false}) =>
-        GtButton.raw(
-          tooltip: font
-              ? name
-              : text == 'A−'
-              ? '减小字号'
-              : '增大字号',
-          borderRadius: BorderRadius.circular(24),
-          onPressed: action,
+    Widget button(String text, VoidCallback? action, {bool font = false}) {
+      final description = font ? name : (text == 'A−' ? '减小字号' : '增大字号');
+      return GtButton.raw(
+        showTooltipOnWindows: false,
+        tooltip: description,
+        borderRadius: BorderRadius.circular(24),
+        onPressed: action,
+        child: Container(
+          alignment: Alignment.center,
+          constraints: const BoxConstraints(minHeight: 48),
+          padding: EdgeInsets.symmetric(horizontal: font ? 12 : 4),
           child: Container(
+            width: double.infinity,
             alignment: Alignment.center,
-            constraints: const BoxConstraints(minHeight: 48),
-            padding: EdgeInsets.symmetric(horizontal: font ? 12 : 4),
-            child: Container(
-              width: double.infinity,
-              alignment: Alignment.center,
-              padding: EdgeInsets.symmetric(
-                horizontal: font ? 8 : 2,
-                vertical: 6,
-              ),
-              decoration: BoxDecoration(
-                color: fill,
-                borderRadius: BorderRadius.circular(24),
-              ),
-              child: Text(
-                text,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: 12,
-                  color: action == null ? colors.textMuted : colors.textPrimary,
-                ),
+            padding: EdgeInsets.symmetric(
+              horizontal: font ? 8 : 2,
+              vertical: 6,
+            ),
+            decoration: BoxDecoration(
+              color: fill,
+              borderRadius: BorderRadius.circular(24),
+            ),
+            child: Text(
+              text,
+              semanticsLabel: font ? null : description,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 12,
+                color: action == null ? colors.textMuted : colors.textPrimary,
               ),
             ),
           ),
-        );
+        ),
+      );
+    }
+
     return Row(
       children: [
-        Padding(padding: const EdgeInsets.only(right: 8),
-          child: Text('字号', style: TextStyle(fontSize: 14, color: colors.textPrimary))),
+        Padding(
+          padding: const EdgeInsets.only(right: 8),
+          child: Text(
+            '字号',
+            style: TextStyle(fontSize: 14, color: colors.textPrimary),
+          ),
+        ),
         SizedBox(
           width: stepWidth,
           child: button(

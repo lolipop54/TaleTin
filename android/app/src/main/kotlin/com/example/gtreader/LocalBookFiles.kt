@@ -63,6 +63,8 @@ class LocalBookFiles(private val activity: Activity, engine: FlutterEngine) {
                                     check(file.delete()) { "删除失败，文件可能已移动或没有写入权限" }
                                     true
                                 }
+                                "scanDirectories" -> scanDirectories(call.argument<List<String>>("paths")!!,
+                                    call.argument<List<String>>("extensions")!!.toSet())
                                 "inspect" -> inspect(call.argument<List<String>>("paths")!!)
                                 "indexStamp" -> indexStamp(call.argument<List<String>>("extensions")!!)
                                 else -> error("未知文件操作")
@@ -141,15 +143,16 @@ class LocalBookFiles(private val activity: Activity, engine: FlutterEngine) {
     }
 
     private fun entry(file: File, counts: Boolean,
-        extensions: Set<String> = setOf("txt", "epub", "mobi", "azw3", "pdf")): Map<String, Any> {
+        extensions: Set<String> = setOf("txt", "epub", "mobi", "azw3", "pdf"),
+        info: StructStat? = try { Os.stat(file.path) } catch (_: ErrnoException) { null },
+        sortDirectory: Boolean = true): Map<String, Any> {
         // One stat reads type, bytes and timestamp together. Keep millisecond API units.
         // A file may disappear between enumeration and metadata lookup, just as with File APIs.
-        val info = try { Os.stat(file.absolutePath) } catch (_: ErrnoException) { null }
         val directory = info?.let { OsConstants.S_ISDIR(it.st_mode) } ?: file.isDirectory
         val modified = if (info == null) 0L else if (Build.VERSION.SDK_INT >= 27)
             info.st_mtim.tv_sec * 1000 + info.st_mtim.tv_nsec / 1_000_000
             else file.lastModified() // Older Android must retain millisecond precision too.
-        val sortName = if (Build.VERSION.SDK_INT >= 29)
+        val sortName = if (Build.VERSION.SDK_INT >= 29 && (!directory || sortDirectory))
             transliterator?.transliterate(file.name) ?: file.name else file.name
         return mapOf("path" to file.absolutePath, "name" to file.name,
             "directory" to directory, "size" to (info?.st_size ?: 0L),
@@ -158,6 +161,30 @@ class LocalBookFiles(private val activity: Activity, engine: FlutterEngine) {
             "count" to if (counts && directory)
                 (file.listFiles()?.count { supported(it, extensions) &&
                     (extensions.none { ext -> ext in setOf("ttf", "otf", "ttc") } || it.isFile) } ?: -1) else -1)
+    }
+
+    /** 智能导入不显示目录名；用同一次 lstat 判断类型、排除符号链接并取得文件属性。 */
+    private fun scanDirectories(paths: List<String>, extensions: Set<String>): Map<String, Any> {
+        val entries = mutableListOf<Map<String, Any>>()
+        val unavailable = mutableListOf<String>()
+        for (path in paths) {
+            val children = try {
+                val parent = checkedFile(path)
+                // 两批之间目录可能被换成链接；不能改扫链接指向的另一个目录。
+                if (parent.path == path) parent.listFiles() else null
+            } catch (_: Exception) { null }
+            if (children == null) { unavailable.add(path); continue }
+            for (file in children) {
+                val info = try { Os.lstat(file.path) } catch (_: ErrnoException) { continue }
+                if (OsConstants.S_ISDIR(info.st_mode)) {
+                    if (privateDirectory(file)) continue
+                } else if (!OsConstants.S_ISREG(info.st_mode) || file.extension.lowercase() !in extensions) {
+                    continue
+                }
+                entries.add(entry(file, false, extensions, info, sortDirectory = false))
+            }
+        }
+        return mapOf("entries" to entries, "unavailable" to unavailable)
     }
 
     /** 只核验指定路径，不遍历目录。缺失与暂时不可读分开，避免拔卡/权限变化清空缓存。 */

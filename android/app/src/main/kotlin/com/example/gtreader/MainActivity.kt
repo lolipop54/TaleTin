@@ -134,6 +134,7 @@ class MainActivity : AudioServiceActivity(), DocumentPicker {
         ErrorDiagnostics.register(applicationContext, flutterEngine)
         ReaderTurnLog.register(this, flutterEngine)
         ReadingFonts.register(applicationContext, flutterEngine)
+        BookPageService.register(applicationContext, flutterEngine)
         InstalledAppStorage.register(applicationContext, flutterEngine)
         registerOfflineDictionary(applicationContext, flutterEngine)
         TtsSettingsLauncher.register(this, flutterEngine)

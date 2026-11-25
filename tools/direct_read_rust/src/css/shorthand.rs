@@ -1,4 +1,4 @@
-// Copyright (c) 2026 GT Reader contributors. MIT license, see LICENSE.
+// Copyright (c) 2026 GT Reader contributors. GPL-3.0-only, see LICENSE.
 use super::value::*;
 const BORDER_SIDES: [&str; 4] = ["top", "right", "bottom", "left"];
 pub(super) fn expand_declaration(name: &str, value: &str) -> Vec<(String, String)> {
@@ -20,11 +20,49 @@ pub(super) fn expand_declaration(name: &str, value: &str) -> Vec<(String, String
             .collect();
     }
     let expanded = match name {
+        "text-emphasis" => {
+            let mut style = Vec::new();
+            let mut color = None;
+            for token in split_whitespace_top_level(trimmed) {
+                if parse_color(&token).is_some() {
+                    if color.replace(token).is_some() {
+                        return vec![];
+                    }
+                } else {
+                    style.push(token);
+                }
+            }
+            let style = if style.is_empty() {
+                "none".into()
+            } else {
+                style.join(" ")
+            };
+            if !super::properties::parse_property(
+                &mut super::Computed::default(),
+                "text-emphasis-style",
+                &style,
+                None,
+                1.0,
+            ) {
+                return vec![];
+            }
+            vec![
+                ("text-emphasis-style".into(), style),
+                (
+                    "text-emphasis-color".into(),
+                    color.unwrap_or("currentcolor".into()),
+                ),
+            ]
+        }
         "margin" | "padding" => {
             let sides = parse_four_lengths(trimmed);
             let Some(sides) = sides else {
                 return vec![];
             };
+            // 任一内边距无效，整个简写都不能覆盖之前的四边。
+            if name == "padding" && !sides.iter().all(Length::nonnegative_length) {
+                return vec![];
+            }
             let keys = if name == "margin" {
                 ["margin-top", "margin-right", "margin-bottom", "margin-left"]
             } else {
@@ -52,7 +90,16 @@ pub(super) fn expand_declaration(name: &str, value: &str) -> Vec<(String, String
             ]
             .into_iter()
             .zip(values)
-            .map(|(key, value)| (key.to_owned(), length_to_css(&value)))
+            .map(|(key, (x, y))| {
+                (
+                    key.to_owned(),
+                    if x == y {
+                        length_to_css(&x)
+                    } else {
+                        format!("{} {}", length_to_css(&x), length_to_css(&y))
+                    },
+                )
+            })
             .collect()
         }
         "border" => expand_border_side(trimmed, None),
@@ -103,6 +150,9 @@ pub(super) fn expand_declaration(name: &str, value: &str) -> Vec<(String, String
                     format!("url({})", serde_json::to_string(image).unwrap()),
                 ));
             }
+            if let Some(gradient) = &background.gradient {
+                result.push(("background-image".to_owned(), gradient.clone()));
+            }
             if let Some(repeat) = &background.repeat {
                 result.push(("background-repeat".to_owned(), repeat.clone()));
             }
@@ -111,6 +161,9 @@ pub(super) fn expand_declaration(name: &str, value: &str) -> Vec<(String, String
             }
             if let Some(size) = &background.size {
                 result.push(("background-size".to_owned(), size.clone()));
+            }
+            if let Some(attachment) = &background.attachment {
+                result.push(("background-attachment".to_owned(), attachment.clone()));
             }
             result
         }
@@ -251,11 +304,13 @@ fn four_values<'a>(values: &[&'a str]) -> Option<[&'a str; 4]> {
 
 fn length_to_css(value: &Length) -> String {
     match value {
+        Length::Ch(v) => format!("{v}ch"),
         Length::Em(v) => format!("{v}em"),
         Length::Rem(v) => format!("{v}rem"),
         Length::Percent(v) => format!("{}%", v * 100.0),
         Length::Px(v) => format!("{v}px"),
         Length::Pt(v) => format!("{v}pt"),
+        Length::Viewport(v, unit) => format!("{v}{unit}"),
         Length::Auto => "auto".to_owned(),
     }
 }
@@ -270,7 +325,7 @@ fn font_size_to_css(value: &FontSize) -> String {
 
 fn color_to_css(value: &Color) -> String {
     match value {
-        Color::Argb(argb) => format!("#{argb:08x}"),
+        Color::Argb(argb) => format!("#{:08x}", argb.rotate_left(8)),
         Color::Current => "currentColor".to_owned(),
     }
 }
@@ -285,6 +340,9 @@ fn format_border_width(value: &str) -> String {
 }
 
 fn longhands(name: &str) -> Vec<String> {
+    if name == "text-emphasis" {
+        return vec!["text-emphasis-style".into(), "text-emphasis-color".into()];
+    }
     if name == "border-radius" {
         return [
             "border-top-left-radius",
@@ -331,6 +389,7 @@ fn longhands(name: &str) -> Vec<String> {
             "background-repeat",
             "background-position",
             "background-size",
+            "background-attachment",
         ]
         .map(str::to_owned)
         .to_vec(),

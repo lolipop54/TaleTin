@@ -25,11 +25,20 @@ const int kContentVersion = 2;
 
 /// 目录及 EPUB 显示资料的生成规则标记，仅用于跳过已完成的旧书修复。
 /// 它们不改变正文坐标，也不递增正文版本或应用版本。
-const int kTocRevision = 4;
+const int kTocRevision = 5;
+
+/// 第 5 版只修复有书内文件链接的目录。旧 TXT 和 PDF 已到第 4 版即可直接打开。
+bool needsTocRecovery(Map<String, dynamic> manifest) {
+  final revision = (manifest['tocRevision'] as num?)?.toInt() ?? 0;
+  if (revision != 4) return revision < kTocRevision;
+  final chapters = manifest['chapters'];
+  final first = chapters is List ? chapters.firstOrNull : null;
+  return first is Map && first['href'] != null;
+}
 
 /// TXT 达到此长度时，分页只准备所需的一段，避免先测量整章。
 const int kLongTxtChapterLength = 256 * 1024;
-const int kEpubDetailsRevision = 2;
+const int kEpubDetailsRevision = 3;
 
 /// 块类型。
 ///
@@ -194,6 +203,7 @@ class InlineImage {
     this.alt,
     this.styleId,
     this.noteLink,
+    this.altIsFootnote = false,
   });
 
   /// 在本块文字里的字符位置（UTF-16 code unit）。
@@ -213,6 +223,8 @@ class InlineImage {
   final String? alt;
   final int? styleId;
   final String? noteLink;
+  /// 无链接的多看图标把脚注全文放在 [alt] 中。
+  final bool altIsFootnote;
 
   InlineImage positioned(int offset, {int? styleId}) => InlineImage(
     offset: offset,
@@ -224,6 +236,7 @@ class InlineImage {
     alt: alt,
     styleId: styleId ?? this.styleId,
     noteLink: noteLink,
+    altIsFootnote: altIsFootnote,
   );
 
   Map<String, Object?> toJson() => {
@@ -236,6 +249,7 @@ class InlineImage {
     if (imageMaxWidth != null) 'imw': imageMaxWidth,
     if (alt != null) 'a': alt,
     if (noteLink != null) 'nl': noteLink,
+    if (altIsFootnote) 'altIsFootnote': true,
   };
 
   static InlineImage fromJson(Map<String, Object?> json) => InlineImage(
@@ -251,6 +265,7 @@ class InlineImage {
         : [for (final value in json['imw'] as List) (value as num).toInt()],
     alt: json['a'] as String?,
     noteLink: json['nl'] as String?,
+    altIsFootnote: json['altIsFootnote'] == true,
     styleId: (json['sid'] as num?)?.toInt(),
   );
 }
@@ -273,8 +288,10 @@ class ContentBlock {
     this.resourcePath,
     this.resourceWidth,
     this.resourceHeight,
+    this.svgRatioOnly = false,
     this.alt,
     this.noteLink,
+    this.altIsFootnote = false,
     this.target,
     this.nest = 0,
     this.ordered = false,
@@ -303,10 +320,12 @@ class ContentBlock {
   final String? resourcePath;
   final int? resourceWidth;
   final int? resourceHeight;
+  final bool svgRatioOnly;
 
   /// 图片替代文字或脚注文本
   final String? alt;
   final String? noteLink;
+  final bool altIsFootnote;
 
   /// 内部链接或脚注目标（阶段 3 使用）
   final String? target;
@@ -383,8 +402,10 @@ class ContentBlock {
         resourcePath: resourcePath,
         resourceWidth: resourceWidth,
         resourceHeight: resourceHeight,
+        svgRatioOnly: svgRatioOnly,
         alt: alt,
         noteLink: noteLink,
+        altIsFootnote: altIsFootnote,
         target: target,
         nest: nest,
         ordered: ordered,
@@ -435,8 +456,10 @@ class ContentBlock {
     if (resourcePath != null) 'resource': resourcePath,
     if (resourceWidth != null) 'width': resourceWidth,
     if (resourceHeight != null) 'height': resourceHeight,
+    if (svgRatioOnly) 'svgRatioOnly': true,
     if (alt != null) 'alt': alt,
     if (noteLink != null) 'noteLink': noteLink,
+    if (altIsFootnote) 'altIsFootnote': true,
     if (target != null) 'target': target,
     if (nest > 0) 'nest': nest,
     if (ordered) 'ordered': true,
@@ -477,8 +500,10 @@ class ContentBlock {
       resourcePath: json['resource'] as String?,
       resourceWidth: (json['width'] as num?)?.toInt(),
       resourceHeight: (json['height'] as num?)?.toInt(),
+      svgRatioOnly: json['svgRatioOnly'] == true,
       alt: json['alt'] as String?,
       noteLink: json['noteLink'] as String?,
+      altIsFootnote: json['altIsFootnote'] == true,
       target: json['target'] as String?,
       nest: (json['nest'] as num?)?.toInt() ?? 0,
       ordered: json['ordered'] == true,

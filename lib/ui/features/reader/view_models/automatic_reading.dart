@@ -2,6 +2,8 @@ import 'package:taletin/core/diagnostics/app_errors.dart';
 
 import 'dart:async';
 
+import 'package:flutter/foundation.dart'
+    show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../app/di/app_providers.dart';
@@ -210,7 +212,11 @@ class AutomaticReadingNotifier extends Notifier<AutomaticReadingState> {
         ref.read(readerProvider.notifier).showNotice('正文正在准备，请稍后开始');
         return;
       }
-      ref.read(readerProvider.notifier).closePanel();
+      ref
+          .read(readerProvider.notifier)
+          .closePanel(
+            collapseControls: defaultTargetPlatform == TargetPlatform.windows,
+          );
       await backend.start(
         settings.pageTurnEffect == PageTurnEffect.scroll
             ? settings.autoScrollSpeed

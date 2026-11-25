@@ -20,6 +20,10 @@ class _BlockInset {
     required this.outerTop,
     required this.outerBottom,
     required this.containerWidth,
+    required this.marginReference,
+    this.containerHeight,
+    this.ownerHeight,
+    this.margins,
     this.frames = const [],
   });
 
@@ -40,6 +44,10 @@ class _BlockInset {
   /// 扣掉祖先容器后、还没扣自己盒子内边距的可用宽度。
   /// 百分比外边距、百分比宽度用它作包含块宽度。
   final double containerWidth;
+  final double marginReference;
+  final double? containerHeight;
+  final BoxAxisSize? ownerHeight;
+  final BlockMargins? margins;
   final List<ContainerBoxFrame> frames;
 
   bool get boxed => box != null || chain.isNotEmpty;
@@ -61,6 +69,10 @@ extension _BlockInsetMeasurement on BlockMeasurer {
     ResolvedBlockStyle style, {
     int sourceOffset = 0,
     int? sourceEnd,
+    double? marginFontSize,
+    List<DisplayNode> merged = const [],
+    String? marker,
+    TextStyle? markerStyle,
   }) {
     if (flatNest) {
       // 表格单元格：位置已经由列宽决定，不能再叠加引用／列表的嵌套缩进。
@@ -74,6 +86,7 @@ extension _BlockInsetMeasurement on BlockMeasurer {
         outerTop: 0,
         outerBottom: 0,
         containerWidth: options.contentWidth,
+        marginReference: options.contentWidth,
       );
     }
     final index = displayTree?.blockIndexById[block.id];
@@ -84,6 +97,8 @@ extension _BlockInsetMeasurement on BlockMeasurer {
         ? const <DisplayContainer>[]
         : displayTree!.chainOf(
             index,
+            outOfFlow: outOfFlow,
+            merged: merged,
             sourceOffset: sourceOffset,
             sourceEnd: sourceEnd,
           );
@@ -91,11 +106,21 @@ extension _BlockInsetMeasurement on BlockMeasurer {
       containers,
       styleTable,
       options,
+      tree: displayTree,
       ownStyle: ownStyle,
-      floatInsets: floatInsets,
+      ownHeading: block.kind == BlockKind.heading,
+      floatContentWidth: floatContentWidth,
+      // 直接产出正文的容器已有段落外边距，只把更外层的留白算进容器。
+      blockOwnerId: index == null
+          ? null
+          : displayTree?.source?.ownerOfBlock(index)?.id,
       // 图片尺寸随后由 _measureImage 按自己的 width 处理，不能扣两遍。
       constrainOwnWidth: block.kind != BlockKind.image,
-      ownHeading: block.kind == BlockKind.heading,
+      collapseMargins:
+          index != null &&
+          block.kind != BlockKind.codeBlock &&
+          _canCollapseMargins(displayTree!.source?.ownerOfBlock(index)),
+      ownerMarginFontSize: marginFontSize,
     );
     final chain = geometry.chain;
     final containerWidth = geometry.containerWidth;
@@ -106,12 +131,18 @@ extension _BlockInsetMeasurement on BlockMeasurer {
     final groupContext = groupStyle == null
         ? null
         : _lengthContext(groupStyle, containerWidth);
+    // 引用横向边距已由容器链负责。首层明确清零、为负或为 auto 时，
+    // 再补阅读器的两字缩进，会把内部作者边距整体推向右边。
+    final quoteMargin = group?.tag == 'blockquote'
+        ? groupStyle?.block.margin
+        : null;
     final hasGroupMargin =
+        quoteMargin?.left != null ||
+        quoteMargin?.right != null ||
         groupStyle != null &&
-        [
-          groupStyle.block.margin?.left,
-          groupStyle.block.margin?.right,
-        ].any((m) => m != null && !m.isAuto && m.resolve(groupContext!) > 0);
+            [groupStyle.block.margin?.left, groupStyle.block.margin?.right].any(
+              (m) => m != null && !m.isAuto && m.resolve(groupContext!) > 0,
+            );
     // 列表祖先已经扣了多少左内边距；扣过就不再叠加阅读器的固定缩进。
     // 只看「有没有列表盒子」不够：只设背景、没设 padding 的列表也让盒子
     // 非空，但文字仍然需要一档缩进才能放下列表标记。
@@ -132,13 +163,57 @@ extension _BlockInsetMeasurement on BlockMeasurer {
     if (block.kind == BlockKind.listItem &&
         style.listStyle != 0 &&
         chain.isNotEmpty) {
-      final innerLeft = chain.last.$1.elementId;
-      final frame = geometry.frames.firstWhere((f) => f.elementId == innerLeft);
-      final edge = frame.left + frame.box.borderLeft;
+      final firstList = containers.where((c) => c.role == 'list').firstOrNull;
+      // 内层列表没有左侧留白时，标记可用外层已经留出的空间。
+      // 内层底色从正文开始，不需要为了包住标记再把正文向右推。
+      final markerContainer = chain.reversed.where((entry) {
+        final (container, box) = entry;
+        return container.role != 'list' ||
+            container.elementId == firstList?.elementId ||
+            box.insetLeft > 0;
+      }).firstOrNull;
+      if (markerContainer != null) {
+        final frame = geometry.frames.firstWhere(
+          (frame) => frame.elementId == markerContainer.$1.elementId,
+        );
+        final edge = frame.left + frame.box.borderLeft;
+        baseInset = math.max(
+          baseInset,
+          edge +
+              options.settings.fontSize * .8 -
+              geometry.left -
+              (box?.insetLeft ?? 0),
+        );
+      }
+    }
+    if (marker != null && !const {'•', '○', '▪'}.contains(marker)) {
+      final list = containers.reversed
+          .where((c) => c.role == 'list')
+          .firstOrNull;
+      final font =
+          markerStyle ??
+          TextStyle(
+            fontSize: options.settings.fontSize.toDouble(),
+            fontFamily: options.settings.fontFamily,
+          );
+      final width = _listWidth(list?.elementId, marker, font);
+      final frame = geometry.frames.reversed
+          .where((f) => f.box.borderLeft > 0)
+          .firstOrNull;
+      // 最左能画到正文区边缘；有边框时还须保留作者给框线的留白。
+      final edge = frame == null
+          ? 0.0
+          : math.max(
+              0.0,
+              frame.left +
+                  frame.box.borderLeft +
+                  frame.box.padLeft.clamp(1.0, options.listMarkerGap),
+            );
       baseInset = math.max(
         baseInset,
         edge +
-            options.settings.fontSize * .8 -
+            width +
+            options.listMarkerGap -
             geometry.left -
             (box?.insetLeft ?? 0),
       );
@@ -156,7 +231,75 @@ extension _BlockInsetMeasurement on BlockMeasurer {
       outerTop: geometry.top,
       outerBottom: geometry.bottom,
       containerWidth: containerWidth,
+      marginReference: geometry.marginReference,
+      containerHeight: geometry.containerHeight,
+      ownerHeight: geometry.ownerHeight,
+      margins: geometry.margins,
       frames: geometry.frames,
     );
+  }
+
+  double _markerWidth(String label, TextStyle style) =>
+      _markerWidths.putIfAbsent(
+        (label, style),
+        () => TextPainter.computeWidth(
+          text: TextSpan(text: label, style: style),
+          textDirection: TextDirection.ltr,
+          textScaler: options.textScaler,
+        ),
+      );
+
+  double _listWidth(int? list, String marker, TextStyle font) {
+    final items = displayTree?.listItems[list];
+    if (list == null || items == null) return _markerWidth(marker, font);
+    return _listWidths.putIfAbsent(list, () {
+      var widest = 0.0;
+      for (final item in items) {
+        final style = _styleOf(item, sourceEnd: item.runLength);
+        final label = BlockMeasurer._markerOf(item.kind, style);
+        if (label == null) continue;
+        final first = item.runs.firstOrNull;
+        final face = first == null
+            ? font
+            : _textRunStyle(item, style, _runStyleOf(first).applyTo(first));
+        widest = math.max(widest, _markerWidth(label, face));
+      }
+      return widest;
+    });
+  }
+
+  bool _canCollapseMargins(DisplayElement? element) {
+    final tree = displayTree;
+    if (!normalFlow ||
+        tree?.authoritative != true ||
+        element == null ||
+        floatLineEdges != null) {
+      return false;
+    }
+    for (
+      DisplayElement? current = element;
+      current != null;
+      current = current.parent == null
+          ? null
+          : tree!.source?.element(current.parent!)
+    ) {
+      final style = styleTable?[current.styleId ?? 0].block;
+      if (current.table != null ||
+          current.role == 'table' ||
+          (style?.float != null && style?.float != FloatSpec.none) ||
+          style?.position == PositionSpec.absolute ||
+          style?.position == PositionSpec.fixed ||
+          (style?.clear != null && style?.clear != ClearSpec.none) ||
+          const {
+            DisplaySpec.inlineBlock,
+            DisplaySpec.inlineFlex,
+            DisplaySpec.inlineGrid,
+            DisplaySpec.flex,
+            DisplaySpec.grid,
+          }.contains(style?.display)) {
+        return false;
+      }
+    }
+    return true;
   }
 }

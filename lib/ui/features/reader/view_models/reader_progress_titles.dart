@@ -33,7 +33,7 @@ Future<List<TocProgressEntry>> _loadProgressTitles(
   if (chapters == null) return [];
   final repository = ref.read(chapterContentRepositoryProvider);
   final session = ref.read(readerSessionProvider(bookId)).value!;
-  final toc = await ref.watch(bookTocProvider(bookId).future);
+  final toc = await ref.watch(readerDisplayTocProvider(bookId).future);
   if (!ref.mounted) return [];
   final (names, signature) = await prepareTocIndex(session.book, chapters, toc);
   if (!ref.mounted) return [];

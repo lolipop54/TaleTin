@@ -29,6 +29,7 @@ class _PageAreaState extends ConsumerState<_PageArea> {
   bool _rasterBackward = false;
   ChapterLayout? _preparedLayout;
   int? _preparedPage;
+  final _numberedLayout = ValueNotifier<String?>(null);
   final _pointerWorkOwner = Object(), _motionWorkOwner = Object();
   Object? _windowKey;
   Timer? _textPreparationTimer;
@@ -38,6 +39,12 @@ class _PageAreaState extends ConsumerState<_PageArea> {
   late final ChapterContentRepository _materialRepository;
   final _presentationOwner = Object();
   ReaderSessionNotifier? _presenter;
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _textCache.setPixelRatio(MediaQuery.devicePixelRatioOf(context));
+  }
+
   @override
   void initState() {
     super.initState();
@@ -58,8 +65,24 @@ class _PageAreaState extends ConsumerState<_PageArea> {
           false) &&
       _preparedPage == widget.session.pageIndex;
 
+  void _pagePrepared(ChapterLayout layout, int page) {
+    _preparedLayout = layout;
+    _preparedPage = page;
+    final signature = layout.options.layoutSignature;
+    if (_numberedLayout.value == signature) return;
+    // 背景解码只会刷新纸面本身。等这一帧画完，单独通知页脚可以启动本版面的计数。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted &&
+          isReady &&
+          _preparedLayout?.options.layoutSignature == signature) {
+        _numberedLayout.value = signature;
+      }
+    });
+  }
+
   @override
   void dispose() {
+    _numberedLayout.dispose();
     _presenter?.detachVisualPresenter(_presentationOwner);
     _textPreparationTimer?.cancel();
     LayoutWorkGate.release(_pointerWorkOwner);
@@ -105,7 +128,8 @@ class _PageAreaState extends ConsumerState<_PageArea> {
   void didUpdateWidget(_PageArea oldWidget) {
     super.didUpdateWidget(oldWidget);
     final effect = widget.settings.settings.pageTurnEffect;
-    if (effect != PageTurnEffect.curl && effect != PageTurnEffect.cover) {
+    if (effect != PageTurnEffect.curl && effect != PageTurnEffect.cover &&
+        effect != PageTurnEffect.slide) {
       _rasterCache.clear();
     }
     // 原书读取失败回退时，尺寸可能没变，但分页结果已经被切换清掉。
@@ -170,13 +194,20 @@ class _PageAreaState extends ConsumerState<_PageArea> {
         );
         final options = LayoutOptions(
           cssDark: widget.settings.theme.isNight,
+          pageInk: (
+            primary: widget.settings.theme.primary,
+            secondary: widget.settings.theme.secondary,
+          ),
           settings: settings,
           contentSize: contentSize,
+          paperBottomInset: info.bottom + ReadingLimits.verticalPadding,
+          paperInset: Offset((constraints.maxWidth - contentSize.width) / 2, info.top + ReadingLimits.verticalPadding),
           textScaler: MediaQuery.textScalerOf(context),
           // 只有 TXT 补章题和短横线；EPUB／MOBI／AZW3 按原书内容与样式排。
           insertChapterTitle: session.book.format == BookFormat.txt,
         );
         _submitIfChanged(options);
+        final showPages = info.visible && ref.watch(showBookPagesProvider);
         return _ReaderCanvas(
           height: layoutHeight,
           child: Listener(
@@ -210,10 +241,19 @@ class _PageAreaState extends ConsumerState<_PageArea> {
                     );
                   },
                   onLongPressEnd: (_) {},
-                  child: _page(
-                    session,
-                    settings,
-                    Size(constraints.maxWidth, layoutHeight),
+                  child: ValueListenableBuilder<String?>(
+                    valueListenable: _numberedLayout,
+                    builder: (_, readyLayout, body) => BookPagePaper(
+                      session: session,
+                      layout: session.layout,
+                      page: session.pageIndex,
+                      info: info,
+                      options: options,
+                      enabled: showPages,
+                      ready: readyLayout == options.layoutSignature,
+                      child: body!,
+                    ),
+                    child: _page(session, settings, Size(constraints.maxWidth, layoutHeight)),
                   ),
                 ),
                 // 选区在的时候正文只收拖动（点按先收选区）：拖手柄不会顺手翻页，

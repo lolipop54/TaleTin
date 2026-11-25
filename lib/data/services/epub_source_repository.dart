@@ -372,6 +372,8 @@ class EpubSourceSession {
 
   bool _closed = false;
 
+  bool get isClosed => _closed;
+
   /// 章节数
   int get chapterCount => _worker.entries.length;
 
@@ -427,11 +429,14 @@ class EpubSourceSession {
   }
 
   /// 简化排版使用同一份书内资源和解混淆规则，直接按归档条目读取。
-  Future<({Uint8List bytes, String digest})?> fontResource(String entry) async {
+  Future<({Uint8List bytes, String digest})?> fontResource(
+    String entry, {
+    required void Function() onAbsent,
+  }) async {
     if (normalizeEntryPath(entry) != entry || isChapterEntry(entry)) {
       return null;
     }
-    return _read(() => _worker.fontResource(entry));
+    return _read(() => _worker.fontResource(entry, onAbsent: onAbsent));
   }
 
   /// 第 [ordinal] 章的净化文档（HTML 字符串）；条目缺失返回 null。

@@ -9,6 +9,7 @@ import '../../../../domain/services/reading_segment_slicer.dart';
 import '../../../../data/services/statistics_compute.dart';
 import '../../../core/theme/gt_tokens.dart';
 import '../../../core/widgets/gt_button.dart';
+import '../../../core/widgets/edge_to_edge_sheet.dart';
 import '../view_models/statistics_providers.dart';
 import 'reading_day_row.dart';
 import 'reading_day_summary.dart';
@@ -55,13 +56,13 @@ Future<void> showReadingDay(
     context: context,
     useRootNavigator: true,
     isScrollControlled: true,
-    useSafeArea: true,
     backgroundColor: context.gtColors.surface,
     showDragHandle: false,
     shape: const RoundedRectangleBorder(),
     clipBehavior: Clip.antiAlias,
-    builder: (_) =>
-        ReadingDaySheet(data: detail, now: now, date: date, books: books),
+    builder: (_) => EdgeToEdgeSheet(
+      child: ReadingDaySheet(data: detail, now: now, date: date, books: books),
+    ),
   );
 }
 

@@ -9,17 +9,26 @@ import 'dart:math' as math;
 
 import 'package:flutter/painting.dart';
 
+import 'book_image_fit.dart';
+import 'measured_paragraphs.dart';
 import 'edge_aligned_text_painter.dart';
 import 'fixed_indent.dart';
 import 'layout_options.dart';
 import 'inline_box_placement.dart';
+import 'collapsed_table_borders.dart';
 import 'measured_text_geometry.dart';
+import 'vertical_margins.dart';
 export 'measured_text_geometry.dart';
 export 'inline_box_placement.dart';
 
 import '../../domain/models/book_document.dart';
 
 part 'script_text_geometry.dart';
+
+part 'measured_table_block.dart';
+
+/// 行组和行的背景共用整行坐标，在本页可见的单元格范围内裁剪。
+typedef TableBackdrop = ({BlockBox box, Rect area});
 
 class MeasuredBlock {
   const MeasuredBlock({
@@ -33,9 +42,12 @@ class MeasuredBlock {
     this.height = 0,
     this.pageTop,
     this.imageSize,
+    this.paperArtwork = false,
+    this.imageFit,
     this.resourcePath,
     this.alt,
     this.noteLink,
+    this.altIsFootnote = false,
     this.inset = 0,
     this.isDecoration = false,
     this.decorationAtStart = false,
@@ -44,8 +56,18 @@ class MeasuredBlock {
     this.tableId,
     this.tableBounds,
     this.tableTop = 0,
+    this.tableContentBottom,
+    this.tableBreakRows = const [],
+    this.tableHeaderBand,
+    this.positionedOverlay = false,
     this.tableUnit = 0,
     this.tableHeader = false,
+    this.tableCellBox,
+    this.tableBackdrops = const [],
+    this.legendFieldset,
+    this.collapsedTableBorders = false,
+    this.tableHorizontalBorders = const [],
+    this.tableVerticalBorders = const [],
     this.tableBox,
     this.isTableBox = false,
     this.layoutWidth,
@@ -68,6 +90,7 @@ class MeasuredBlock {
     this.boxLast = true,
     this.marginTop = 0,
     this.marginBottom = 0,
+    this.flowMargins,
     this.textStyle = const BlockTextStyle(),
     this.inlineImages = const [],
     this.inlineBoxes = const [],
@@ -79,8 +102,22 @@ class MeasuredBlock {
   /// 二维图文流复用分组位置与断点字段，但没有表格边线或单元格缩放。
   bool get isParallelFlow => tableId?.startsWith('__parallel_') == true;
   final Rect? tableBounds;
+
+  /// 定位图片保留绘制和点按位置，但不参与同组正文的换页和高度计算。
+  final bool positionedOverlay;
   final double tableTop, tableUnit;
+
+  /// 连续表格中，格内正文连同底部内边距需要到达的纵坐标。
+  final double? tableContentBottom;
+  final List<TableBreakRow> tableBreakRows;
+  final TableHeaderBand? tableHeaderBand;
   final bool tableHeader;
+  final BlockBox? tableCellBox;
+  final List<TableBackdrop> tableBackdrops;
+  final int? legendFieldset;
+  final bool collapsedTableBorders;
+  final List<TableHorizontalBorder> tableHorizontalBorders;
+  final List<TableVerticalBorder> tableVerticalBorders;
 
   /// 表格外层容器（引用块）的盒子；单元格自己的 [box] 仍为空。
   ///
@@ -139,12 +176,21 @@ class MeasuredBlock {
   final double bodyTop;
   final double bodyBottom;
 
-  /// 作者样式给的上、下外边距（像素，已按字号换算）。阅读器段距是另一份设置，
-  /// 块间距 = max(段距, 上一块的下外边距, 这一块的上外边距)，不会相加。
+  /// 块自身的作者边距（像素）。普通流另外保存与祖先合并后的两端。
   final double marginTop;
   final double marginBottom;
+  final BlockMargins? flowMargins;
+  VerticalMargin get leadingMargin =>
+      flowMargins?.before ?? VerticalMargin.of(marginTop);
+  VerticalMargin get trailingMargin =>
+      flowMargins?.after ?? VerticalMargin.of(marginBottom);
+  bool get collapsesThrough => flowMargins?.through == true;
 
   /// 鍚屼竴涓洅瀛愬鍣ㄩ噷鐨勭涓€鍧楋紡鏈€鍚庝竴鍧楋細鍙湁瀹冧滑鐢讳笂涓嬭竟妗嗐€佸渾瑙掑拰涓婁笅鍐呰竟璺濄€?
+  bool get hasClonedBox =>
+      box?.cloneDecoration == true ||
+      containerBoxes.any((frame) => frame.box.cloneDecoration);
+
   final bool boxFirst;
   final bool boxLast;
 
@@ -198,25 +244,34 @@ class MeasuredBlock {
   MeasuredBlock withBoxEdges({
     required bool first,
     required bool last,
+    Size? imageSize,
     double? bodyTop,
     double? bodyBottom,
     double? height,
     double? pageTop,
+    BlockMargins? flowMargins,
+    List<TextStyle>? paintStyles,
+    double? contentInset,
+    double? contentWidth,
+    int? legendFieldset,
   }) => MeasuredBlock(
     blockId: blockId,
     kind: kind,
     level: level,
     text: text,
     runs: runs,
-    runStyles: runStyles,
+    runStyles: paintStyles ?? runStyles,
     lines: lines,
     height: height ?? this.height,
     pageTop: pageTop ?? this.pageTop,
-    imageSize: imageSize,
+    imageSize: imageSize ?? this.imageSize,
+    paperArtwork: paperArtwork,
+    imageFit: imageFit,
     resourcePath: resourcePath,
     alt: alt,
     noteLink: noteLink,
-    inset: inset,
+    altIsFootnote: altIsFootnote,
+    inset: contentInset ?? inset,
     isDecoration: isDecoration,
     decorationAtStart: decorationAtStart,
     displayPrefixLength: displayPrefixLength,
@@ -224,11 +279,21 @@ class MeasuredBlock {
     tableId: tableId,
     tableBounds: tableBounds,
     tableTop: tableTop,
+    tableContentBottom: tableContentBottom,
+    tableBreakRows: tableBreakRows,
+    tableHeaderBand: tableHeaderBand,
+    positionedOverlay: positionedOverlay,
     tableUnit: tableUnit,
     tableHeader: tableHeader,
+    tableCellBox: tableCellBox,
+    tableBackdrops: tableBackdrops,
+    legendFieldset: legendFieldset ?? this.legendFieldset,
+    collapsedTableBorders: collapsedTableBorders,
+    tableVerticalBorders: tableVerticalBorders,
+    tableHorizontalBorders: tableHorizontalBorders,
     tableBox: tableBox,
     isTableBox: isTableBox,
-    layoutWidth: layoutWidth,
+    layoutWidth: contentWidth ?? layoutWidth,
     align: align,
     marker: marker,
     markerInset: markerInset,
@@ -248,6 +313,7 @@ class MeasuredBlock {
     boxLast: last,
     marginTop: marginTop,
     marginBottom: marginBottom,
+    flowMargins: flowMargins ?? this.flowMargins,
     textStyle: textStyle,
     inlineImages: inlineImages,
     inlineBoxes: inlineBoxes,
@@ -256,71 +322,6 @@ class MeasuredBlock {
   /// 杩欎竴椤电墖娈甸噷鏂囧瓧鐨勮捣濮嬬旱鍚戜綅缃紙鍧楃殑绗竴鐗囪璺宠繃椤堕儴鍐呰竟璺濅笌杈规锛夈€?
   double textTopOf(int lineFrom) => lineFrom == 0 ? bodyTop : 0;
 
-  MeasuredBlock inTable({
-    required String id,
-    required Rect bounds,
-    required double top,
-    required double unit,
-    required bool header,
-    required double width,
-    List<ContainerBoxFrame> containerBoxes = const [],
-    double tableBottom = 0,
-    BlockBox? tableBox,
-    int? boxId,
-    bool boxFirst = true,
-    bool boxLast = true,
-    double? horizontalShift,
-  }) => MeasuredBlock(
-    blockId: blockId,
-    kind: kind,
-    level: level,
-    text: text,
-    runs: runs,
-    runStyles: runStyles,
-    lines: lines,
-    height: height,
-    imageSize: imageSize,
-    resourcePath: resourcePath,
-    alt: alt,
-    noteLink: noteLink,
-    inset:
-        (horizontalShift ?? bounds.left) +
-        (id.startsWith('__parallel_') ? inset : 4),
-    isDecoration: isDecoration,
-    decorationAtStart: decorationAtStart,
-    displayPrefixLength: displayPrefixLength,
-    tableId: id,
-    // 表格普通正文按阅读设置两端对齐；表头保留作者的居中/右对齐。
-    align: header || kind != BlockKind.paragraph ? align : null,
-    justify: header || kind != BlockKind.paragraph ? justify : true,
-    hasScript: hasScript,
-    tableBounds: bounds,
-    tableTop: top,
-    tableUnit: unit,
-    tableHeader: header,
-    tableBox: tableBox,
-    layoutWidth: width,
-    box: id.startsWith('__parallel_') ? box : null,
-    // 图文绕排沿用每块自己的外观；表格的外框由分页生成的盒子片段绘制。
-    boxId: id.startsWith('__parallel_') ? this.boxId : boxId,
-    containerBoxes: containerBoxes,
-    bodyTop: id.startsWith('__parallel_') ? bodyTop : 0,
-    bodyBottom: id.startsWith('__parallel_') ? bodyBottom : tableBottom,
-    boxFirst: boxFirst,
-    boxLast: boxLast,
-    textStyle: textStyle,
-    inlineImages: inlineImages,
-    inlineBoxes: inlineBoxes,
-    marker: id.startsWith('__parallel_') ? marker : null,
-    markerInset: id.startsWith('__parallel_') ? markerInset : 0,
-    codeBox: id.startsWith('__parallel_') ? codeBox : null,
-    codeTop: id.startsWith('__parallel_') ? codeTop : 0,
-    codeBottom: id.startsWith('__parallel_') ? codeBottom : 0,
-    line: id.startsWith('__parallel_') ? line : null,
-    boxIndent: id.startsWith('__parallel_') ? boxIndent : 0,
-    marginTop: id.startsWith('__parallel_') ? marginTop : 0,
-    marginBottom: id.startsWith('__parallel_') ? marginBottom : 0,
-  );
   final BlockKind kind;
 
   /// 鏍囬绾у埆锛? 琛ㄧず绔犻瑁呴グ鍧?
@@ -340,24 +341,37 @@ class MeasuredBlock {
 
   /// 作者指定的页面纵向位置；分页与滚动共用，空间不足时顺延，避免遮盖正文。
   final double? pageTop;
+  bool get isPageImage => isDecoration && imageSize != null && pageTop != null;
 
   /// 鍥剧墖鍧楃殑鏄剧ず灏哄锛堝凡鎸夊唴瀹瑰搴︾瓑姣旂缉鏀撅級
   final Size? imageSize;
+
+  /// 已按单张纸面测量的独立封面或章首图。
+  final bool paperArtwork;
+  final BookImageFit? imageFit;
   final String? resourcePath;
   final String? alt;
   final String? noteLink;
+  final bool altIsFootnote;
+  String? get noteText => altIsFootnote ? alt : null;
 
   /// 鍒楄〃椤圭瓑鍧楃殑宸︿晶缁樺埗鍋忕Щ
   final double inset;
 
-  /// 图片相对同一容器的内容区居中，分页与滚动使用同一个横坐标。
-  double imageLeftIn(double availableWidth) => tableId != null
-      ? inset
-      : inset +
-            math.max(
-              0,
-              ((layoutWidth ?? availableWidth) - (imageSize?.width ?? 0)) / 2,
-            );
+  /// 分页、滚动和图片点击共用作者对齐及同一个内容区域。
+  double imageLeftIn(double availableWidth) {
+    final free = math.max(
+      0.0,
+      (layoutWidth ?? availableWidth) - (imageSize?.width ?? 0),
+    );
+    return inset +
+        switch (align) {
+          'left' => 0,
+          'right' => free,
+          'center' => free / 2,
+          _ => tableId == null ? free / 2 : 0,
+        };
+  }
 
   /// 图片实际绘制区域，包含居中位置及容器上内边距；点按与绘制共用。
   Rect? imageRectIn(double availableWidth, {double top = 0}) =>
@@ -415,6 +429,7 @@ class MeasuredBlock {
   /// [letterSpacing] 鐢ㄤ簬鎶婅灏剧┖妗ｆ憡鍒板瓧涓庡瓧涔嬮棿锛堣 [justifySpacingFor]锛夈€?
   /// 瀹冨彧褰卞搷缁樺埗锛屼笉鍙備笌娴嬮噺涓庢柇琛屻€?
   TextPainter createFragmentPainter({
+    MeasuredParagraphs? paragraphs,
     required int lineFrom,
     required int lineTo,
     required TextScaler textScaler,
@@ -443,18 +458,25 @@ class MeasuredBlock {
     while (end > start && text.codeUnitAt(end - 1) == 0x0A) {
       end--;
     }
-    return TextPainter(
-      text: TextSpan(
-        children: _paintSpans(
-          start,
-          end,
-          color,
-          letterSpacing,
-          scriptColor,
-          adaptColor,
-        ),
+    final span = TextSpan(
+      children: _paintSpans(
+        start,
+        end,
+        color,
+        letterSpacing,
+        scriptColor,
+        adaptColor,
       ),
-      textDirection: TextDirection.ltr,
+    );
+    if (paragraphs != null && lineFrom == 0 && lineTo == lines.length) {
+      final measured = paragraphs.take(lines, maxWidth, textScaler, span);
+      if (measured != null) return measured;
+    }
+    return TextPainter(
+      text: span,
+      // 片段的物理位置已经由 horizontalOffset 算好；双向段落只调整字序。
+      textAlign: TextAlign.left,
+      textDirection: textStyle.rtl ? TextDirection.rtl : TextDirection.ltr,
       textScaler: textScaler,
     )..layout(maxWidth: maxWidth);
   }
@@ -490,6 +512,7 @@ class MeasuredBlock {
     );
     if (letterSpacing > 0) {
       return EdgeAlignedTextPainter(
+        textDirection: textStyle.rtl ? TextDirection.rtl : TextDirection.ltr,
         text: span,
         textScaler: textScaler,
         spacing: letterSpacing,
@@ -501,7 +524,7 @@ class MeasuredBlock {
     }
     return TextPainter(
       text: span,
-      textDirection: TextDirection.ltr,
+      textDirection: textStyle.rtl ? TextDirection.rtl : TextDirection.ltr,
       textScaler: textScaler,
     )..layout();
   }
@@ -527,25 +550,52 @@ class MeasuredBlock {
     Color? scriptColor,
     Color Function(Color, Color?)? adaptColor,
   ]) {
-    final hyphen = lines.any((line) => line.end == end && line.hyphenated);
+    // 同一测量块会被绘制、选文和字距测量反复切片。保留共用行尾上任一行的断字标记。
+    final lineEnd = lines.length == 1
+        ? (lines.first.end == end ? lines.first.hyphenated : null)
+        : (_lineEnds[this] ??= {
+            for (final line in lines) line.end: false,
+            for (final line in lines)
+              if (line.hyphenated) line.end: true,
+          })[end];
     // 行尾折叠空格属于定位范围，但不属于可见文字和下划线的宽度。
-    if (lines.any((line) => line.end == end)) {
+    if (lineEnd != null) {
       while (end > start && text.codeUnitAt(end - 1) == 0x20) {
         end--;
       }
     }
     final spans = <InlineSpan>[];
-    var cursor = 0;
-    for (var i = 0; i < runs.length; i++) {
+    var first = 0, cursor = 0;
+    if (start > 0 && runs.length > 1) {
+      final ends = _runEnds[this] ??= _indexRunEnds();
+      var limit = ends.length;
+      while (first < limit) {
+        final mid = (first + limit) ~/ 2;
+        if (ends[mid] <= start) {
+          first = mid + 1;
+        } else {
+          limit = mid;
+        }
+      }
+      if (first > 0) cursor = ends[first - 1];
+    }
+    for (var i = first; i < runs.length && cursor < end; i++) {
       final run = runs[i];
       final runStart = cursor;
       final runEnd = cursor + run.text.length;
       cursor = runEnd;
-      if (runEnd <= start || runStart >= end) continue;
       final from = (start > runStart ? start : runStart) - runStart;
       final to = (end < runEnd ? end : runEnd) - runStart;
       if (to <= from) continue;
       final own = runStyles[i].color;
+      final ruleColor = runStyles[i].decorationColor;
+      final ruleInk = ruleColor == null
+          ? null
+          : (adaptColor?.call(
+                  ruleColor,
+                  _inlineBackgroundAt(math.max(start, runStart)),
+                ) ??
+                ruleColor);
       final paintColor = run.isScript
           ? scriptColor
           : own == null
@@ -562,7 +612,7 @@ class MeasuredBlock {
         spans.add(
           FixedIndent.span(
             run.text.substring(from, split),
-            runStyles[i].copyWith(color: paintColor),
+            runStyles[i].copyWith(color: paintColor, decorationColor: ruleInk),
           ),
         );
       }
@@ -572,13 +622,14 @@ class MeasuredBlock {
             text: run.text.substring(split, to),
             style: runStyles[i].copyWith(
               color: paintColor,
+              decorationColor: ruleInk,
               letterSpacing: letterSpacing == 0 ? null : letterSpacing,
             ),
           ),
         );
       }
     }
-    if (hyphen) {
+    if (lineEnd == true) {
       spans.add(
         TextSpan(
           text: '-',
@@ -591,6 +642,14 @@ class MeasuredBlock {
       );
     }
     return spans;
+  }
+
+  static final _lineEnds = Expando<Map<int, bool>>();
+  static final _runEnds = Expando<List<int>>();
+
+  List<int> _indexRunEnds() {
+    var offset = 0;
+    return [for (final run in runs) offset += run.text.length];
   }
 
   /// 杩欎竴琛岀粯鍒舵椂瑕佹憡寮€鐨勫瓧璺濓紙0 琛ㄧず鍘熸牱鐢伙級銆?
@@ -659,6 +718,7 @@ class MeasuredBlock {
     );
     if (letterSpacing > 0) {
       return EdgeAlignedTextPainter(
+        textDirection: textStyle.rtl ? TextDirection.rtl : TextDirection.ltr,
         text: span,
         textScaler: textScaler,
         spacing: letterSpacing,
@@ -667,7 +727,7 @@ class MeasuredBlock {
     }
     return TextPainter(
       text: span,
-      textDirection: TextDirection.ltr,
+      textDirection: textStyle.rtl ? TextDirection.rtl : TextDirection.ltr,
       textScaler: textScaler,
     )..layout();
   }

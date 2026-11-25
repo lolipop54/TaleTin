@@ -42,6 +42,9 @@ abstract final class CssLayoutStyles {
             'dark': options.cssDark,
           },
         });
+        if (computed['cssError'] case final String error) {
+          throw FormatException(error);
+        }
       } finally {
         native.close();
       }
@@ -121,6 +124,26 @@ abstract final class CssLayoutStyles {
       final sid = elementIds[owner?.id] ?? 0;
       final own = table[sid];
       final ranges = byBlock[index] ?? const <(int, DisplayTextRange)>[];
+      final imageSources = <int, List<int>>{};
+      if (block.inlineImages.isNotEmpty) {
+        for (final (id, range) in ranges) {
+          if (source.elements[id].role == 'image' && range.start == range.end) {
+            (imageSources[range.start] ??= []).add(id);
+          }
+        }
+      }
+      final imageOccurrences = <int, int>{};
+      int? imageStyle(int offset) {
+        final matches = imageSources[offset];
+        if (matches == null) return null;
+        final occurrence = imageOccurrences.update(
+          offset,
+          (i) => i + 1,
+          ifAbsent: () => 0,
+        );
+        return elementIds[matches.elementAtOrNull(occurrence)];
+      }
+
       final runs = <TextRun>[];
       var offset = 0;
       for (final run in block.runs) {
@@ -204,8 +227,10 @@ abstract final class CssLayoutStyles {
           resourcePath: block.resourcePath,
           resourceWidth: block.resourceWidth,
           resourceHeight: block.resourceHeight,
+          svgRatioOnly: block.svgRatioOnly,
           alt: block.alt,
           noteLink: block.noteLink,
+          altIsFootnote: block.altIsFootnote,
           target: block.target,
           nest: block.nest,
           ordered: listStart
@@ -222,22 +247,14 @@ abstract final class CssLayoutStyles {
           line: block.line,
           inlineImages: [
             for (final image in block.inlineImages)
-              image.positioned(
-                image.offset,
-                styleId:
-                    elementIds[ranges
-                        .where(
-                          (r) =>
-                              source.elements[r.$1].role == 'image' &&
-                              r.$2.start == image.offset,
-                        )
-                        .firstOrNull
-                        ?.$1],
-              ),
+              image.positioned(image.offset, styleId: imageStyle(image.offset)),
           ],
           inlineBoxes: [
             for (final (id, range) in ranges)
-              if (isInlineDisplay(
+              // 块的来源元素已用自身样式画框。inline-block 标题有文字范围，
+              // 但不能再给它套一层行内框。真正的子元素仍各自保留装饰。
+              if (id != owner?.id &&
+                  isInlineDisplay(
                     displayOf(source.elements[id], table[elementIds[id] ?? 0]),
                   ) &&
                   !table[elementIds[id] ?? 0].box.isEmpty)
@@ -274,6 +291,7 @@ abstract final class CssLayoutStyles {
             box: value.box,
             boxId: value.boxId,
             columnWidths: value.columnWidths,
+            columnWeights: value.columnWeights,
             columnNodes: value.columnNodes,
             columnStyles: value.columnNodes == null
                 ? null

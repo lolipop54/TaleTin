@@ -7,6 +7,7 @@ import 'package:html/parser.dart' as html;
 import 'package:path/path.dart' as p;
 import 'package:xml/xml.dart';
 
+import 'kindle_media.dart';
 import 'mobi_splitter.dart';
 
 /// These are the existing publication's link/media and serialization rules.
@@ -30,13 +31,9 @@ class MobiRewriter {
     ).toString();
   }
 
-  String _media(String value) => value
-      .replaceAll('amzn-kf8', kf8 ? 'screen' : 'taletin-kf8-disabled')
-      .replaceAll('amzn-mobi', kf8 ? 'taletin-mobi-disabled' : 'screen');
-  String _stylesheet(String value) => value.replaceAllMapped(
-    RegExp(r'(@media\s+)([^{}]+)(\{)', caseSensitive: false),
-    (m) => '${m[1]}${_media(m[2]!)}${m[3]}',
-  );
+  String _media(String value) => kindleMedia(value, kf8: kf8);
+  String _stylesheet(String value) =>
+      kindleMedia(value, kf8: kf8, stylesheet: true);
 
   String rewrite(String text, String name) {
     final extension = p.extension(name).toLowerCase();

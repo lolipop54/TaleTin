@@ -48,6 +48,7 @@ class Locator {
     this.needsRelocation = false,
     this.imageResource,
     this.pdfY,
+    this.scrollViewport,
   });
 
   final String bookId;
@@ -79,6 +80,9 @@ class Locator {
   /// PDF原页中的纵向位置；章、块、文字偏移仍是两种模式共用的位置。
   final double? pdfY;
 
+  /// 同一排版下的章内视口。原文位置仍独立有效，换字号或改排版时重新找原文。
+  final ({String layout, double y})? scrollViewport;
+
   Locator copyWith({
     String? chapterId,
     String? blockId,
@@ -90,6 +94,7 @@ class Locator {
     bool? needsRelocation,
     String? imageResource,
     double? pdfY,
+    ({String layout, double y})? scrollViewport,
   }) => Locator(
     bookId: bookId,
     contentVersion: contentVersion,
@@ -105,6 +110,15 @@ class Locator {
     needsRelocation: needsRelocation ?? this.needsRelocation,
     imageResource: imageResource ?? this.imageResource,
     pdfY: pdfY ?? this.pdfY,
+    scrollViewport:
+        scrollViewport ??
+        (chapterId == null &&
+                blockId == null &&
+                utf16Offset == null &&
+                needsRelocation != true &&
+                affinity == null
+            ? this.scrollViewport
+            : null),
   );
 
   Map<String, Object?> toJson() => {
@@ -122,6 +136,8 @@ class Locator {
     if (needsRelocation) 'needsRelocation': true,
     if (imageResource != null) 'imageResource': imageResource,
     if (pdfY != null) 'pdfY': pdfY,
+    if (scrollViewport case final viewport?)
+      'scrollViewport': {'layout': viewport.layout, 'y': viewport.y},
   };
 
   static Locator fromJson(Map<String, Object?> json) => Locator(
@@ -141,6 +157,13 @@ class Locator {
     needsRelocation: json['needsRelocation'] == true,
     imageResource: json['imageResource'] as String?,
     pdfY: (json['pdfY'] as num?)?.toDouble(),
+    scrollViewport: switch (json['scrollViewport']) {
+      {'layout': final String layout, 'y': final num y} => (
+        layout: layout,
+        y: y.toDouble(),
+      ),
+      _ => null,
+    },
   );
 
   /// 同一个内容位置的判定口径：章节 + 块 + 偏移 + 倾向。
@@ -159,6 +182,7 @@ class Locator {
       other is Locator &&
       samePosition(other) &&
       contentVersion == other.contentVersion &&
+      scrollViewport == other.scrollViewport &&
       needsRelocation == other.needsRelocation &&
       imageResource == other.imageResource &&
       exact == other.exact &&

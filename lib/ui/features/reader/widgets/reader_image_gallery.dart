@@ -23,6 +23,7 @@ Future<bool> tryReaderImageGallery(
   String resourcePath, {
   String? chapterId,
   String? blockId,
+  bool Function(Locator)? isImageVisible,
   Future<ReaderGalleryFrame> Function(String, BuildContext) loadFrame =
       ReaderGalleryFrame.load,
 }) async {
@@ -111,6 +112,9 @@ Future<bool> tryReaderImageGallery(
                 );
             if (found == null) return;
             locator = found;
+          } else if (isImageVisible?.call(locator) == true) {
+            // 正文仍能看到最后查看的图片，保留页首文字和图内的滚动距离。
+            return;
           }
           await notifier.goToImage(
             locator,

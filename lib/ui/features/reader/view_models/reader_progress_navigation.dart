@@ -1,5 +1,23 @@
 part of 'reader_session_view_model.dart';
 
+/// 全书字数（进度分母；书表没写时用章节之和兜底）
+int _bookTotalChars(ReaderSession session) {
+  if (session.book.textLength > 0) return session.book.textLength;
+  var total = 0;
+  for (final chapter in session.chapters) {
+    total += chapter.textLength;
+  }
+  return total;
+}
+
+/// 内容偏移 → 页序：用章内百分比换算，够准且与排版无关
+int _pageForChapterOffset(ChapterLayout layout, int offset) {
+  if (layout.totalLength <= 0 || layout.pageCount == 0) return 0;
+  final fraction = (offset / layout.totalLength).clamp(0.0, 1.0);
+  final index = (fraction * layout.pageCount).floor();
+  return index.clamp(0, layout.pageCount - 1);
+}
+
 /// 百分比先确定正文目标，再交给当前版式落页。
 extension _ReaderProgressNavigation on ReaderSessionNotifier {
   /// 按百分比跳转（控制层进度滑块）。
@@ -14,7 +32,8 @@ extension _ReaderProgressNavigation on ReaderSessionNotifier {
     _clearRestoredPosition();
     final session = _progressSession;
     if (session == null || session.chapters.isEmpty) return;
-    final target = (bookTotalChars(session) * fraction.clamp(0.0, 1.0)).round();
+    final target = (_bookTotalChars(session) * fraction.clamp(0.0, 1.0))
+        .round();
     var consumed = 0;
     for (var i = 0; i < session.chapters.length; i++) {
       final length = session.chapters[i].textLength;

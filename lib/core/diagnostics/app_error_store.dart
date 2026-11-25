@@ -3,13 +3,18 @@ import 'dart:io';
 
 import 'package:path_provider/path_provider.dart';
 
+import '../../platform/channels/windows_app_storage.dart';
+
 /// 错误与退出过程分别轮换，不放进书库或可清理的阅读缓存。
 class AppErrorStore {
   AppErrorStore({
     Future<Directory> Function()? directory,
     this.maxBytes = 524288,
     this.exitMaxBytes = 131072,
-  }) : _directory = directory ?? getApplicationSupportDirectory;
+  }) : _directory = directory ?? _defaultDirectory;
+
+  static Future<Directory> _defaultDirectory() async =>
+      windowsSideBySideStorageRoot ?? await getApplicationSupportDirectory();
 
   final Future<Directory> Function() _directory;
   final int maxBytes;
@@ -34,6 +39,9 @@ class AppErrorStore {
   Future<void> append(Map<String, Object?> event) =>
       _serial(() => _append(event, 'errors', maxBytes));
 
+  Future<String> windowsReaderTracePath() async =>
+      (await _file('reader-window.jsonl')).path;
+
   /// 正常退出过程单独轮换，不能挤掉真实异常，也不进入错误提示队列。
   Future<void> appendReaderExit(Map<String, Object?> event) =>
       _serial(() => _append(event, 'reader-exit', exitMaxBytes));
@@ -42,14 +50,28 @@ class AppErrorStore {
       _serial(() => _append(event, 'listening-follow', exitMaxBytes));
 
   /// 翻页状态批次单独轮换，不能覆盖真实异常；每次批量落盘只同步一次。
-  Future<void> appendReaderTurnState(List<Map<String, Object?>> records) =>
-      _serial(
-        () => _append(
-          {'kind': 'readerTurnStateBatch', 'records': records},
-          'reader-turn-state',
-          1048576,
-        ),
-      );
+  Future<void> appendReaderTurnState(
+    List<Map<String, Object?>> records, {
+    bool includeWheel = false,
+  }) => _serial(() async {
+    await _append(
+      {'kind': 'readerTurnStateBatch', 'records': records},
+      'reader-turn-state',
+      1048576,
+    );
+    if (!includeWheel) return;
+    // 高频动画帧会使通用日志较快轮换。把滚轮及其异步步骤单独留下。
+    final wheel = records.where((r) {
+      final event = r['event'];
+      return event is String &&
+          (event.startsWith('wheel.') ||
+              event.startsWith('step.') &&
+                  (r['details'] as Map?)?['wheelId'] != null);
+    }).toList();
+    if (wheel.isNotEmpty) {
+      await _append({'records': wheel}, 'reader-wheel', 1048576);
+    }
+  });
 
   Future<void> appendReaderRecovery(Map<String, Object?> event) =>
       _serial(() => _append(event, 'reader-recovery', 1048576));
@@ -108,6 +130,12 @@ class AppErrorStore {
       'reader-recovery.jsonl',
       'reader-turn-state.previous.jsonl',
       'reader-turn-state.jsonl',
+      if (Platform.isWindows) ...[
+        'reader-wheel.previous.jsonl',
+        'reader-wheel.jsonl',
+        'reader-window.previous.jsonl',
+        'reader-window.jsonl',
+      ],
       'pdf-opening.previous.jsonl',
       'pdf-opening.jsonl',
     ]) {

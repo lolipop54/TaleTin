@@ -11,6 +11,7 @@ import '../../settings/view_models/settings_view_model.dart';
 import '../view_models/reader_session_view_model.dart';
 import '../view_models/reader_view_model.dart';
 import 'page_information.dart';
+import 'book_page_footer.dart';
 import 'book_paper.dart';
 import 'search_return_bar.dart';
 
@@ -26,6 +27,7 @@ PageInformation readerInformation(
   bool showReturnProgress = true,
   bool bookmarked = false,
   int? spreadSide,
+  bool simplifiedPage = false,
 }) {
   // 系统分钟、校时、电量及恢复前台都会重建信息；正文排版参数不变。
   ref.watch(deviceStatusChangesProvider);
@@ -48,6 +50,7 @@ PageInformation readerInformation(
   final showNavigationBar =
       ref.watch(readingControlsProvider).value?.navigationBar ?? true;
   return PageInformation(
+    externalProgress: simplifiedPage && ref.watch(showBookPagesProvider),
     bookmarked: bookmarked,
     bookEdges: settings.bookEdges,
     paper: theme.background,

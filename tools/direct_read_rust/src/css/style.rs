@@ -1,4 +1,4 @@
-// Copyright (c) 2026 GT Reader contributors. MIT license, see LICENSE.
+// Copyright (c) 2026 GT Reader contributors. GPL-3.0-only, see LICENSE.
 //! 一个元素的计算样式，以及迁移期给旧转换器的 `Props` 形状。
 //!
 //! `Computed` 只保存作者侧（标签默认 + 作者样式 + 行内样式）的结果，单位仍是
@@ -26,6 +26,12 @@ pub struct Computed {
     pub font_weight_relative: Option<&'static str>,
     pub font_style: Option<&'static str>,
     pub font_family: Option<Vec<String>>,
+    pub language: Option<String>,
+    pub visited_ink: Option<Color>,
+    pub active_ink: Option<Color>,
+    pub emphasis: Option<String>,
+    pub emphasis_position: Option<String>,
+    pub emphasis_color: Option<Color>,
     pub color: Option<Color>,
     pub line_height: Option<LineHeight>,
     pub decoration: Option<Decoration>,
@@ -34,14 +40,16 @@ pub struct Computed {
     pub word_spacing: Option<Option<Length>>,
     pub text_transform: Option<&'static str>,
     pub vertical_align: Option<String>,
+    pub vertical_align_length: Option<Length>,
     pub white_space: Option<&'static str>,
     pub hyphens: Option<String>,
 
     pub background: Option<Background>,
     pub border: [BorderSide; 4],
-    pub radii: Option<[Length; 4]>,
+    pub radii: Option<[(Length, Length); 4]>,
     pub box_shadow: Option<Vec<Shadow>>,
     pub padding: Option<Edges>,
+    pub decoration_break: Option<&'static str>,
     pub overflow: Option<String>,
 
     pub display: Option<&'static str>,
@@ -66,11 +74,14 @@ pub struct Computed {
     pub max_width: Option<Length>,
     pub max_height: Option<Length>,
     pub box_sizing: Option<&'static str>,
+    pub bleed: Option<u8>,
     pub object_fit: Option<String>,
 
     pub border_collapse: Option<String>,
     pub border_spacing: Option<Length>,
+    pub border_spacing_y: Option<Length>,
     pub table_layout: Option<String>,
+    pub direction: Option<String>,
     pub caption_side: Option<String>,
     pub empty_cells: Option<String>,
 
@@ -134,6 +145,24 @@ impl Computed {
         if let Some(value) = self.font_style {
             out.insert("fy".to_owned(), json!(value));
         }
+        if let Some(v) = &self.visited_ink {
+            out.insert("vi".into(), v.to_json());
+        }
+        if let Some(v) = &self.active_ink {
+            out.insert("ai".into(), v.to_json());
+        }
+        if let Some(v) = &self.language {
+            out.insert("lang".into(), json!(v));
+        }
+        if let Some(v) = &self.emphasis {
+            out.insert("em".into(), json!(v));
+        }
+        if let Some(v) = &self.emphasis_position {
+            out.insert("ep".into(), json!(v));
+        }
+        if let Some(v) = &self.emphasis_color {
+            out.insert("ec".into(), v.to_json());
+        }
         if let Some(value) = &self.font_family {
             out.insert("ff".to_owned(), json!(value));
         }
@@ -165,7 +194,9 @@ impl Computed {
         if let Some(value) = self.text_transform {
             out.insert("tt".to_owned(), json!(value));
         }
-        if let Some(value) = &self.vertical_align {
+        if let Some(length) = &self.vertical_align_length {
+            out.insert("va".to_owned(), json!({"len": length.to_json()}));
+        } else if let Some(value) = &self.vertical_align {
             out.insert("va".to_owned(), json!(value));
         }
         if let Some(value) = self.white_space {
@@ -179,6 +210,9 @@ impl Computed {
 
     fn box_json(&self) -> serde_json::Map<String, Value> {
         let mut out = serde_json::Map::new();
+        if let Some(value) = self.decoration_break {
+            out.insert("db".to_owned(), json!(value));
+        }
         if let Some(value) = &self.padding {
             if !is_empty_edges(value) {
                 out.insert("p".to_owned(), value.to_json());
@@ -201,7 +235,10 @@ impl Computed {
         if let Some(value) = &self.radii {
             let mut corners = serde_json::Map::new();
             for (key, value) in ["tl", "tr", "br", "bl"].into_iter().zip(value.iter()) {
-                corners.insert(key.to_owned(), value.to_json());
+                corners.insert(key.to_owned(), value.0.to_json());
+                if value.0 != value.1 {
+                    corners.insert(format!("{key}Y"), value.1.to_json());
+                }
             }
             out.insert("r".to_owned(), Value::Object(corners));
         }
@@ -289,6 +326,9 @@ impl Computed {
         if let Some(value) = self.box_sizing {
             out.insert("bs".to_owned(), json!(value));
         }
+        if let Some(mask) = self.bleed {
+            out.insert("bleed".to_owned(), json!(mask));
+        }
         if let Some(value) = &self.object_fit {
             out.insert("of".to_owned(), json!(value));
         }
@@ -303,8 +343,14 @@ impl Computed {
         if let Some(value) = &self.border_spacing {
             out.insert("bsp".to_owned(), value.to_json());
         }
+        if let Some(value) = &self.border_spacing_y {
+            out.insert("bspy".to_owned(), value.to_json());
+        }
         if let Some(value) = &self.table_layout {
             out.insert("tl".to_owned(), json!(value));
+        }
+        if let Some(value) = &self.direction {
+            out.insert("dir".to_owned(), json!(value));
         }
         if let Some(value) = &self.caption_side {
             out.insert("cs".to_owned(), json!(value));
@@ -487,7 +533,7 @@ impl Computed {
         if let Some(radii) = &self.radii {
             props.has_radius = true;
             for (index, value) in radii.iter().enumerate() {
-                props.radius[index] = value.to_hundredths_em().unwrap_or(0);
+                props.radius[index] = value.0.to_hundredths_em().unwrap_or(0);
             }
         }
         props.shadow = self
@@ -590,7 +636,7 @@ fn image_length(value: &Length) -> Option<[i64; 2]> {
         Length::Em(value) | Length::Rem(value) => [(value * 100.0).round() as i64, 2],
         Length::Px(value) => [(value * 100.0).round() as i64, 3],
         Length::Pt(value) => [(value * 4.0 / 3.0 * 100.0).round() as i64, 3],
-        Length::Auto => return None,
+        Length::Auto | Length::Ch(_) | Length::Viewport(..) => return None,
     })
 }
 
@@ -620,9 +666,11 @@ fn is_empty_edges(edges: &Edges) -> bool {
 fn background_is_empty(background: &Background) -> bool {
     background.color.is_none()
         && background.image.is_none()
+        && background.gradient.is_none()
         && background.repeat.is_none()
         && background.position.is_none()
         && background.size.is_none()
+        && background.attachment.is_none()
 }
 
 /// 绝对字号是否是 `px/pt`；用于判断是否参与用户字号缩放。

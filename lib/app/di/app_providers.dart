@@ -10,6 +10,11 @@ import '../../ui/core/widgets/book_cover_resources.dart';
 import '../../core/diagnostics/app_errors.dart';
 
 import 'dart:async';
+import 'dart:io' show File, FileSystemEntityType, Platform;
+
+import '../../core/io/source_fingerprint.dart';
+import '../../data/services/reader_page_counts.dart';
+import '../../data/services/book_source_path.dart';
 
 import 'device_status_providers.dart';
 
@@ -46,6 +51,7 @@ import '../../data/services/publication_font_loader.dart';
 import '../../data/services/file_import_storage.dart';
 import '../../data/services/tts/listening_audio_handler.dart';
 import '../../domain/models/book.dart';
+import '../../domain/models/book_cover_choice.dart';
 import '../../domain/models/reading_settings.dart';
 import '../../domain/repositories/annotation_repository.dart';
 import '../../domain/repositories/book_repository.dart';
@@ -69,6 +75,7 @@ import '../../engine/layout/flutter_reader_engine.dart';
 import '../../engine/parsers/parser_registry.dart';
 import '../../engine/parsers/txt_text_preparation.dart';
 import '../../platform/channels/android_document_platform.dart';
+import '../../platform/channels/windows_document_platform.dart';
 import '../../platform/channels/android_font_resolver.dart';
 import '../../platform/channels/reading_fonts.dart';
 import '../../platform/channels/android_screen_controls.dart';
@@ -136,7 +143,9 @@ final globalReadingPreferencesProvider = Provider<GlobalReadingPreferences>(
 
 /// 文件选择与 URI 分块读取的平台能力。
 final documentPlatformProvider = Provider<DocumentPlatform>(
-  (ref) => AndroidDocumentPlatform(),
+  (ref) => Platform.isWindows
+      ? WindowsDocumentPlatform()
+      : AndroidDocumentPlatform(),
 );
 
 /// 屏幕能力：窗口亮度与电量（S14）。
@@ -210,10 +219,15 @@ final libraryRootPathProvider = Provider<String>(
   (ref) => throw StateError('libraryRootPathProvider 必须在 ProviderScope 中注入'),
 );
 
+/// 仅在支持独立算页的阅读窗口装配。
+final readerPageCountsProvider = Provider<ReaderPageCounts?>((ref) => null);
+
 /// 阅读引擎：排版与位置换算的入口（设计文档 4.3）。
 /// 应用级保活：排版缓存跨页面复用（设计文档 4.2）。
 final readerEngineProvider = Provider<ReaderEngine>((ref) {
   final engine = FlutterReaderEngine(
+    lookupPages: ref.watch(readerPageCountsProvider)?.lookup,
+    recordPages: ref.watch(readerPageCountsProvider)?.record,
     checkpoints: ref.watch(layoutCheckpointStoreProvider),
     prepareFonts: ref.watch(publicationFontLoaderProvider).prepare,
   );
@@ -243,17 +257,31 @@ final epubSourceRepositoryProvider = Provider<EpubSourceRepository>(
 
 final publicationFontLoaderProvider = Provider<PublicationFontLoader>((ref) {
   final books = ref.watch(bookRepositoryProvider);
-  return PublicationFontLoader((bookId) async {
-    final sources = ref.read(epubSourceRepositoryProvider);
-    final book = await books.findById(bookId);
-    if (book == null || !book.format.usesOriginalWebView) return null;
-    return sources.open(
-      bookId: bookId,
-      contentVersion: book.contentVersion,
-      chapters: await books.chaptersOf(bookId),
-      fontsOnly: true,
-    );
-  });
+  return PublicationFontLoader(
+    (bookId) async {
+      final sources = ref.read(epubSourceRepositoryProvider);
+      final book = await books.findById(bookId);
+      if (book == null || !book.format.usesOriginalWebView) return null;
+      return sources.open(
+        bookId: bookId,
+        contentVersion: book.contentVersion,
+        chapters: await books.chaptersOf(bookId),
+        fontsOnly: true,
+      );
+    },
+    sourceIdentity: (bookId, readingBook) async {
+      final book = readingBook ?? await books.findById(bookId);
+      if (book == null) return null;
+      final path = bookSourcePath(
+        p.join(ref.read(libraryRootPathProvider), bookId),
+        book.format.code,
+      );
+      final stat = await File(path).stat();
+      // 同路径的源文件也可能被替换。命中别名前核对与正文读取相同的文件指纹。
+      if (stat.type != FileSystemEntityType.file) return null;
+      return (book.contentVersion, path, sourceFingerprint(stat));
+    },
+  );
 });
 
 /// 章节正文与资源读取（正文文件的事实来源，见实现计划 4.5 节）。
@@ -284,10 +312,10 @@ final bookCoverFileProvider = Provider<String? Function(Book)>((ref) {
   final root = ref.watch(libraryRootPathProvider);
   return (book) {
     if (book.coverChoice?.preset != null) return null;
-    final relative = book.coverChoice?.imagePath ?? book.coverPath;
-    if (relative?.startsWith('global-covers/') == true) {
-      return p.join(root, relative!);
+    if (book.coverChoice?.imagePath case final image?) {
+      return p.join(root, BookCoverChoice.libraryImagePath(image, book.id));
     }
+    final relative = book.coverPath;
     return relative == null ? null : p.join(root, book.id, relative);
   };
 });
@@ -299,6 +327,7 @@ final deleteBooksProvider = Provider<DeleteBooks>(
     prepareContentChange: ref.watch(bookContentChangeProvider),
     books: ref.watch(bookRepositoryProvider),
     storage: ref.watch(importStorageProvider),
+    covers: ref.watch(bookCoverRepositoryProvider),
   ),
 );
 

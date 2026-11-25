@@ -28,10 +28,9 @@ class BackupDocuments(private val activity: Activity, engine: FlutterEngine) {
                     } else {
                         val create = call.method == "create"
                         multiple = call.method == "pickImages"
-                        val limit = (call.argument<Int>("limit") ?: 1).coerceIn(1, 9)
-                        // 封面走相册选择；备份读写仍使用文档选择器。
-                        // 旧系统用相册选择入口，并向支持多选的相册传递多选请求。
-                        val intent = if (call.method == "pickImage" || call.method == "pickImages") {
+                        val requestedLimit = call.argument<Int>("limit")
+                        val limit = (requestedLimit ?: 1).coerceIn(1, 9)
+                        val intent = if (call.method == "pickImage" || multiple) {
                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                                 Intent(MediaStore.ACTION_PICK_IMAGES).apply {
                                     type = "image/*"

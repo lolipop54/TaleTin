@@ -13,12 +13,14 @@ import '../../engine/normalization/content_fingerprint.dart';
 import '../../core/diagnostics/reader_work_trace.dart';
 
 part 'layout_checkpoint_segments.dart';
+part 'spread_run_file.dart';
 
 /// 源内容摘要、实际字体文件摘要与精确布局参数共同决定可重建文件身份。
 class FileLayoutCheckpointStore implements LayoutCheckpointStore {
   FileLayoutCheckpointStore(
     this.root, {
     required this.fontFingerprint,
+    this.spreadFontFingerprint,
     this.engineFingerprint = const String.fromEnvironment(
       'FLUTTER_ENGINE_REVISION',
     ),
@@ -27,6 +29,7 @@ class FileLayoutCheckpointStore implements LayoutCheckpointStore {
   final String root;
   final Future<String?> Function(String?) fontFingerprint;
   final String engineFingerprint;
+  final Future<String?> Function(String?)? spreadFontFingerprint;
 
   /// 单布局预算，测试可缩小以覆盖多轮淘汰；不能超过正式读取的硬上限。
   final int maxLayoutBytes;
@@ -62,7 +65,7 @@ class FileLayoutCheckpointStore implements LayoutCheckpointStore {
         .convert(
           utf8.encode(
             jsonEncode([
-              'measured-prefix-18',
+              'measured-prefix-19',
               bookId,
               title,
               digest,
@@ -76,6 +79,47 @@ class FileLayoutCheckpointStore implements LayoutCheckpointStore {
           ),
         )
         .toString();
+  }
+
+  @override
+  Future<String?> spreadIdentity(
+    String source,
+    String layout,
+    String? fontFamily,
+  ) async {
+    final font = await (spreadFontFingerprint ?? fontFingerprint)(fontFamily);
+    if (font == null) return null;
+    return sha256
+        .convert(
+          utf8.encode(
+            jsonEncode([
+              source,
+              layout,
+              font,
+              engineFingerprint,
+              Platform.version,
+              Platform.operatingSystemVersion,
+              Platform.localeName,
+            ]),
+          ),
+        )
+        .toString();
+  }
+
+  @override
+  Future<Map<int, int>> readSpreadRuns(String bookId, String key) =>
+      _readSpreadRuns(_path(bookId, _spreadRunName), key);
+
+  @override
+  Future<void> writeSpreadRuns(String bookId, String key, Map<int, int> runs) {
+    final generation = _writeGeneration;
+    return _writes = _writes
+        .then((_) async {
+          if (generation == _writeGeneration) {
+            await _writeSpreadRuns(_path(bookId, _spreadRunName), key, runs);
+          }
+        })
+        .catchError((Object error) {});
   }
 
   String _path(String book, String key) =>
@@ -335,11 +379,21 @@ class FileLayoutCheckpointStore implements LayoutCheckpointStore {
   static Future<void> _prune(String root, String current) => Isolate.run(() {
     final directory = Directory(root);
     if (!directory.existsSync()) return;
-    final layouts = <(Directory, int, DateTime)>[];
+    final layouts = <(FileSystemEntity, int, DateTime)>[];
     for (final book in directory.listSync().whereType<Directory>()) {
       for (final layout in book.listSync()) {
         if (layout is File) {
-          layout.deleteSync();
+          // 页数索引按最近四种版面自行清理。其 SQLite 日志可能正由独立进程写入。
+          if (p.basename(layout.path).startsWith('page-counts.sqlite')) continue;
+          if (p.basename(layout.path) == _spreadRunName) {
+            layouts.add((
+              layout,
+              layout.lengthSync(),
+              layout.lastModifiedSync(),
+            ));
+          } else {
+            layout.deleteSync();
+          }
           continue;
         } // 旧版可重建缓存。
         if (layout is! Directory) continue;

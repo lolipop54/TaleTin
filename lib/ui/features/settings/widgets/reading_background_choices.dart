@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -17,8 +18,13 @@ import '../view_models/reading_backgrounds.dart';
 
 /// 阅读背景统一使用全局选择，阅读面板保留紧凑卡片并提供同样的相册导入。
 class ReadingBackgroundChoices extends ConsumerStatefulWidget {
-  const ReadingBackgroundChoices({super.key, this.bookId});
+  const ReadingBackgroundChoices({
+    super.key,
+    this.bookId,
+    this.onImportingChanged,
+  });
   final String? bookId;
+  final ValueChanged<bool>? onImportingChanged;
   @override
   ConsumerState<ReadingBackgroundChoices> createState() =>
       _ReadingBackgroundChoicesState();
@@ -27,6 +33,29 @@ class ReadingBackgroundChoices extends ConsumerStatefulWidget {
 class _ReadingBackgroundChoicesState
     extends ConsumerState<ReadingBackgroundChoices> {
   bool _busy = false;
+
+  Future<void> _showToast(String message) async {
+    if (!mounted) return;
+    if (defaultTargetPlatform != TargetPlatform.windows) {
+      await SystemToast.show(message);
+      return;
+    }
+    final width = (MediaQuery.sizeOf(context).width - 32).clamp(1.0, 360.0);
+    ScaffoldMessenger.of(context)
+      ..removeCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(message, textAlign: TextAlign.center),
+          behavior: SnackBarBehavior.floating,
+          width: width,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+          ),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+  }
+
   Future<void> _run(Future<void> Function() action) async {
     if (_busy) return;
     setState(() => _busy = true);
@@ -40,13 +69,21 @@ class _ReadingBackgroundChoicesState
   }
 
   Future<void> _import() => _run(() async {
+    final onImportingChanged = widget.onImportingChanged;
+    onImportingChanged?.call(true);
     try {
       await ref.read(readingBackgroundsProvider.notifier).import();
     } on FormatException catch (error, stack) {
       // 文件大小等输入限制直接告诉用户原因；详细堆栈仍进日志，
       // 不再用只有错误编号和代码位置的通用提示盖住实际原因。
       AppErrors.report(error, stack, operation: '阅读背景导入失败', notify: false);
-      await SystemToast.show(error.message);
+      await _showToast(error.message);
+    } finally {
+      if (onImportingChanged != null) {
+        // 先让系统选图窗口关闭后的鼠标事件和新增卡片完成本帧交接。
+        await WidgetsBinding.instance.endOfFrame;
+        onImportingChanged(false);
+      }
     }
   });
 
@@ -101,7 +138,12 @@ class _ReadingBackgroundChoicesState
     final root = ref.watch(libraryRootPathProvider);
     return LayoutBuilder(
       builder: (context, box) {
-        final width = bookId == null
+        const gap = 12.0;
+        final desktop = defaultTargetPlatform == TargetPlatform.windows;
+        final columns = ((box.maxWidth + gap) / (72 + gap)).floor().clamp(1, 5);
+        final width = desktop
+            ? (box.maxWidth - gap * (columns - 1)) / columns
+            : bookId == null
             ? 80.0
             : ((box.maxWidth - 48) / 5).clamp(52.0, 80.0);
         Widget card({
@@ -111,117 +153,121 @@ class _ReadingBackgroundChoicesState
           VoidCallback? onLongPress,
           bool chosen = false,
           Key? key,
-        }) => Padding(
-          padding: const EdgeInsets.only(right: 12),
-          child: SizedBox(
-            width: width,
-            child: GtButton.raw(
-              key: key,
-              onPressed: onTap,
-              onLongPress: onLongPress,
-              borderRadius: BorderRadius.circular(GtRadius.control),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    height: bookId == null ? 48 : 44,
-                    decoration: BoxDecoration(
-                      color: solid,
-                      borderRadius: BorderRadius.circular(GtRadius.control),
+        }) => SizedBox(
+          width: width,
+          child: GtButton.raw(
+            key: key,
+            onPressed: onTap,
+            onLongPress: onLongPress,
+            borderRadius: BorderRadius.circular(GtRadius.control),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  height: bookId == null ? 48 : 44,
+                  decoration: BoxDecoration(
+                    color: solid,
+                    borderRadius: BorderRadius.circular(GtRadius.control),
+                  ),
+                  // 图片先按外轮廓裁切，边框最后绘制，避免方形缩略图盖住圆角。
+                  foregroundDecoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(GtRadius.control),
+                    border: Border.all(
+                      color: chosen
+                          ? colors.actionPrimary
+                          : colors.borderSubtle,
+                      width: chosen ? 2 : 1,
                     ),
-                    // 图片先按外轮廓裁切，边框最后绘制，避免方形缩略图盖住圆角。
-                    foregroundDecoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(GtRadius.control),
-                      border: Border.all(
-                        color: chosen
-                            ? colors.actionPrimary
-                            : colors.borderSubtle,
-                        width: chosen ? 2 : 1,
-                      ),
-                    ),
-                    clipBehavior: Clip.antiAlias,
-                    child: Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        preview,
-                        if (chosen)
-                          Positioned(
-                            right: 3,
-                            bottom: 3,
-                            child: GtIcon(
-                              GtIcons.checkCircle,
-                              size: 16,
-                              color: colors.actionPrimary,
-                            ),
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      preview,
+                      if (chosen)
+                        Positioned(
+                          right: 3,
+                          bottom: 3,
+                          child: GtIcon(
+                            GtIcons.checkCircle,
+                            size: 16,
+                            color: colors.actionPrimary,
                           ),
-                      ],
-                    ),
+                        ),
+                    ],
                   ),
-                  const SizedBox(height: GtSpacing.s1),
-                  Text(
-                    label,
-                    maxLines: 1,
-                    style: GtText.caption(colors.textSecondary)
-                        .copyWith(fontSize: 12),
-                  ),
-                ],
-              ),
+                ),
+                const SizedBox(height: GtSpacing.s1),
+                Text(
+                  label,
+                  maxLines: 1,
+                  style: GtText.caption(colors.textSecondary)
+                      .copyWith(fontSize: 12),
+                ),
+              ],
             ),
           ),
         );
         final full = catalog.custom.length >= ReadingBackground.limit;
+        final cards = [
+          for (final item in catalog.all)
+            card(
+              key: ValueKey('reading-background-${item.id}'),
+              label: item.label,
+              chosen: item.id == selected,
+              preview: item.asset == null && item.path == null
+                  ? const SizedBox.expand()
+                  : Image(
+                      image: backgroundThumbnail(item, root),
+                      fit: BoxFit.fill,
+                      gaplessPlayback: true,
+                    ),
+              onTap: _busy
+                  ? null
+                  : () => _run(
+                      () => bookId == null
+                          ? ref
+                                .read(readingBackgroundsProvider.notifier)
+                                .selectGlobal(item.id)
+                          : ref
+                                .read(readerSettingsProvider(bookId).notifier)
+                                .setBackground(item.id),
+                    ),
+              onLongPress: !_busy && item.custom ? () => _delete(item) : null,
+            ),
+          card(
+            key: const Key('reading-background-add'),
+            label: '',
+            preview: Icon(
+              Icons.add,
+              color: full || _busy ? colors.textMuted : colors.textPrimary,
+              size: 24,
+            ),
+            onTap: _busy
+                ? null
+                : () {
+                    if (full) {
+                      _showToast('已达到导入上限，长按删除其一后可继续添加');
+                    } else {
+                      _import();
+                    }
+                  },
+          ),
+        ];
+        // Windows 直接换行，交由外观面板已有的纵向滚动区浏览。
+        if (desktop) {
+          return Wrap(spacing: gap, runSpacing: gap, children: cards);
+        }
         return SingleChildScrollView(
           scrollDirection: Axis.horizontal,
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              for (final item in catalog.all)
-                card(
-                  key: ValueKey('reading-background-${item.id}'),
-                  label: item.label,
-                  chosen: item.id == selected,
-                  preview: item.asset == null && item.path == null
-                      ? const SizedBox.expand()
-                      : Image(
-                          image: backgroundThumbnail(item, root),
-                          fit: BoxFit.fill,
-                          gaplessPlayback: true,
-                        ),
-                  onTap: _busy
-                      ? null
-                      : () => _run(
-                          () => bookId == null
-                              ? ref
-                                    .read(readingBackgroundsProvider.notifier)
-                                    .selectGlobal(item.id)
-                              : ref
-                                    .read(
-                                      readerSettingsProvider(bookId).notifier,
-                                    )
-                                    .setBackground(item.id),
-                        ),
-                  onLongPress: !_busy && item.custom
-                      ? () => _delete(item)
-                      : null,
+              for (final card in cards)
+                Padding(
+                  padding: const EdgeInsets.only(right: gap),
+                  child: card,
                 ),
-              card(
-                key: const Key('reading-background-add'),
-                label: '',
-                preview: Icon(
-                  Icons.add,
-                  color: full || _busy ? colors.textMuted : colors.textPrimary,
-                  size: 24,
-                ),
-                onTap: _busy
-                    ? null
-                    : () {
-                        if (full) {
-                          SystemToast.show('已达到导入上限，长按删除其一后可继续添加');
-                        } else {
-                          _import();
-                        }
-                      },
-              ),
             ],
           ),
         );

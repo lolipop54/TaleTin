@@ -39,7 +39,7 @@ class BackupView extends ConsumerWidget {
     return PopScope(
       canPop: !state.busy,
       child: Scaffold(
-        appBar: GtAppBar(title: const Text('导出备份')),
+        appBar: GtAppBar.settings(title: const Text('导出备份')),
         body: SafeArea(
           child: ListView(
             padding: const EdgeInsets.all(20),

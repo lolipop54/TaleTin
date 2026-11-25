@@ -187,6 +187,7 @@ class _DictionaryContentState extends State<_DictionaryContent> {
                 height: 48,
                 child: GtButton.icon(
                   tooltip: '关闭查词',
+                  showTooltipOnWindows: false,
                   onPressed: () => Navigator.pop(context),
                   icon: Icon(Icons.close, color: primary, size: 20),
                 ),

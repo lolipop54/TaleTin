@@ -1,4 +1,4 @@
-// Copyright (c) 2026 GT Reader contributors. MIT license, see LICENSE.
+// Copyright (c) 2026 GT Reader contributors. GPL-3.0-only, see LICENSE.
 use crate::dom::{Dom, attr, tag};
 use html5ever::{
     interface::tree_builder::{NodeOrText, TreeSink},

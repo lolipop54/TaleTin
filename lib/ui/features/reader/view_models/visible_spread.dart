@@ -15,6 +15,13 @@ class VisibleSpread extends Notifier<List<SpreadPageRef>> {
   void show(List<SpreadPageRef> pages) => state = pages;
 }
 
+/// 异步换章期间旧双页继续显示，跟读和大图返回只认本次会话的双页。
+bool spreadShowsSession(List<SpreadPageRef> pages, ReaderSession session) =>
+    pages.any(
+      (p) =>
+          p.layout.samePageAs(session.layout, p.pageIndex, session.pageIndex),
+    );
+
 bool spreadContains(List<SpreadPageRef> pages, Locator point) => pages.any(
   (p) =>
       p.layout.chapterId == point.chapterId &&
