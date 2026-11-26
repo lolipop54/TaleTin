@@ -284,3 +284,14 @@ TaleTin 使用了 Flutter、Riverpod、Drift、flutter_inappwebview、audio_serv
 GPL-3.0 允许商用和收费分发。向他人分发受 GPL-3.0 约束的应用或修改版本时，应按 GPL-3.0 向接收者提供对应源码。分发 APK 或 Windows 安装包时，应在下载位置提供对应源码的获取方式。
 
 第三方依赖、字体及其他资源遵循各自的许可协议。MOBI 原生适配及 libmobi 使用 LGPL-3.0-or-later，相关声明见 [MOBI 许可](tools/mobi_native/LICENSE)、[libmobi 许可](tools/mobi_native/third_party/libmobi/COPYING)、[GPL 完整文本](tools/mobi_native/third_party/COPYING-GPL-3.0) 和 [miniz 许可](tools/mobi_native/third_party/MINIZ-LICENSE)；PDFium 声明见 [PDFium 许可](assets/licenses/PDFium-LICENSE.txt)。离线词库的来源与许可见 [词库来源及许可](assets/licenses/Offline-dictionary-sources.txt)。请保留这些声明及随源码提供的其他许可文件。
+
+## 支持 TaleTin
+
+如果 TaleTin 让你读书更顺手，欢迎请我喝杯咖啡，支持项目继续维护。金额随意，谢谢你使用 TaleTin！
+
+<details>
+<summary>微信扫码</summary>
+
+<img src="readme/%E5%BE%AE%E4%BF%A1%E5%9B%BE%E7%89%87.jpg" alt="TaleTin 微信赞赏码" width="400">
+
+</details>
