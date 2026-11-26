@@ -9,6 +9,7 @@ import '../../domain/services/library_file_gate.dart';
 import '../database/app_database.dart';
 import 'backup_worker.dart';
 import 'backup_snapshot_files.dart';
+import '../../engine/parsers/epub/publication_section_store.dart';
 import 'backup_validation.dart';
 
 class BackupSnapshot {
@@ -93,6 +94,12 @@ class BackupSnapshotService {
           }
           if (entity is File) {
             final parts = p.split(p.relative(entity.path, from: root.path));
+            if (parts.length >= 6 &&
+                parts[0] == 'library' &&
+                parts[2] == 'content' &&
+                PublicationSectionStore.derivedFolders.contains(parts[4])) {
+              continue;
+            }
             // 路径记录不能指回旧手机；原书由上面的有效来源名单单独加入。
             if (parts.length == 3 &&
                 parts.first == 'library' &&

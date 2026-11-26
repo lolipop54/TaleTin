@@ -13,7 +13,7 @@ import '../../engine/selection/selection_rects.dart';
 import '../models/book.dart';
 import '../models/book_document.dart';
 import '../models/locator.dart';
-import 'txt_chapter_sections.dart';
+import 'chapter_sections.dart';
 
 /// 一次排版请求的全部输入。
 ///
@@ -29,19 +29,19 @@ class LayoutRequest {
     required this.options,
     this.targetFirst = false,
     this.allowPageRestart = false,
-  }) : txtSections = null,
+  }) : sections = null,
        chapterOffset = null;
 
-  const LayoutRequest.txtSections({
+  const LayoutRequest.sections({
     this.book,
     required this.bookId,
     required this.contentVersion,
     required this.chapter,
-    required TxtChapterSource source,
+    required ChapterSections source,
     required this.options,
     this.targetFirst = false,
     this.chapterOffset,
-  }) : txtSections = source,
+  }) : sections = source,
        _content = null,
        allowPageRestart = false;
 
@@ -51,7 +51,7 @@ class LayoutRequest {
   final Chapter chapter;
   final ChapterContent? _content;
   ChapterContent get content => _content!;
-  final TxtChapterSource? txtSections;
+  final ChapterSections? sections;
   final int? chapterOffset;
 
   /// 排版参数（设置 + 内容区尺寸 + TextScaler）
@@ -81,6 +81,13 @@ abstract class ReaderEngine {
     bool atEnd = false,
     LayoutToken? token,
   });
+
+  /// Null leaves exact page pairing to the usual layout path.
+  Future<int?> verifiedChapterTail(
+    LayoutRequest request,
+    String blockId, {
+    LayoutToken? token,
+  }) async => null;
 
   /// 一页的首尾锚点。
   ({Locator start, Locator end}) pageBounds(

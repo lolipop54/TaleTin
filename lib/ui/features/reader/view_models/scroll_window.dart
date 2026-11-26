@@ -6,6 +6,7 @@ import 'package:flutter/widgets.dart';
 import '../../../../domain/models/book_document.dart';
 import '../../../../domain/models/locator.dart';
 import '../../../../domain/services/txt_chapter_sections.dart';
+import '../../../../domain/services/chapter_sections.dart';
 import '../../../../engine/layout/layout_options.dart';
 import '../../../../engine/layout/scroll_chapter.dart';
 import '../../../../engine/layout/block_measurement_cache.dart';
@@ -37,26 +38,34 @@ extension on ScrollEntry {
 }
 
 /// 一次解码约八千字。滚动先排其中贴近目标的几段，滑近边界时再接着排。
-class _TxtScrollSection {
-  _TxtScrollSection(this.content)
-    : parts = TxtChapterSections(
-        content.blocks.map((block) => block.textLength),
-        target: 800,
-      );
+class _ScrollSection {
+  _ScrollSection(this.content, {required bool txt})
+    : parts = !txt
+          ? null
+          : TxtChapterSections(
+              content.blocks.map((block) => block.textLength),
+              target: 800,
+            );
 
   final ChapterContent content;
-  final TxtChapterSections parts;
+  final TxtChapterSections? parts;
+  int get count => parts?.starts.length ?? 1;
+  int offsetOf(int part) => parts?.starts[part].offset ?? 0;
 
-  ChapterContent contentOf(int part) => ChapterContent(
-    chapterId: content.chapterId,
-    blocks: content.blocks.sublist(
-      parts.starts[part].paragraph,
-      part + 1 < parts.starts.length
-          ? parts.starts[part + 1].paragraph
-          : content.blocks.length,
-    ),
-    stylesJson: content.stylesJson,
-  );
+  ChapterContent contentOf(int part) {
+    final parts = this.parts;
+    if (parts == null) return content;
+    return ChapterContent(
+      chapterId: content.chapterId,
+      blocks: content.blocks.sublist(
+        parts.starts[part].paragraph,
+        part + 1 < parts.starts.length
+            ? parts.starts[part + 1].paragraph
+            : content.blocks.length,
+      ),
+      stylesJson: content.stylesJson,
+    );
+  }
 }
 
 /// 首次列表布局就使用目标距离，不先画零位置再在下一帧跳过去。
@@ -149,7 +158,7 @@ class ScrollWindow extends ChangeNotifier {
     required this.chapters,
     required this.load,
     required this.onPosition,
-    this.loadTxtSections,
+    this.loadSections,
     this.prepareFonts,
     this.prepareResources,
     this.preparePaperHeight,
@@ -160,7 +169,7 @@ class ScrollWindow extends ChangeNotifier {
   final int version;
   final List<Chapter> chapters;
   final Future<ChapterContent> Function(Chapter) load;
-  final Future<TxtChapterSource?> Function(Chapter)? loadTxtSections;
+  final Future<ChapterSections?> Function(Chapter)? loadSections;
   final PreparePublicationFonts? prepareFonts;
   final Future<double?> Function(String path, double width)? preparePaperHeight;
   final void Function(ChapterContent, Locator, int?) onPosition;
@@ -212,8 +221,8 @@ class ScrollWindow extends ChangeNotifier {
   bool _opening = false;
   bool _landing = false;
   _ScrollKey? _center;
-  final _txtSources = <int, Future<TxtChapterSource?>>{};
-  final _txtSections = <(int, int), Future<_TxtScrollSection>>{};
+  final _sectionSources = <int, Future<ChapterSections?>>{};
+  final _sections = <(int, int), Future<_ScrollSection>>{};
   bool get reachesBookEnd =>
       entries.isNotEmpty && entries.last.atEnd(chapters.length);
   bool get isReady => options != null && !_opening && !_landing;
@@ -235,44 +244,49 @@ class ScrollWindow extends ChangeNotifier {
     throw RangeError.index(index, entries);
   }
 
-  Future<TxtChapterSource?> _txtSource(int index) async {
-    final loader = loadTxtSections;
+  Future<ChapterSections?> _sectionSource(int index) async {
+    final loader = loadSections;
     final chapter = chapters[index];
-    if (loader == null || chapter.textLength < kLongTxtChapterLength) {
+    if (loader == null) {
       return null;
     }
-    final source = _txtSources.remove(index) ?? loader(chapter);
-    _txtSources[index] = source;
-    while (_txtSources.length > 4) {
-      _txtSources.remove(_txtSources.keys.first);
+    final source = _sectionSources.remove(index) ?? loader(chapter);
+    _sectionSources[index] = source;
+    while (_sectionSources.length > 4) {
+      _sectionSources.remove(_sectionSources.keys.first);
     }
     try {
       return await source;
     } catch (_) {
-      if (identical(_txtSources[index], source)) _txtSources.remove(index);
+      if (identical(_sectionSources[index], source)) {
+        _sectionSources.remove(index);
+      }
       rethrow;
     }
   }
 
-  Future<_TxtScrollSection> _txtSection(
+  Future<_ScrollSection> _section(
     int index,
     int section,
-    TxtChapterSource source,
+    ChapterSections source,
   ) async {
     final key = (index, section);
     final payload =
-        _txtSections.remove(key) ??
+        _sections.remove(key) ??
         measureReader('simplified.scroll.load', () async {
-          return _TxtScrollSection(await source.readSection(section));
+          return _ScrollSection(
+            await source.readSection(section),
+            txt: source is TxtChapterSource,
+          );
         });
-    _txtSections[key] = payload;
-    while (_txtSections.length > 4) {
-      _txtSections.remove(_txtSections.keys.first);
+    _sections[key] = payload;
+    while (_sections.length > 4) {
+      _sections.remove(_sections.keys.first);
     }
     try {
       return await payload;
     } catch (_) {
-      if (identical(_txtSections[key], payload)) _txtSections.remove(key);
+      if (identical(_sections[key], payload)) _sections.remove(key);
       rethrow;
     }
   }
@@ -292,14 +306,14 @@ class ScrollWindow extends ChangeNotifier {
       }
     }
     final (index, section, part) = key;
-    final source = await _txtSource(index);
+    final source = await _sectionSource(index);
     if (_disposed || request != _request) {
       throw const ScrollPreparationCancelled();
     }
     final loaded = source == null
         ? null
-        : await _txtSection(index, section, source);
-    final partCount = loaded?.parts.starts.length ?? 1;
+        : await _section(index, section, source);
+    final partCount = loaded?.count ?? 1;
     final content =
         loaded?.contentOf(part) ??
         await measureReader<ChapterContent>(
@@ -308,7 +322,7 @@ class ScrollWindow extends ChangeNotifier {
         );
     final chapterStart = section == 0 && part == 0;
     final chapterEnd =
-        section + 1 == (source?.starts.length ?? 1) && part + 1 == partCount;
+        section + 1 == (source?.count ?? 1) && part + 1 == partCount;
     final prepared =
         value.settings.useBookFontsInSimplified && prepareFonts != null
         ? await prepareFonts!(bookId, content, value)
@@ -337,8 +351,7 @@ class ScrollWindow extends ChangeNotifier {
       sectioned: source != null,
       textOffset: source == null
           ? 0
-          : source.starts[section].textOffset +
-                loaded!.parts.starts[part].offset,
+          : source.offsetOf(section) + loaded!.offsetOf(part),
       layout: layout,
     );
   }
@@ -360,19 +373,15 @@ class ScrollWindow extends ChangeNotifier {
     }
     if (part > 0) return _prepare((index, section, part - 1), value, request);
     final previousIndex = entry.chapterStart ? index - 1 : index;
-    final source = await _txtSource(previousIndex);
+    final source = await _sectionSource(previousIndex);
     final previousSection = entry.chapterStart
-        ? (source?.starts.length ?? 1) - 1
+        ? (source?.count ?? 1) - 1
         : section - 1;
     final previous = source == null
         ? null
-        : await _txtSection(previousIndex, previousSection, source);
+        : await _section(previousIndex, previousSection, source);
     return _prepare(
-      (
-        previousIndex,
-        previousSection,
-        (previous?.parts.starts.length ?? 1) - 1,
-      ),
+      (previousIndex, previousSection, (previous?.count ?? 1) - 1),
       value,
       request,
     );
@@ -389,19 +398,17 @@ class ScrollWindow extends ChangeNotifier {
     busy = true;
     _opening = true;
     try {
-      final source = await _txtSource(index);
+      final source = await _sectionSource(index);
       if (_disposed || request != _request) return;
+      final section = anchor == null
+          ? 0
+          : source?.forBlock(anchor.blockId) ?? 0;
       final paragraph = anchor == null
           ? 0
-          : TxtChapterSource.paragraphOf(anchor.blockId) ?? 0;
-      final section = source?.forParagraph(paragraph) ?? 0;
-      final part = source == null
+          : source?.orderOf(anchor.blockId) ?? 0;
+      final part = source is! TxtChapterSource || anchor == null
           ? 0
-          : (await _txtSection(
-              index,
-              section,
-              source,
-            )).parts.containingParagraph(
+          : (await _section(index, section, source)).parts!.containingParagraph(
               paragraph - source.starts[section].paragraph,
             );
       if (_disposed || request != _request) return;
@@ -414,18 +421,25 @@ class ScrollWindow extends ChangeNotifier {
           .fold<double>(0, (sum, e) => sum + e.layout.height);
       final heldY =
           heldBefore +
-          (held == null || anchor == null ? 0 : held.layout.viewportOffsetOf(anchor));
+          (held == null || anchor == null
+              ? 0
+              : held.layout.viewportOffsetOf(anchor));
       final covered =
           entries.isNotEmpty &&
           (entries.first.atStart || heldY >= value.contentHeight) &&
           (reachesBookEnd || height - heldY >= value.contentHeight * 2);
       if (held != null && controller.hasClients && (covered || animated)) {
-        final offset = heldY.clamp(
-          controller.position.minScrollExtent,
-          controller.position.maxScrollExtent,
-        ).toDouble();
+        final offset = heldY
+            .clamp(
+              controller.position.minScrollExtent,
+              controller.position.maxScrollExtent,
+            )
+            .toDouble();
         await _prepareWindowResources(
-          entries, offset, value.contentHeight, request,
+          entries,
+          offset,
+          value.contentHeight,
+          request,
         );
         if (_disposed || request != _request) return;
         _appliedJump = jumpToken;
@@ -446,7 +460,9 @@ class ScrollWindow extends ChangeNotifier {
         return;
       }
       final target = await _prepare(key, value, request);
-      final local = anchor == null ? 0.0 : target.layout.viewportOffsetOf(anchor);
+      final local = anchor == null
+          ? 0.0
+          : target.layout.viewportOffsetOf(anchor);
       final next = await _around(
         target,
         local,
@@ -463,7 +479,8 @@ class ScrollWindow extends ChangeNotifier {
           .fold<double>(0, (sum, e) => sum + e.layout.height);
       // 新列表尚未布局，书尾可滚动的距离取新正文的长度。
       final total = next.fold<double>(
-        0, (sum, entry) => sum + entry.layout.height,
+        0,
+        (sum, entry) => sum + entry.layout.height,
       );
       final offset = (before + local)
           .clamp(0.0, math.max(0.0, total - value.contentHeight))
@@ -553,8 +570,11 @@ class ScrollWindow extends ChangeNotifier {
           top < layout.height &&
           layout.cells.isNotEmpty) {
         final viewport = Rect.fromLTWH(0, top, width, viewportHeight);
-        for (var i = layout.cellAt(top);
-            i < layout.cells.length && layout.starts[i] < bottom; i++) {
+        for (
+          var i = layout.cellAt(top);
+          i < layout.cells.length && layout.starts[i] < bottom;
+          i++
+        ) {
           final origin = Offset(0, layout.starts[i]);
           for (final image in layout.cells[i].positionedImages(width)) {
             if (image.block.blockId == locator.blockId &&
@@ -585,7 +605,11 @@ class ScrollWindow extends ChangeNotifier {
       landing: _landingAnchor,
     );
     if (!identical(locator, _landingAnchor)) _landingAnchor = null;
-    onPosition(layout.content, layout.withViewport(locator, current.local), _appliedJump);
+    onPosition(
+      layout.content,
+      layout.withViewport(locator, current.local),
+      _appliedJump,
+    );
     if (watch != null) {
       readerPerf('simplified.scroll.report', watch.elapsedMicroseconds);
     }
@@ -634,7 +658,10 @@ class ScrollWindow extends ChangeNotifier {
       }
       final offset = controller.offset + newBefore - oldBefore;
       await _prepareWindowResources(
-        next, offset, options!.contentHeight, request,
+        next,
+        offset,
+        options!.contentHeight,
+        request,
       );
       if (_disposed || request != _request) return;
       // 图片等待期间也可能继续拖动，最后补偿必须使用此刻的位置。
@@ -666,7 +693,10 @@ class ScrollWindow extends ChangeNotifier {
   // 脚注可能在章尾。复用已排好的列表时，同屏下一章的图片也要随正文一起交付。
   // 图片加载器按各章与目标视口的距离选图，远处的资源不会解码。
   Future<void> _prepareWindowResources(
-    List<ScrollEntry> window, double offset, double viewport, int request,
+    List<ScrollEntry> window,
+    double offset,
+    double viewport,
+    int request,
   ) async {
     final prepare = prepareResources;
     if (prepare == null) return;

@@ -159,6 +159,8 @@ typedef struct {
 
 
 MOBI_RET mobi_build_opf(MOBIRawml *rawml, const MOBIData *m);
+MOBI_RET mobi_build_opf_with_toc(MOBIRawml *rawml, const MOBIData *m, bool legacy_titles);
 MOBI_RET mobi_build_ncx(MOBIRawml *rawml, const OPF *opf);
+MOBI_RET mobi_ncx_title_xml(MOBIIndx *index, unsigned char **data, size_t *size);
 
 #endif

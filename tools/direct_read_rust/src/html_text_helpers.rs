@@ -251,7 +251,7 @@ pub(super) fn note_marker_text(text: &str) -> &str {
     while let (Some(first), Some(last)) = (value.chars().next(), value.chars().last()) {
         if !matches!(
             (first, last),
-            ('[', ']') | ('(', ')') | ('（', '）') | ('【', '】')
+            ('[', ']') | ('(', ')') | ('（', '）') | ('【', '】') | ('〔', '〕')
         ) {
             break;
         }

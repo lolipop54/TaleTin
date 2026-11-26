@@ -91,6 +91,12 @@ external int gt_mobi_links(ffi.Pointer<gt_mobi_session> session, int entry);
 @ffi.Native<ffi.Int Function(ffi.Pointer<gt_mobi_session>)>()
 external int gt_mobi_metadata(ffi.Pointer<gt_mobi_session> session);
 
+@ffi.Native<ffi.Int Function(ffi.Pointer<gt_mobi_session>)>()
+external int gt_mobi_legacy_metadata(ffi.Pointer<gt_mobi_session> session);
+
+@ffi.Native<ffi.Int Function(ffi.Pointer<gt_mobi_session>)>()
+external int gt_mobi_navigation_titles(ffi.Pointer<gt_mobi_session> session);
+
 @ffi.Native<ffi.Int Function(ffi.Pointer<gt_mobi_session>, ffi.Uint32)>()
 external int gt_mobi_entry_info(
   ffi.Pointer<gt_mobi_session> session,

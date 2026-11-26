@@ -551,7 +551,22 @@ void mobi_free_ncx(NCX *ncx, size_t count) {
  @param[in] opf OPF structure to fetch some data
  @return MOBI_RET status code (on success MOBI_SUCCESS)
  */
-MOBI_RET mobi_build_ncx(MOBIRawml *rawml, const OPF *opf) {
+static char *mobi_read_ncx_title(const MOBIIndx *index, uint32_t offset, bool legacy) {
+    const MOBIPdbRecord *record = index->cncx_record;
+    if (!legacy) {
+        /* Each CNCX record has its own 64 KiB address range, even if its
+         * payload is smaller. An invalid offset must not read string zero. */
+        uint32_t part = offset >> 16;
+        offset &= 0xffff;
+        if (part >= index->cncx_records_count) return NULL;
+        while (part-- && record) record = record->next;
+        if (!record || !record->data || offset >= record->size) return NULL;
+    }
+    return mobi_get_cncx_string_utf8(record, offset, index->encoding);
+}
+
+static MOBI_RET mobi_build_ncx_mode(MOBIRawml *rawml, const OPF *opf,
+                                    xmlTextWriterPtr titles, bool legacy) {
     /* parse ncx data */
     if (rawml == NULL) {
         debug_print("%s\n", "Initialization failed");
@@ -581,8 +596,7 @@ MOBI_RET mobi_build_ncx(MOBIRawml *rawml, const OPF *opf) {
                 mobi_free_ncx(ncx, i);
                 return ret;
             }
-            const MOBIPdbRecord *cncx_record = rawml->ncx->cncx_record;
-            char *text = mobi_get_cncx_string_utf8(cncx_record, cncx_offset, rawml->ncx->encoding);
+            char *text = mobi_read_ncx_title(rawml->ncx, cncx_offset, legacy);
             if (text == NULL) {
                 mobi_free_ncx(ncx, i);
                 debug_print("%s\n", "Memory allocation failed");
@@ -595,7 +609,11 @@ MOBI_RET mobi_build_ncx(MOBIRawml *rawml, const OPF *opf) {
                 debug_print("%s\n", "Memory allocation failed");
                 return MOBI_MALLOC_FAILED;
             }
-            if (mobi_is_rawml_kf8(rawml)) {
+            if (titles) {
+                /* A title-only read keeps the saved targets, so it needs no
+                 * KF8 fragment or decompressed body records. */
+                target[0] = '\0';
+            } else if (mobi_is_rawml_kf8(rawml)) {
                 uint32_t posfid;
                 ret = mobi_get_indxentry_tagvalue(&posfid, ncx_entry, INDX_TAG_NCX_POSFID);
                 if (ret != MOBI_SUCCESS) {
@@ -689,12 +707,45 @@ MOBI_RET mobi_build_ncx(MOBIRawml *rawml, const OPF *opf) {
             debug_print("seq=%zu, id=%zu, text='%s', target='%s', level=%u, parent=%u, fchild=%u, lchild=%u\n", i, id, text, target, level, parent, first_child, last_child);
             ncx[i++] = (NCX) {id, text, target, level, parent, first_child, last_child};
         }
-        mobi_write_ncx(rawml, ncx, opf, maxlevel);
+        if (titles) {
+            size_t seq = 1;
+            ret = mobi_write_ncx_level(titles, ncx, 0, 0, count - 1, &seq);
+        } else {
+            ret = mobi_write_ncx(rawml, ncx, opf, maxlevel);
+        }
         mobi_free_ncx(ncx, count);
-    } else {
-        mobi_write_ncx(rawml, NULL, opf, 1);
+        return ret;
     }
-    return MOBI_SUCCESS;
+    return titles ? MOBI_SUCCESS : mobi_write_ncx(rawml, NULL, opf, 1);
+}
+
+MOBI_RET mobi_build_ncx(MOBIRawml *rawml, const OPF *opf) {
+    return mobi_build_ncx_mode(rawml, opf, NULL, false);
+}
+
+MOBI_RET mobi_ncx_title_xml(MOBIIndx *index, unsigned char **data, size_t *size) {
+    MOBIRawml rawml = { .ncx = index };
+    xmlBufferPtr buffer = xmlBufferCreate();
+    if (!buffer) return MOBI_MALLOC_FAILED;
+    xmlTextWriterPtr writer = xmlNewTextWriterMemory(buffer, 0);
+    if (!writer) {
+        xmlBufferFree(buffer);
+        return MOBI_MALLOC_FAILED;
+    }
+    MOBI_RET ret = MOBI_XML_ERR;
+    if (xmlTextWriterStartElement(writer, BAD_CAST "navMap") >= 0) {
+        ret = mobi_build_ncx_mode(&rawml, NULL, writer, false);
+        if (ret == MOBI_SUCCESS && xmlTextWriterEndDocument(writer) < 0) ret = MOBI_XML_ERR;
+    }
+    xmlFreeTextWriter(writer);
+    if (ret == MOBI_SUCCESS) {
+        *size = strlen((const char *) buffer->content);
+        *data = malloc(*size);
+        if (*data) memcpy(*data, buffer->content, *size);
+        else ret = MOBI_MALLOC_FAILED;
+    }
+    xmlBufferFree(buffer);
+    return ret;
 }
 
 /**
@@ -1898,7 +1949,7 @@ void mobi_free_opf(OPF *opf) {
  @param[in] m MOBIData structure containing document metadata
  @return MOBI_RET status code (on success MOBI_SUCCESS)
  */
-MOBI_RET mobi_build_opf(MOBIRawml *rawml, const MOBIData *m) {
+MOBI_RET mobi_build_opf_with_toc(MOBIRawml *rawml, const MOBIData *m, bool legacy_titles) {
     debug_print("Reconstructing opf%s", "\n");
     /* initialize libXML2 */
     LIBXML_TEST_VERSION
@@ -1914,7 +1965,8 @@ MOBI_RET mobi_build_opf(MOBIRawml *rawml, const MOBIData *m) {
         mobi_free_opf(&opf);
         return ret;
     }
-    mobi_build_ncx(rawml, &opf);
+    /* An unusable NCX must still allow the OPF and readable chapter list. */
+    mobi_build_ncx_mode(rawml, &opf, NULL, legacy_titles);
     if (rawml->guide) {
         ret = mobi_build_opf_guide(&opf, rawml);
         if (ret != MOBI_SUCCESS) {
@@ -2056,4 +2108,8 @@ cleanup:
     xmlCleanupParser();
     debug_print("%s\n", "XML writing failed");
     return MOBI_XML_ERR;
+}
+
+MOBI_RET mobi_build_opf(MOBIRawml *rawml, const MOBIData *m) {
+    return mobi_build_opf_with_toc(rawml, m, false);
 }

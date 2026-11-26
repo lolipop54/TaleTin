@@ -107,7 +107,7 @@ mixin _ReaderSpeechFollow
     var content = session.content;
     if (layout == null || layout.chapterId != locator.chapterId) {
       log('contentBegin', {'targetChapter': index});
-      final indexed = await _layoutIndexedTxt(
+      final indexed = await _layoutIndexedChapter(
         ref,
         bookId,
         session,
@@ -178,7 +178,7 @@ mixin _ReaderSpeechFollow
         book: session.book,
         chapters: session.chapters,
         chapterIndex: index,
-        content: layout.readsTxtBySection ? null : content,
+        content: layout.readsBySection ? null : content,
         layout: layout,
         pageIndex: page,
         spreadTarget: options.settings.spreadEnabled ? locator : null,

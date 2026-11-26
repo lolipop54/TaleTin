@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 
@@ -17,13 +18,19 @@ import '../../domain/services/txt_chapter_sections.dart';
 import '../../engine/normalization/text_normalizer.dart';
 import '../../engine/parsers/epub/epub_archive.dart';
 import '../../engine/parsers/epub/epub_package.dart';
+import '../../engine/parsers/epub/epub_parser.dart';
 import '../../engine/parsers/epub/publication_style_tree.dart';
+import '../../engine/parsers/epub/publication_section_slices.dart';
+import '../../engine/parsers/epub/publication_section_store.dart';
+import '../../engine/normalization/text_decoding.dart';
 import '../../engine/parsers/epub/xhtml_blocks.dart';
 import '../../engine/styles/chapter_styler.dart';
 import '../../engine/layout/book_background.dart';
 import '../../engine/parsers/epub/image_sniff.dart';
 import '../../engine/parsers/txt/txt_text_preparer.dart';
 import 'book_source_path.dart';
+import 'chapter_manifest.dart';
+import '../../engine/parsers/epub/publication_spread_chapters.dart';
 import 'source_verification_record.dart';
 import '../../engine/parsers/pdf/pdf_file.dart';
 import '../../engine/parsers/pdf/pdf_page_pictures.dart';
@@ -31,6 +38,8 @@ import 'indexed_publication.dart';
 import 'inline_image_index_compatibility.dart';
 import 'publication_cache.dart';
 import '../../core/io/source_fingerprint.dart';
+
+part 'indexed_publication_sections.dart';
 
 /// 在后台 isolate 中长期持有一本书的索引和 ZIP 句柄，不重复读 OPF 和清单。
 class IndexedChapterReader {
@@ -40,12 +49,19 @@ class IndexedChapterReader {
     this.signature,
     this.verification,
     this.cache,
+    this._rawToc,
+    this._fixedLayout,
+    this._sectionReadRoot,
   );
   final SourceContentIndex index;
   final File source;
   final String signature;
   final SourceVerificationRecord verification;
   final PublicationCache? cache;
+  final Object? _rawToc;
+  final bool _fixedLayout;
+  final String? _sectionReadRoot;
+  late final _spreadTitles = publicationSpreadTitles(_rawToc);
   late final _persistentImages = index.images.entries
       .where((entry) => entry.value[0] >= 0)
       .map((entry) => entry.key)
@@ -55,6 +71,15 @@ class IndexedChapterReader {
   Future<PdfFile>? _pdf;
   FileStat? _verified;
   final _txtSectionStarts = <String, List<TxtSectionStart>>{};
+  final _sectionPlans = <String, _StoredSections>{};
+  final _sectionDrafts = <String, _PublicationDraft>{};
+  final _spreadStarts = <String, List<SpreadChapterStart>>{};
+  (ChapterContent, Uint8List)? _spreadProbe;
+  late final _spreadIdentity = sha256
+      .convert(
+        utf8.encode(jsonEncode([signature, _rawToc, publicationCssMode])),
+      )
+      .toString();
 
   /// 导出证明必须使用核验过的同一次状态，不能重新stat后把新文件误标为已核验。
   FileStat? get verifiedStat => _verified;
@@ -64,20 +89,25 @@ class IndexedChapterReader {
     String contentDirectory, {
     String? cacheRoot,
     String? cacheEpoch,
+    String? sectionReadRoot,
     (int, SourceContentIndex)? preparedIndex,
+    ChapterManifest? preparedManifest,
   }) {
     // 仓库已解析过时直接接收同一份快照；后台独立使用者仍可自行读取清单。
-    final Map<String, dynamic>? manifest = preparedIndex == null
-        ? jsonDecode(
-            File(p.join(contentDirectory, 'manifest.json')).readAsStringSync(),
-          ) as Map<String, dynamic>
-        : null;
-    final index =
-        preparedIndex?.$2 ??
-        SourceContentIndex.fromJson(
-          manifest!['sourceIndex'] as Map<String, dynamic>,
-        );
-    if ((preparedIndex?.$1 ?? manifest!['contentVersion']) != kContentVersion) {
+    final manifest =
+        preparedManifest ??
+        (preparedIndex == null
+            ? ChapterManifest(
+                jsonDecode(
+                  File(p.join(contentDirectory, 'manifest.json'))
+                      .readAsStringSync(),
+                ) as Map<String, dynamic>,
+              )
+            : ChapterManifest({
+                'contentVersion': preparedIndex.$1,
+              }, preparedIndex.$2));
+    final index = manifest.sourceIndex!;
+    if (manifest.data['contentVersion'] != kContentVersion) {
       throw const FormatException('正文版本与解析规则不一致');
     }
     return IndexedChapterReader._(
@@ -92,6 +122,64 @@ class IndexedChapterReader {
         epoch: cacheEpoch,
         epubStyleTree: index.format == 'epub' && publicationCssMode != 'legacy',
       ),
+      manifest.data['toc'],
+      (manifest.data['warnings'] as List?)?.contains(
+            EpubParser.warningFixedLayout,
+          ) ??
+          false,
+      sectionReadRoot,
+    );
+  }
+
+  Future<PublicationSectionPlan?> publicationSectionPlan(
+    Chapter chapter,
+    DecodeBytes decode, {
+    bool prioritizeLayout = false,
+  }) async => (await _publicationSections(
+    chapter,
+    decode,
+    prioritizeLayout: prioritizeLayout,
+  ))?.$2;
+
+  Future<ChapterContent> readPublicationSection(
+    Chapter chapter,
+    int section,
+    DecodeBytes decode, {
+    bool prioritizeLayout = false,
+    bool countOnly = false,
+  }) => _readPublicationSection(
+    chapter,
+    section,
+    decode,
+    prioritizeLayout: prioritizeLayout,
+    countOnly: countOnly,
+  );
+
+  Future<bool> savePublicationDraft(Chapter preferred) =>
+      _savePublicationDraft(preferred);
+
+  Future<List<SpreadChapterStart>?> indexedSpreadStarts(
+    Chapter chapter,
+    DecodeBytes decode,
+  ) => _indexedSpreadStarts(chapter, decode);
+
+  void rememberSpreadStarts(ChapterContent body) => _rememberSpreadStarts(body);
+
+  ChapterContent prepareSpreadChapters(ChapterContent body) {
+    if (index.format != 'epub' &&
+        index.format != 'mobi' &&
+        index.format != 'azw3') {
+      return body;
+    }
+    return withPublicationSpreadChapters(
+      body,
+      _spreadTitles[body.chapterId] ?? const [],
+      positions: index.tocPositions[body.chapterId],
+      continuation:
+          index.format != 'epub' &&
+          isKindleContinuation(
+            index.chapters[body.chapterId]!.single as String,
+          ),
     );
   }
 
@@ -207,6 +295,8 @@ class IndexedChapterReader {
     Chapter chapter,
     DecodeBytes decodeBytes, {
     bool textOnly = false,
+    bool deferImages = false,
+    Uint8List? inputHtml,
   }) async {
     final location = index.chapters[chapter.id];
     if (location == null) throw const FormatException('缺少章节来源索引');
@@ -246,6 +336,9 @@ class IndexedChapterReader {
         styleBook: _stylesBound ? index.sourceDigest : null,
         resolveImage: (entry) {
           final size = index.images[entry];
+          if (deferImages && size != null) {
+            return ResolvedImage.fromIndex('res/$entry', size);
+          }
           if (cache != null && size != null) {
             if (!textOnly) return _prepareImage(entry);
             return ResolvedImage(
@@ -282,7 +375,7 @@ class IndexedChapterReader {
               ? null
               : ResolvedImage.fromIndex('res/$entry', size);
         },
-      ).convertBytes(archive.readBytes(path));
+      ).convertBytes(inputHtml ?? archive.readBytes(path));
       content = ChapterContent(
         chapterId: chapter.id,
         blocks: parsed.blocks,
@@ -597,7 +690,10 @@ class IndexedChapterReader {
 
   /// Cached body JSON does not prove that its images survived cache eviction.
   /// Prepare and pin them again before the chapter is delivered to the view.
-  Future<void> prepareResources(ChapterContent content) async {
+  Future<void> prepareResources(
+    ChapterContent content, {
+    String? sectionKey,
+  }) async {
     final store = cache;
     if (store == null) return;
     if (index.format == 'pdf') {
@@ -620,7 +716,9 @@ class IndexedChapterReader {
       store.trim();
       return;
     }
-    final files = <File>[store.chapterFile('${content.chapterId}.json')];
+    final files = <File>[
+      if (sectionKey == null) store.chapterFile('${content.chapterId}.json'),
+    ];
     for (final path in chapterImageResources(content)) {
       if (!path.startsWith('res/')) continue;
       final entry = path.substring(4);
@@ -650,7 +748,7 @@ class IndexedChapterReader {
         files.add(store.file(p.join('assets', publicationCachePath(entry))));
       }
     }
-    store.pin(content.chapterId, files);
+    store.pin(sectionKey ?? content.chapterId, files);
     store.trim();
   }
 

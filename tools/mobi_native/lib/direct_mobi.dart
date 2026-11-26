@@ -1,4 +1,5 @@
 // Copyright (c) 2026 TaleTin contributors. LGPL-3.0-or-later.
+import 'dart:convert';
 import 'dart:ffi';
 import 'dart:typed_data';
 
@@ -49,6 +50,7 @@ class DirectMobi implements Finalizable {
   Future<void> buildIndex({
     required bool Function() isCancelled,
     void Function(double)? onProgress,
+    bool legacyNavigationTitles = false,
   }) async {
     final count = textRecordCount;
     for (var at = 0; at < count; at += 128) {
@@ -67,7 +69,11 @@ class DirectMobi implements Finalizable {
         if (isCancelled()) throw const MobiReadFailure(7);
       }
     }
-    _checkStatus(gt_mobi_metadata(_handle));
+    _checkStatus(
+      legacyNavigationTitles
+          ? gt_mobi_legacy_metadata(_handle)
+          : gt_mobi_metadata(_handle),
+    );
     entries = gt_mobi_entries(_handle);
     for (var i = 0; i < entries; i++) {
       _checkStatus(gt_mobi_links(_handle, i));
@@ -77,6 +83,12 @@ class DirectMobi implements Finalizable {
         if (isCancelled()) throw const MobiReadFailure(7);
       }
     }
+  }
+
+  /// Returns multi-record NCX titles without reading the body.
+  String? readNavigationTitles() {
+    _checkStatus(gt_mobi_navigation_titles(_handle));
+    return gt_mobi_result_size(_handle) == 0 ? null : utf8.decode(_result());
   }
 
   List<MobiEntry> get entries => [

@@ -28,6 +28,33 @@ class AnnotationLocatorService {
       readChapter?.call(id, chapter) ??
       contents.chapter(id, chapter, textOnly: true);
 
+  Future<ChapterContent> _readRange(
+    Book book,
+    Chapter chapter,
+    String? from,
+    String? to,
+  ) async {
+    if (readChapter != null || (from == null && to == null)) {
+      return _read(book.id, chapter);
+    }
+    final source = await contents.chapterSections(
+      book.id,
+      chapter,
+      book.format,
+    );
+    if (source == null) return _read(book.id, chapter);
+    final first = from == null ? 0 : source.forBlock(from);
+    final last = to == null ? source.count - 1 : source.forBlock(to);
+    if (first == last) return source.readSection(first);
+    return ChapterContent(
+      chapterId: chapter.id,
+      blocks: [
+        for (var i = first; i <= last; i++)
+          ...(await source.readSection(i)).blocks,
+      ],
+    );
+  }
+
   Future<Annotation> resolve(Annotation note) async {
     final book = await books.findById(note.bookId);
     if (book == null || book.status != BookStatus.active) {
@@ -66,7 +93,12 @@ class AnnotationLocatorService {
       throw const AnnotationLocationFailure('选段顺序已变化，无法准确定位，笔记已保留');
     }
     for (var i = from; i <= to; i++) {
-      rangeContents[chapters[i].id] = await _read(book.id, chapters[i]);
+      rangeContents[chapters[i].id] = await _readRange(
+        book,
+        chapters[i],
+        i == from ? start.blockId : null,
+        i == to ? end.blockId : null,
+      );
     }
     final resolved = resolveSelection(
       selection: SelectionRange(start: start, end: end),
@@ -90,7 +122,12 @@ class AnnotationLocatorService {
     }
     final index = chapters.indexWhere((c) => c.id == locator.chapterId);
     if (index < 0) return null;
-    final content = await _read(book.id, chapters[index]);
+    final content = await _readRange(
+      book,
+      chapters[index],
+      locator.blockId,
+      locator.blockId,
+    );
     for (final block in content.blocks) {
       if (block.id != locator.blockId) continue;
       final text = blockTextOf(block);

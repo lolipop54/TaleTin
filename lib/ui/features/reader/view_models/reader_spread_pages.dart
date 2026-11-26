@@ -78,7 +78,8 @@ extension ReaderSpreadPages on ReaderSessionNotifier {
     final chapter = session.chapters.firstWhere(
       (c) => c.id == target.layout.chapterId,
     );
-    final content = session.book.format == BookFormat.txt
+    final content =
+        target.layout.readsBySection || session.book.format == BookFormat.txt
         ? target.layout.content
         : await _sessionRef
               .read(chapterContentRepositoryProvider)
@@ -94,11 +95,15 @@ extension ReaderSpreadPages on ReaderSessionNotifier {
 }
 
 extension _ReadableNeighbor on _ReaderLayoutCoordinator {
-  // 超长 TXT 的转换与用户跳转共用正文后台任务。留给真正的翻页或跳转请求，
-  // 防止刚到目标页就排队解码两侧长章，拖慢随后返回或再次跳转。
+  // 长章从原书生成索引可能占用正文任务，留给真正的翻页或跳转请求。
   bool _canPrefetchChapter(ReaderSession session, int index) =>
-      session.book.format != BookFormat.txt ||
-      session.chapters[index].textLength < kLongTxtChapterLength;
+      switch (session.book.format) {
+        BookFormat.txt =>
+          session.chapters[index].textLength < kLongTxtChapterLength,
+        BookFormat.epub || BookFormat.mobi || BookFormat.azw3 =>
+          session.chapters[index].textLength < publicationSectionMinText,
+        _ => true,
+      };
 
   /// 沿书内顺序寻找真正排出页面的章节。纯图片章有页，空锚点章没有页。
   Future<SpreadPageRef?> _readableNeighbor(
@@ -123,7 +128,7 @@ extension _ReadableNeighbor on _ReaderLayoutCoordinator {
         ]) {
           final ready = _matchingChapterLayout(cached, session, index, options);
           if (ready != null &&
-              !ready.paginatesTxtInWindows &&
+              !ready.paginatesInWindows &&
               (ready.isComplete && ready.pageCount == 0 ||
                   (forward || ready.isComplete) &&
                       ready.page(forward ? 0 : ready.pageCount - 1) != null)) {
@@ -141,7 +146,7 @@ extension _ReadableNeighbor on _ReaderLayoutCoordinator {
       if (_tokenVersion != version) {
         throw const LayoutCancelled(LayoutCancellationReason.requestSuperseded);
       }
-      if (layout.pageCount > 0) {
+      if (!layout.isEmpty) {
         return (
           layout: layout,
           pageIndex: forward ? layout.firstPage : layout.pageCount - 1,

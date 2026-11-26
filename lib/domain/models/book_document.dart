@@ -9,6 +9,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'content_table.dart';
+import 'footnote_markers.dart';
 import 'source_content_index.dart';
 import 'locator.dart';
 import 'pdf_page_info.dart';
@@ -25,16 +26,25 @@ const int kContentVersion = 2;
 
 /// 目录及 EPUB 显示资料的生成规则标记，仅用于跳过已完成的旧书修复。
 /// 它们不改变正文坐标，也不递增正文版本或应用版本。
-const int kTocRevision = 5;
+const int kKindleTocTitleRevision = 6;
+const int kKindleTocVolumeRevision = 7;
+const int kKindleTocChildRevision = 8;
+const int kTocRevision = kKindleTocChildRevision;
 
-/// 第 5 版只修复有书内文件链接的目录。旧 TXT 和 PDF 已到第 4 版即可直接打开。
+/// 第 5 版修复出版物目录，第 6 至 8 版补正 MOBI／AZW3 的标题和分卷。
 bool needsTocRecovery(Map<String, dynamic> manifest) {
   final revision = (manifest['tocRevision'] as num?)?.toInt() ?? 0;
-  if (revision != 4) return revision < kTocRevision;
+  if (revision < 4) return true;
+  if (revision >= kTocRevision) return false;
   final chapters = manifest['chapters'];
   final first = chapters is List ? chapters.firstOrNull : null;
-  return first is Map && first['href'] != null;
+  final linked = first is Map && first['href'] != null;
+  if (revision == 4) return linked;
+  final source = manifest['sourceIndex'];
+  return source is Map ? isKindleTocFormat(source['format']) : linked;
 }
+
+bool isKindleTocFormat(Object? format) => format == 'mobi' || format == 'azw3';
 
 /// TXT 达到此长度时，分页只准备所需的一段，避免先测量整章。
 const int kLongTxtChapterLength = 256 * 1024;
@@ -171,20 +181,33 @@ class TextRun {
     if (styleId != null) 'sid': styleId,
   };
 
-  static TextRun fromJson(Map<String, Object?> json) => TextRun(
-    json['text'] as String? ?? '',
-    bold: json['bold'] == true,
-    italic: json['italic'] == true,
-    superscript: json['sup'] == true,
-    subscript: json['sub'] == true,
-    color: (json['c'] as num?)?.toInt(),
-    sizeScale: (json['fs'] as num?)?.toDouble() ?? 1,
-    underline: json['u'] == true,
-    strike: json['st'] == true,
-    link: json['lk'] as String?,
-    footnote: json['fn'] == true,
-    styleId: (json['sid'] as num?)?.toInt(),
-  );
+  static TextRun fromJson(Map<String, Object?> json) {
+    final text = json['text'] as String? ?? '';
+    final link = json['lk'] as String?;
+    // 旧正文及分段缓存已经保存了正确链接，读取时补回丢失的脚注身份。
+    final fragment = link?.lastIndexOf('#') ?? -1;
+    final footnote =
+        json['fn'] == true ||
+        (fragment >= 0 &&
+            fragment < link!.length - 1 &&
+            text.contains('〔') &&
+            text.trimLeft().startsWith('〔') &&
+            noteMarkerKey(text) != null);
+    return TextRun(
+      text,
+      bold: json['bold'] == true,
+      italic: json['italic'] == true,
+      superscript: json['sup'] == true,
+      subscript: json['sub'] == true,
+      color: (json['c'] as num?)?.toInt(),
+      sizeScale: (json['fs'] as num?)?.toDouble() ?? 1,
+      underline: json['u'] == true,
+      strike: json['st'] == true,
+      link: link,
+      footnote: footnote,
+      styleId: (json['sid'] as num?)?.toInt(),
+    );
+  }
 }
 
 /// 段落中间的一张行内图片（生僻字做成图片时使用）。
@@ -223,6 +246,7 @@ class InlineImage {
   final String? alt;
   final int? styleId;
   final String? noteLink;
+
   /// 无链接的多看图标把脚注全文放在 [alt] 中。
   final bool altIsFootnote;
 

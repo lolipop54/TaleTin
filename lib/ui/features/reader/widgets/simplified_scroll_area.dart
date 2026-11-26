@@ -161,11 +161,9 @@ class SimplifiedScrollAreaState extends ConsumerState<SimplifiedScrollArea>
       load: (chapter) => ref
           .read(chapterContentRepositoryProvider)
           .chapter(widget.bookId, chapter),
-      loadTxtSections: widget.session.book.format == BookFormat.txt
-          ? (chapter) => ref
-                .read(chapterContentRepositoryProvider)
-                .txtChapterSource(widget.bookId, chapter)
-          : null,
+      loadSections: (chapter) => ref
+          .read(chapterContentRepositoryProvider)
+          .chapterSections(widget.bookId, chapter, widget.session.book.format),
       prepareFonts: ref.read(publicationFontLoaderProvider).prepare,
       onPosition: (content, anchor, token) {
         if (mounted) {

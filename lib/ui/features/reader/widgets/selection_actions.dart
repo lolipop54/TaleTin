@@ -384,7 +384,7 @@ class _SelectionActionsState extends ConsumerState<SelectionActions> {
         : null;
     final visible = session.scrollSectionOffset != null
         ? session.content
-        : session.layout?.readsTxtBySection == true
+        : session.layout?.readsBySection == true
         ? session.layout!.content
         : null;
     final visibleBlocks = visible?.blocks;

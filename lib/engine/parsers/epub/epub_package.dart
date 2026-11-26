@@ -357,7 +357,7 @@ List<RawTocEntry> _parseNavList(Element list, String navPath) {
       (e) => e.localName == 'a' || e.localName == 'span',
       orElse: () => item,
     );
-    final title = _cleanTitle(anchor.text);
+    final title = cleanPublicationTocTitle(anchor.text);
     final href = anchor.localName == 'a' ? anchor.attributes['href'] : null;
     final childList = item.children.firstWhere(
       (e) => e.localName == 'ol',
@@ -416,7 +416,9 @@ RawTocEntry? _parseNavPoint(XmlElement point, String ncxPath) {
     switch (child.name.local) {
       case 'navLabel':
         for (final text in child.childElements) {
-          if (text.name.local == 'text') title = _cleanTitle(text.innerText);
+          if (text.name.local == 'text') {
+            title = cleanPublicationTocTitle(text.innerText);
+          }
         }
       case 'content':
         final src = child.getAttribute('src');
@@ -439,7 +441,7 @@ RawTocEntry? _parseNavPoint(XmlElement point, String ncxPath) {
 }
 
 /// 目录标题清洗：折叠空白并限制长度。
-String _cleanTitle(String raw) {
+String cleanPublicationTocTitle(String raw) {
   final text = raw.replaceAll(RegExp(r'\s+'), ' ').trim();
   if (text.length <= 120) return text;
   return text.substring(0, 120);

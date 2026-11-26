@@ -16,7 +16,8 @@ class ChapterLayoutTask {
     required this.chapter,
     required ChapterContent? content,
     required this.options,
-    this._indexedTxt,
+    this._indexedSections,
+    this.prepareSectionOptions,
     this.measurementCache,
     this.onExactPages,
     this.knownWindow,
@@ -92,16 +93,18 @@ class ChapterLayoutTask {
   late final LocatorMapper _mapper;
   late final int _totalLength;
   late final TxtChapterSections? _txtWindows;
-  final TxtChapterSource? _indexedTxt;
+  final ChapterSections? _indexedSections;
+  final Future<LayoutOptions> Function(ChapterContent)? prepareSectionOptions;
   bool _windowReady = false;
   int _txtWindow = 0;
   final _windowPageCounts = <int, int>{};
+  final _windowTailCounts = <String, int>{};
   final _windowPageStarts = <int>[0];
   int get _txtWindowCount =>
-      _indexedTxt?.starts.length ?? _txtWindows?.starts.length ?? 0;
+      _indexedSections?.count ?? _txtWindows?.starts.length ?? 0;
   int get _txtOffset => _windowOffset(_txtWindow);
   int _windowOffset(int window) =>
-      _indexedTxt?.starts[window].textOffset ??
+      _indexedSections?.offsetOf(window) ??
       _txtWindows?.starts[window].offset ??
       0;
   var _pages = <PageSlice>[];
@@ -144,12 +147,19 @@ class ChapterLayoutTask {
   int _stepUs = 0;
   late bool _cacheMore = _txtWindowCount == 0;
 
-  _LazyMeasuredBlocks _newSource([int rowBase = 0, ChapterContent? section]) {
-    final body = section ?? _wholeContent!;
+  _LazyMeasuredBlocks _newSource([
+    int rowBase = 0,
+    ChapterContent? section,
+    LayoutOptions? sectionOptions,
+  ]) {
+    final activeOptions = sectionOptions ?? options;
+    final body = section == null
+        ? _wholeContent!
+        : CssLayoutStyles.resolve(section, activeOptions);
     return _LazyMeasuredBlocks(
       chapter,
       body,
-      options,
+      activeOptions,
       measurementCache,
       paragraphs: paragraphs,
       cacheEnabled: onCheckpoint != null,
@@ -158,7 +168,7 @@ class ChapterLayoutTask {
       rowBase: rowBase,
       startBlock: _txtWindows?.starts[_txtWindow].paragraph ?? 0,
       endBlock: _txtWindowEnd,
-      includeChapterTitle: _indexedTxt == null || _txtWindow == 0,
+      includeChapterTitle: _indexedSections == null || _txtWindow == 0,
     );
   }
 
@@ -174,40 +184,41 @@ class ChapterLayoutTask {
   Iterator<PageSlice?> _paginate(
     _LazyMeasuredBlocks source, [
     List<int>? restart,
-  ]) =>
+  ]) => _paginator(source, _firstPage)
+      .steps(
+        source,
+        onPageSealed: onPageSealed,
+        releaseBefore: onPageSealed == null ? null : source.releaseBefore,
+        firstPage: _firstPage,
+        firstBlock: restart == null ? 0 : 1,
+        firstLine: restart?[2] ?? 0,
+        onBoundary: onCheckpoint != null || readPageWindow != null
+            ? _recordBoundary
+            : null,
+      )
+      .iterator;
+
+  ChapterPaginator _paginator(_LazyMeasuredBlocks source, int firstPage) =>
       ChapterPaginator(
-            parallelFlow: source._parallel,
-            compactIllustrations: source.content.pdfPage == null,
-            pageHeight: options.contentHeight,
-            chapterStarts: _spreadStarts(
-              source.content,
-              options,
-              source.measurer.displayTree!,
-            ),
-            measurer: source.measurer,
-            backgroundOnlyAnchor: () =>
-                backgroundOnlyPageAnchor(source.content),
-            containerSizing: () => ContainerFlowSizing.build(
-              source.measurer.displayTree!,
-              ChapterStyler.layoutTableOf(source.content),
-              options,
-            ),
-            pageImages: _firstPage == 0
-                ? source.measurer.pageImagesOf(source.content)
-                : const [],
-          )
-          .steps(
-            source,
-            onPageSealed: onPageSealed,
-            releaseBefore: onPageSealed == null ? null : source.releaseBefore,
-            firstPage: _firstPage,
-            firstBlock: restart == null ? 0 : 1,
-            firstLine: restart?[2] ?? 0,
-            onBoundary: onCheckpoint != null || readPageWindow != null
-                ? _recordBoundary
-                : null,
-          )
-          .iterator;
+        parallelFlow: source._parallel,
+        compactIllustrations: source.content.pdfPage == null,
+        pageHeight: options.contentHeight,
+        chapterStarts: _spreadStarts(
+          source.content,
+          options,
+          source.measurer.displayTree!,
+        ),
+        measurer: source.measurer,
+        backgroundOnlyAnchor: () => backgroundOnlyPageAnchor(source.content),
+        containerSizing: () => ContainerFlowSizing.build(
+          source.measurer.displayTree!,
+          ChapterStyler.layoutTableOf(source.content),
+          options,
+        ),
+        pageImages: firstPage == 0
+            ? source.measurer.pageImagesOf(source.content)
+            : const [],
+      );
 
   void _recordBoundary(int page, int row, int line) {
     if (row < 1 || page - (_pageRestarts.lastOrNull?[0] ?? 0) < 24) return;
@@ -251,8 +262,11 @@ class ChapterLayoutTask {
     if (_windowReady && _txtWindow == window) return;
     final cached = _recentTxtWindows[window];
     final section = cached == null
-        ? await _indexedTxt?.readSection(window)
+        ? await _indexedSections?.readSection(window)
         : null;
+    final sectionOptions = section == null
+        ? null
+        : await prepareSectionOptions?.call(section);
     _checkActive(token);
     if (_windowReady && _pages.isNotEmpty) {
       _recentTxtWindows[_txtWindow] = (
@@ -281,7 +295,11 @@ class ChapterLayoutTask {
       _snapshot = cached.snapshot;
     } else {
       _pages = [];
-      _replaceWindow(_newSource(0, section), null, cacheMore: false);
+      _replaceWindow(
+        _newSource(0, section, sectionOptions),
+        null,
+        cacheMore: false,
+      );
     }
   }
 
@@ -399,7 +417,7 @@ class ChapterLayoutTask {
     mapper: _mapper,
     totalLength: _totalLength,
     content: content,
-    options: options,
+    options: _source.options,
     task: this,
     isComplete: _complete,
     firstPage: _firstPage,
@@ -472,12 +490,12 @@ class ChapterLayoutTask {
         _checkActive(token);
         await EnglishHyphenation.prepare();
         if (_txtWindowCount > 0) {
-          final indexed = _indexedTxt;
+          final indexed = _indexedSections;
           final paragraph = target == null
               ? 0
               : (indexed == null
                         ? _displayTree.blockIndexById[target.blockId]
-                        : TxtChapterSource.paragraphOf(target.blockId)) ??
+                        : indexed.orderOf(target.blockId)) ??
                     0;
           final window =
               txtWindow ??
@@ -486,13 +504,13 @@ class ChapterLayoutTask {
                   : indexed == null
                   ? _txtWindows!.containingParagraph(paragraph)
                   : chapterOffset == null
-                  ? indexed.forParagraph(paragraph)
+                  ? indexed.forBlock(target?.blockId ?? indexed.firstBlockId)
                   : indexed.forOffset(chapterOffset));
           await _selectTxtWindow(window, token);
         }
         final anchor = chapterOffset == null
             ? target
-            : _view(copy: false).txtLocatorAtOffset(chapterOffset);
+            : _view(copy: false).locatorAtChapterOffset(chapterOffset);
         final targetBlock = anchor == null
             ? null
             : _displayTree.blockIndexById[anchor.blockId];

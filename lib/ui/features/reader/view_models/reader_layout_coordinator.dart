@@ -82,7 +82,7 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
     );
     return _neighborPreparations.putIfAbsent(key, () async {
       try {
-        final bySection = await _layoutIndexedTxt(
+        final bySection = await _layoutIndexedChapter(
           ref,
           bookId,
           session,
@@ -242,6 +242,10 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
           session.currentAnchor ??
           _pendingAnchor,
       prefetch: prefetch,
+      targetFirst:
+          session.isReady &&
+          !options.settings.spreadEnabled &&
+          !_mode.isOriginal,
     );
   }
 
@@ -252,7 +256,7 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
     if (session.pageIndex + 1 < session.pageCount) {
       return (layout: session.layout!, pageIndex: session.pageIndex + 1);
     }
-    if (!session.layout!.isComplete || session.layout!.hasLaterTxtWindow) {
+    if (!session.layout!.isComplete || session.layout!.hasLaterWindow) {
       return null;
     }
     final index = session.chapterIndex + 1;
@@ -388,12 +392,19 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
         !_mode.isOriginal &&
         !session.scrolling &&
         session.book.format.usesOriginalWebView;
+    final deferSpreadPrefetch =
+        !_mode.isOriginal &&
+        options.settings.spreadEnabled &&
+        !session.scrolling &&
+        session.book.format.usesOriginalWebView;
     // 读取正式正文时仍可能有别的排版请求，先保护已选中的预取结果。
     final releaseMatching = matching?.task?.retainForDisplay();
     try {
-      final indexed = matching?.readsTxtBySection == true
+      final indexed = matching?.readsBySection == true
           ? matching
-          : await _layoutIndexedTxt(
+          : _mode.isOriginal
+          ? null
+          : await _layoutIndexedChapter(
               ref,
               bookId,
               session,
@@ -408,7 +419,7 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
       if (indexed != null) {
         layout = indexed;
         if (target == null && chapterOffset != null) {
-          target = layout.txtLocatorAtOffset(chapterOffset);
+          target = layout.locatorAtChapterOffset(chapterOffset);
         }
       } else {
         // PDF原页只需定位数据；电子书排版前仍须经过仓库准备真实图片。
@@ -479,7 +490,7 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
     }
     if (token.isCancelled) return false;
 
-    if (layout.pageCount == 0 && !_mode.isOriginal) {
+    if (layout.isEmpty && !_mode.isOriginal) {
       // 目录或旧进度也可能直接指向空锚点。等可读页准备好后再替换当前画面。
       try {
         final neighbor =
@@ -532,26 +543,11 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
       if (ReaderDeliveryExperiments.incremental &&
           prefetch &&
           !handoff &&
+          !deferSpreadPrefetch &&
           !deliverTargetFirst &&
           session.book.format != BookFormat.pdf) {
-        Future<ChapterLayout> neighbor(int index, bool atEnd) async {
-          final nextChapter = session.chapters[index];
-          final nextContent = await contents.chapter(bookId, nextChapter);
-          final neighborLayout = await engine.layoutWindow(
-            LayoutRequest(
-              book: session.book,
-              bookId: bookId,
-              contentVersion: session.book.contentVersion,
-              chapter: nextChapter,
-              content: nextContent,
-              options: options,
-            ),
-            atEnd: atEnd,
-            token: token,
-          );
-          _rememberNeighborBody(session, neighborLayout, nextContent);
-          return neighborLayout;
-        }
+        Future<ChapterLayout> neighbor(int index, bool atEnd) =>
+            _prepareNeighborChapter(session, index, options, atEnd: atEnd);
 
         // 只把直接可翻到的跨章页列为首屏必需，普通中部目标不排无关前章。
         if (!options.settings.spreadEnabled &&
@@ -563,7 +559,7 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
           _previousChapterLayout = previous;
         }
         if (layout.isComplete &&
-            !layout.hasLaterTxtWindow &&
+            !layout.hasLaterWindow &&
             pageIndex + 1 >= layout.pageCount &&
             chapterIndex + 1 < session.chapters.length &&
             _canPrefetchChapter(session, chapterIndex + 1)) {
@@ -600,7 +596,7 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
         book: session.book,
         chapters: session.chapters,
         chapterIndex: chapterIndex,
-        content: layout.readsTxtBySection
+        content: layout.readsBySection
             ? null
             : txt
             ? layout.content
@@ -637,7 +633,7 @@ mixin _ReaderLayoutCoordinator on AsyncNotifier<ReaderSession> {
       }
     }
 
-    if (handoff) {
+    if (handoff || deferSpreadPrefetch) {
       _prefetchAfterPageShown = prepareNeighbors;
     } else {
       prepareNeighbors();

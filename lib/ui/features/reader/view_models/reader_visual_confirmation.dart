@@ -50,6 +50,14 @@ extension _ReaderVisualConfirmation on ReaderSessionNotifier {
     final trace = ReaderWorkTrace.start('reader.confirm_page');
     _confirmedPage = key;
     _confirmedVisualPosition = _visualPosition(latest);
+    if (layout.readsBySection && latest.book.format.usesOriginalWebView) {
+      _sessionRef
+          .read(chapterContentRepositoryProvider)
+          .queuePublicationDraftSave(
+            bookId,
+            latest.chapters[latest.chapterIndex],
+          );
+    }
     trace?.mark('position');
     unawaited(persist());
     trace?.finish();

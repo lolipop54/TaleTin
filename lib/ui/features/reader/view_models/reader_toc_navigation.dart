@@ -175,10 +175,26 @@ mixin _ReaderTocNavigation
         session.book.format != BookFormat.txt || anchorId?.isNotEmpty == true;
     if (findHeading && normalizedTitle?.isNotEmpty == true) {
       final chapter = session.chapters[index];
-      final content = await ref
-          .read(chapterContentRepositoryProvider)
-          .chapter(bookId, chapter);
-      for (final block in content.blocks) {
+      final repository = ref.read(chapterContentRepositoryProvider);
+      final sections = session.book.format.usesOriginalWebView
+          ? await repository.chapterSections(
+              bookId,
+              chapter,
+              session.book.format,
+            )
+          : null;
+      if (!ref.mounted) return;
+      final List<ContentBlock> blocks;
+      if (sections is PublicationChapterSections) {
+        final id = sections.plan.headings[normalizedTitle];
+        blocks = id == null
+            ? const []
+            : (await sections.readSection(sections.forBlock(id))).blocks;
+      } else {
+        blocks = (await repository.chapter(bookId, chapter)).blocks;
+      }
+      if (!ref.mounted) return;
+      for (final block in blocks) {
         final text = block.runs.map((run) => run.text).join().trim();
         final txtTarget =
             session.book.format == BookFormat.txt &&

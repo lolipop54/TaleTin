@@ -217,6 +217,7 @@ class ChapterPaginator {
     var pageCount = firstPage;
     var page = _PageBuilder(onPageSealed == null);
     var keepHeadingsThrough = -1;
+    (int, int)? openingArtwork;
     final sizing = containerSizing?.call();
     var tails = const <ContainerFlowTail>[];
     MeasuredBlock? tailAnchor;
@@ -453,6 +454,10 @@ class ChapterPaginator {
       if (block.lines.isEmpty) {
         yield ensure(gap + block.height + imageTail, i);
         page.add(PageFragment.whole(block, y: contentOffset(0)));
+        if (block.kind == BlockKind.image &&
+            chapterStarts.contains(block.blockId)) {
+          openingArtwork = (pageCount, _nextFlowIndex(blocks, i));
+        }
         yield null;
         continue;
       }
@@ -478,13 +483,16 @@ class ChapterPaginator {
       }
       if (block.kind == BlockKind.heading &&
           (forced == null || forced.every((o) => o == 0))) {
+        // 图和标题是同一章的开头。放得下完整标题时，可以把正文首行留到右页。
+        final followsOpeningArtwork = openingArtwork == (pageCount, i);
         if (compactIllustrations && !(i == firstBlock && firstLine > 0)) {
           if (i > keepHeadingsThrough) {
             final group = _headingGroup(blocks, i, contentOffset(0));
             if (group != null) {
               final keep =
-                  group.minimum <=
-                      pageHeight - _cloneInsets(block, 0, top: true)
+                  !followsOpeningArtwork &&
+                      group.minimum <=
+                          pageHeight - _cloneInsets(block, 0, top: true)
                   ? group.minimum
                   : group.headings;
               yield ensure(gap + keep, i);
@@ -500,7 +508,9 @@ class ChapterPaginator {
           }
         }
         // 防孤悬：标题与下一块首行同页；标题本身高过一页时退化为按行切
-        final keep = block.height + _firstLineOfNext(blocks, i);
+        final keep =
+            block.height +
+            (followsOpeningArtwork ? 0 : _firstLineOfNext(blocks, i));
         if (keep <= pageHeight) {
           yield ensure(gap + keep + after, i);
           page.add(PageFragment.whole(block, y: contentOffset(0)));

@@ -39,6 +39,12 @@ existing segmentation recipes. Per-entry HTML uses the existing Rust DOM and
 serializer with the previous Dart URI/media rules; template entries keep Dart's
 parser for exact compatibility. Complete outputs are compared byte for byte.
 
+NCX title references select a CNCX record and an offset within it. New
+indexes resolve both fields. Existing imports can read just the NCX title
+records to correct their visible labels while keeping the stored index and
+targets. Backup validation can reproduce the legacy metadata to verify the
+exact bytes of an older index.
+
 The only additional upstream hook is an optional position lookup callback on
 `MOBIRawml`, initialized to NULL for the original extraction path. It allows OPF
 and link generation to resolve targets from anchor metadata without loading all

@@ -10,9 +10,10 @@ import '../../domain/models/book.dart';
 import '../../domain/models/exact_page_count.dart';
 import '../../domain/models/book_document.dart';
 import '../../domain/services/library_file_gate.dart';
-import '../../domain/services/txt_chapter_sections.dart';
+import '../../domain/services/chapter_sections.dart';
 import '../../engine/layout/book_page_options.dart';
 import '../../engine/layout/chapter_layout.dart';
+import '../../engine/layout/math_formula.dart';
 import '../../engine/layout/math_typesetting.dart';
 import '../../engine/parsers/txt_text_preparation.dart';
 import '../../platform/channels/android_document_platform.dart';
@@ -34,6 +35,56 @@ class _ReadAheadMemory with WidgetsBindingObserver {
   void didHaveMemoryPressure() => enabled = false;
 }
 
+/// Windows 算页进程没有阅读窗口。公式使用阅读窗口的转换器和缓存，
+/// 这里只接收测量需要的尺寸、基线和资源名。
+class _WindowsPageFormulaRenderer implements FormulaRenderer {
+  _WindowsPageFormulaRenderer(this.socket);
+
+  final Socket socket;
+  final _pending = <int, Completer<RenderedFormula>>{};
+  var _nextId = 0;
+  var _closed = false;
+
+  @override
+  Future<RenderedFormula> render(String xml) async {
+    if (_closed) throw const LayoutCancelled();
+    final id = ++_nextId;
+    final result = _pending[id] = Completer<RenderedFormula>();
+    try {
+      socket.writeln(jsonEncode(['formula', id, xml]));
+      return await result.future;
+    } finally {
+      _pending.remove(id);
+    }
+  }
+
+  void receive(List reply) {
+    final result = _pending.remove(reply[1] as int);
+    if (result == null) return;
+    final metrics = reply[2] as List?;
+    if (metrics == null) {
+      result.completeError(StateError(reply[3] as String));
+      return;
+    }
+    result.complete(
+      RenderedFormula(
+        resource: metrics[0] as String,
+        width: (metrics[1] as num).toDouble(),
+        height: (metrics[2] as num).toDouble(),
+        baseline: (metrics[3] as num).toDouble(),
+      ),
+    );
+  }
+
+  void close() {
+    _closed = true;
+    for (final result in _pending.values) {
+      result.completeError(const LayoutCancelled());
+    }
+    _pending.clear();
+  }
+}
+
 /// 在独立进程的根 isolate 中运行。仅接受启动者建立的本机连接。
 Future<void> runBookPageWorker(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -47,11 +98,15 @@ Future<void> runBookPageWorker(List<String> args) async {
       timeout: const Duration(seconds: 10),
     );
     socket.writeln(ticket);
+    final windowsMath = Platform.isWindows
+        ? _WindowsPageFormulaRenderer(socket)
+        : null;
     final request = Completer<Map<String, dynamic>>();
     var closed = false, paused = false;
     final known = ExactPageCounts();
     void disconnected() {
       closed = true;
+      windowsMath?.close();
       if (!request.isCompleted) request.completeError(const LayoutCancelled());
     }
 
@@ -66,7 +121,12 @@ Future<void> runBookPageWorker(List<String> args) async {
             } else if (line == 'pause' || line == 'resume') {
               paused = line == 'pause';
             } else {
-              known.add(decodeExactPageCount(jsonDecode(line) as List));
+              final data = jsonDecode(line) as List;
+              if (data.first == 'formula') {
+                windowsMath!.receive(data);
+              } else {
+                known.add(decodeExactPageCount(data));
+              }
             }
           },
           onDone: disconnected,
@@ -90,6 +150,7 @@ Future<void> runBookPageWorker(List<String> args) async {
           if (closed) throw const LayoutCancelled();
         },
         () => memory.enabled && !paused && !closed,
+        windowsMath ?? FlutterTexFormulaRenderer(),
       );
     } finally {
       WidgetsBinding.instance.removeObserver(memory);
@@ -119,6 +180,7 @@ Future<void> _countBook(
   void Function(List<Object?>) send,
   Future<void> Function(void Function()) handleControls,
   bool Function() allowReadAhead,
+  FormulaRenderer formulas,
 ) async {
   for (final row in (job['knownRows'] as List? ?? const [])) {
     known.chapters[row[0] as int] = (row[1] as List).cast<int>();
@@ -182,17 +244,15 @@ Future<void> _countBook(
   final first = job['start'] as int;
   BookPageIndexBatch? batch;
   Future<void> yieldToControls() => handleControls(() => batch?.flush());
-  Future<(TxtChapterSource?, ChapterContent?)> read(Chapter chapter) async {
-    final sections = format == BookFormat.txt
-        ? await contents.txtChapterSource(id, chapter)
-        : null;
+  Future<(ChapterSections?, ChapterContent?)> read(Chapter chapter) async {
+    final sections = await contents.chapterSections(id, chapter, format);
     return (
       sections,
       sections == null ? await contents.chapter(id, chapter) : null,
     );
   }
 
-  Future<(TxtChapterSource?, ChapterContent?)>? next;
+  Future<(ChapterSections?, ChapterContent?)>? next;
   var total = job['total'] as int, previous = total;
   final completed = <List<int>>[];
   final newWindows = <int>[];
@@ -231,7 +291,7 @@ Future<void> _countBook(
     await ReadingFonts.loadSelected(options.settings.fontFamily);
     MathTypesetting.cacheRoot =
         job['math'] ?? p.join(cache, 'formula-${MathTypesetting.revision}');
-    MathTypesetting.renderer = FlutterTexFormulaRenderer();
+    MathTypesetting.renderer = formulas;
     for (var i = first; i < chapters.length; i++) {
       await yieldToControls();
       final chapter = chapters[i];
@@ -273,6 +333,10 @@ Future<void> _countBook(
           sections: sections,
           options: actual,
         ),
+        prepareSectionOptions:
+            sections == null || !options.settings.useBookFontsInSimplified
+            ? null
+            : (body) => fonts.prepare(id, body, options),
         onCount: (pages) => total += pages,
         knownPages: (window, offset, windows) =>
             known.lookup(i, window, offset, windows),

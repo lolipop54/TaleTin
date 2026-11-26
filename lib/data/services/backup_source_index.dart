@@ -7,6 +7,7 @@ import '../../domain/models/source_content_index.dart';
 import '../../engine/parsers/epub/epub_archive.dart';
 import '../../core/io/publication_cache_path.dart';
 import '../../engine/parsers/mobi/mobi_source.dart';
+import '../../engine/parsers/mobi/mobi_toc_title_repair.dart';
 import '../../engine/parsers/epub/epub_parser.dart';
 import '../../domain/models/book.dart';
 import '../../domain/models/book_document.dart';
@@ -205,9 +206,13 @@ Future<Set<String>> _validateDirectMobi(
   );
   try {
     if (rebuild) {
+      final sourceIndex = manifest['sourceIndex'] as Map;
+      final legacyTitles =
+          (sourceIndex['mobiIndex'] as Map)['navigationTitles'] != 1;
       final fresh = await MobiPublicationSource.build(
         source,
         isCancelled: () => false,
+        legacyNavigationTitles: legacyTitles,
       );
       try {
         if (sha256.convert(fresh.exportIndex()).toString() != digest) {
@@ -217,37 +222,47 @@ Future<Set<String>> _validateDirectMobi(
           'mobi-restore-proof-',
         );
         try {
+          final archive = EpubArchive.entries(fresh);
+          final tocRevision = (manifest['tocRevision'] as num?)?.toInt() ?? 0;
+          // 旧索引仍按写入时的算法核对摘要，已修复的目录另外核对新标题。
+          final correctedTitles =
+              legacyTitles && tocRevision >= kKindleTocTitleRevision
+              ? MobiTocTitleRepair.read(source, archive)
+              : null;
           final document = await const EpubParser().parse(
             ParseRequest(
-              format: BookFormat.fromCode(
-                (manifest['sourceIndex'] as Map)['format'] as String,
-              )!,
+              format: BookFormat.fromCode(sourceIndex['format'] as String)!,
               sourcePath: source,
               displayName: 'source.mobi',
               workDir: temporary.path,
               contentVersion: kContentVersion,
               indexedContent: true,
             ),
-            entryArchive: EpubArchive.entries(fresh),
+            entryArchive: archive,
+            tocRevision: tocRevision,
             onProgress: (_) {},
             isCancelled: () => false,
           );
           final expected = document.toManifestJson();
-          final positions = (manifest['sourceIndex'] as Map)['tocPositions1'];
+          final positions = sourceIndex['tocPositions1'];
           if (positions != null &&
               jsonEncode(positions) !=
                   jsonEncode(document.sourceIndex!.tocPositions)) {
             throw const FormatException('MOBI目录位置与原书不一致');
           }
-          final headings = (manifest['sourceIndex'] as Map)['tocHeadings1'];
+          final headings = sourceIndex['tocHeadings1'];
           if (headings != null &&
               jsonEncode(headings) !=
                   jsonEncode(document.sourceIndex!.tocHeadings)) {
             throw const FormatException('MOBI目录标题位置与原书不一致');
           }
+          final toc = correctedTitles?.apply(document.toc, document.chapters);
+          final expectedToc = toc == null
+              ? expected['toc']
+              : toc.map((node) => node.toJson()).toList();
           if (jsonEncode(manifest['chapters']) !=
                   jsonEncode(expected['chapters']) ||
-              jsonEncode(manifest['toc']) != jsonEncode(expected['toc'])) {
+              jsonEncode(manifest['toc']) != jsonEncode(expectedToc)) {
             throw const FormatException('MOBI目录或章节统计与原书不一致');
           }
         } finally {

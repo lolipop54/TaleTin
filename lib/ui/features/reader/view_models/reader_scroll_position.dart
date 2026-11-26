@@ -49,9 +49,9 @@ mixin _ReaderScrollPosition on AsyncNotifier<ReaderSession> {
     if (session == null) return;
     final chapter = session.chapters[index];
     final contents = ref.read(chapterContentRepositoryProvider);
-    final source = session.book.format == BookFormat.txt
-        ? await contents.txtChapterSource(bookId, chapter)
-        : null;
+    final source = _mode.isOriginal
+        ? null
+        : await contents.chapterSections(bookId, chapter, session.book.format);
     if (!ref.mounted || request != _chapterRequest) return;
     final offset = (chapter.textLength * fraction.clamp(0.0, 1.0)).round();
     if (source != null && offset == 0) {
@@ -60,7 +60,7 @@ mixin _ReaderScrollPosition on AsyncNotifier<ReaderSession> {
           bookId: bookId,
           contentVersion: session.book.contentVersion,
           chapterId: chapter.id,
-          blockId: 'b1',
+          blockId: source.firstBlockId,
           utf16Offset: 0,
         ),
       );
@@ -91,8 +91,7 @@ mixin _ReaderScrollPosition on AsyncNotifier<ReaderSession> {
             chapterId: chapter.id,
             fraction: section == null
                 ? fraction
-                : (offset - source!.starts[section].textOffset) /
-                      content.textLength,
+                : (offset - source!.offsetOf(section)) / content.textLength,
           );
     if (locator != null) requestScrollPosition(locator);
   }
@@ -105,6 +104,26 @@ mixin _ReaderScrollPosition on AsyncNotifier<ReaderSession> {
     if (held != null) {
       _scrollAnchors[key] = held;
       return held.locatorOfAnchor(fragment);
+    }
+    if (!_mode.isOriginal && session.book.format.usesOriginalWebView) {
+      final chapter = session.chapters[index];
+      final indexed = await ref
+          .read(chapterContentRepositoryProvider)
+          .chapterSections(bookId, chapter, session.book.format);
+      if (!ref.mounted) return null;
+      if (indexed is PublicationChapterSections) {
+        if (indexed.anchor(fragment) case (final id, final offset)) {
+          final part = await indexed.readSection(indexed.forBlock(id));
+          final block = part.blocks.where((b) => b.id == id).firstOrNull;
+          if (block != null && offset <= block.runLength) {
+            return LocatorMapper(
+              bookId: bookId,
+              contentVersion: session.book.contentVersion,
+              chapterId: chapter.id,
+            ).at(block, offset);
+          }
+        }
+      }
     }
     final source = await ref
         .read(epubSourceRepositoryProvider)

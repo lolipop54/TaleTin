@@ -275,6 +275,7 @@ class _ReaderSpreadAreaState extends ConsumerState<_ReaderSpreadArea> {
   void _publishVisible() {
     final pair = _pair;
     if (pair != null) {
+      _reader.rememberShownSpread((left: pair.left, right: pair.right));
       ref.read(visibleSpreadProvider(widget.bookId).notifier).show([
         pair.left,
         ?pair.right,
@@ -478,7 +479,8 @@ class _ReaderSpreadAreaState extends ConsumerState<_ReaderSpreadArea> {
           textScaler: MediaQuery.textScalerOf(context),
           // 只有 TXT 补章题和短横线；EPUB／MOBI／AZW3 按原书内容与样式排。
           insertChapterTitle: widget.session.book.format == BookFormat.txt,
-          spreadDocumentChapters: widget.session.book.format == BookFormat.epub,
+          spreadDocumentChapters:
+              widget.session.book.format.usesOriginalWebView,
           contentSize: Size(
             math.max(
               1,

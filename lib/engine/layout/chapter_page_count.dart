@@ -10,6 +10,7 @@ Future<List<int>> countChapterPages({
   void Function(ExactPageCount)? onExactWindow,
   void Function(int pages)? onWindowComplete,
   required Future<void> Function() yieldToControls,
+  Future<LayoutOptions> Function(ChapterContent)? prepareSectionOptions,
 }) async {
   await EnglishHyphenation.prepare();
   var count = 0;
@@ -23,7 +24,8 @@ Future<List<int>> countChapterPages({
     contentVersion: input.version,
     chapter: input.chapter,
     content: input.content,
-    indexedTxt: input.sections,
+    indexedSections: input.sections,
+    prepareSectionOptions: prepareSectionOptions,
     options: input.options,
     onPageSealed: onPage == null ? sealed : null,
   );
@@ -84,6 +86,6 @@ typedef LayoutRequestForCount = ({
   int version,
   Chapter chapter,
   ChapterContent? content,
-  TxtChapterSource? sections,
+  ChapterSections? sections,
   LayoutOptions options,
 });

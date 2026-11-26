@@ -53,7 +53,11 @@ class MobiParser {
       final document = await const EpubParser().parse(
         request,
         entryArchive: EpubArchive.entries(source),
-        mobiIndex: {'bytes': bytes.length, 'sha256': digest},
+        mobiIndex: {
+          'bytes': bytes.length,
+          'sha256': digest,
+          'navigationTitles': 1,
+        },
         onProgress: (value) => onProgress(.7 + .3 * (value ?? 0)),
         isCancelled: isCancelled,
         onCover: onCover,

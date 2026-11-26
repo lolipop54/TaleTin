@@ -15,6 +15,7 @@ import '../../platform/channels/reading_fonts.dart';
 import 'book_page_index.dart';
 import 'book_source_path.dart';
 import 'publication_cache.dart';
+import '../../engine/parsers/epub/publication_section_store.dart';
 
 /// 同一阅读窗口的前台排版和后台算页只交接数字。磁盘读写在独立 isolate。
 class ReaderPageCounts {
@@ -158,6 +159,13 @@ class PageCountSession {
     return _memory.lookup(chapter, window, offset, windows);
   }
 
+  Future<int?> chapterTotal(int chapter) async {
+    final counts = _memory.chapters[chapter];
+    if (counts != null) return counts.fold<int>(0, (sum, pages) => sum + pages);
+    await (_loading ??= _load());
+    return _memory.chapters[chapter]?.fold<int>(0, (sum, pages) => sum + pages);
+  }
+
   Future<ExactPageCounts> saved() async {
     // 新后台任务重读磁盘。上个进程退出时可能提交了还没发到窗口的小节。
     await (_loading = _load());
@@ -207,6 +215,7 @@ String? _geometry(
             source.$2,
             book.chapterCount,
             PublicationCache.contentRevision,
+            if (book.format.usesOriginalWebView) PublicationSectionStore.folder,
             Platform.localeName,
             Platform.operatingSystemVersion,
             layout,

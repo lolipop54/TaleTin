@@ -5,6 +5,8 @@
 /// 让布局行数与渲染行数不一致，页尾出现整行空白（设计文档 6.4）。
 library;
 
+import 'dart:io';
+
 import 'package:flutter/painting.dart';
 
 import '../../domain/models/book_document.dart';
@@ -457,7 +459,13 @@ class LayoutOptions {
 
   /// 分页缓存键：内容版本、章节、字体、字号/行高/段距/缩进/页边距、内容区尺寸、
   /// TextScaler 与引擎版本全部在内；颜色主题不在键内（换主题不重排）。
-  String get layoutSignature => 'v$engineVersion|$readingGeometrySignature';
+  String get layoutSignature => [
+    'v$engineVersion',
+    readingGeometrySignature,
+    // 旧版 Windows 量的是纯文字回退，不能沿用其分页、滚动断点或页数。
+    if (Platform.isWindows) 'mathSvg1',
+    if (settings.spreadEnabled && spreadDocumentChapters) 'spreadOpening1',
+  ].join('|');
 
   /// 原文进度可以跨引擎升级保存；只用真正影响版面的阅读设置来核对视口。
   String get readingGeometrySignature {
@@ -489,7 +497,10 @@ class LayoutOptions {
       'p${settings.horizontalPadding}',
       'i${settings.indent ? 1 : 0}',
       'ct${insertChapterTitle ? 1 : 0}',
-      if (settings.spreadEnabled) 'spreadChapters1-$spreadDocumentChapters',
+      if (settings.spreadEnabled)
+        spreadDocumentChapters
+            ? 'spreadChapters2-true'
+            : 'spreadChapters1-false',
       'w${exact ? contentSize.width : contentSize.width.toStringAsFixed(1)}',
       'h${exact ? contentSize.height : contentSize.height.toStringAsFixed(1)}',
       'ts$scalerKey',

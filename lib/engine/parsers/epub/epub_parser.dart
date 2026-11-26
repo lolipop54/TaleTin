@@ -27,6 +27,7 @@ import '../../../domain/services/toc_entry_index.dart';
 import 'epub_archive.dart';
 import 'epub_package.dart';
 import 'publication_style_tree.dart';
+import 'publication_section_import.dart';
 import 'epub_source_reader.dart';
 import 'image_sniff.dart';
 import 'xhtml_blocks.dart';
@@ -66,6 +67,7 @@ class EpubParser {
     Map<String, String> publicationDigests = const {},
     EpubArchive? entryArchive,
     Map<String, Object> mobiIndex = const {},
+    int tocRevision = kTocRevision,
   }) async {
     final timing = traceImportPerf ? ImportTiming('epub_parser') : null;
     var chapterBytes = 0;
@@ -219,7 +221,6 @@ class EpubParser {
       final coverPaths = <String>{};
       final coverEntries = package.coverEntries;
       final sources = <String, List<Object>>{};
-      final tocNodes = <TocNode>[];
       final spineHrefs = <String, String>{};
       final total = package.spine.length;
       var shownPercent = -1;
@@ -402,19 +403,17 @@ class EpubParser {
       }
 
       rawToc = tocRecovery.recover(rawToc);
-      tocNodes.addAll(
-        _buildToc(
+      var tocNodes = _buildToc(
+        rawToc,
+        spineHrefs,
+        chapters,
+        coverBoundaries: tocBookCoverBoundaries(
+          archive,
+          package,
           rawToc,
           spineHrefs,
           chapters,
-          coverBoundaries: tocBookCoverBoundaries(
-            archive,
-            package,
-            rawToc,
-            spineHrefs,
-            chapters,
-            knownCoverPaths: coverPaths,
-          ),
+          knownCoverPaths: coverPaths,
         ),
       );
       timing?.mark('toc_build');
@@ -456,7 +455,6 @@ class EpubParser {
 
       final metaTitle = _titleFromFileName(request.displayName, package.title);
       final metaAuthor = package.author;
-      onProgress(1);
       String? sourceDigest;
       if (request.indexedContent) {
         sourceDigest = await sourceFileDigest(request.sourcePath);
@@ -466,6 +464,34 @@ class EpubParser {
         styleTree.save(workDir, sourceDigest);
         timing?.mark('css_tree_write');
       }
+      // 分卷只补目录层级，沿用上面已经生成的章节位置资料。
+      if (tocRevision >= kKindleTocVolumeRevision && request.format.isMobi) {
+        tocNodes = restoreMobiTocVolumes(
+          archive,
+          package,
+          tocNodes,
+          chapters,
+          restoreChildTargets: tocRevision >= kKindleTocChildRevision,
+        );
+      }
+      if (sourceDigest != null && !package.fixedLayout) {
+        preparePublicationReadingSections(
+          archive,
+          workDir,
+          sourceDigest,
+          chapters,
+          sources,
+          request.format == BookFormat.epub ? coverEntries : null,
+          tocNodes,
+          tocPositions,
+          imageCache.keys.toSet(),
+          resolveCssText,
+          resolveImage,
+          isCancelled,
+        );
+        timing?.mark('epub_reading_sections');
+      }
+      onProgress(1);
       return BookDocument(
         title: metaTitle,
         author: metaAuthor,
@@ -478,7 +504,7 @@ class EpubParser {
         coverWidth: cover?.width,
         coverHeight: cover?.height,
         warnings: warnings.toList(),
-        tocRevision: kTocRevision,
+        tocRevision: tocRevision,
         locationMatches: matches.finish(),
         sourceIndex: request.indexedContent
             ? SourceContentIndex(

@@ -10,6 +10,7 @@ library;
 import 'dart:async';
 
 import '../../../../platform/channels/reading_window.dart';
+import '../../../../platform/channels/reading_fonts.dart';
 
 import '../../../../core/diagnostics/app_errors.dart';
 import '../../../../core/concurrency/background_compute.dart';
@@ -56,7 +57,10 @@ import '../../../../domain/services/toc_presentation.dart';
 import '../../../../engine/layout/chapter_layout.dart';
 import '../../../../engine/layout/layout_options.dart';
 import '../../../../engine/normalization/text_anchor.dart';
+import '../../../../engine/normalization/locator_mapper.dart';
 import '../../../../engine/parsers/epub/anchor_locator.dart';
+import '../../../../engine/parsers/epub/publication_section_slices.dart';
+import '../../../../engine/parsers/epub/publication_section_store.dart';
 import '../../../../engine/parsers/epub/toc_progress_entries.dart';
 
 part 'reader_layout_coordinator.dart';
@@ -385,10 +389,14 @@ class ReaderSessionNotifier extends AsyncNotifier<ReaderSession>
         scrolling: scrolling,
       );
     }
-    final indexedTxt = book.format == BookFormat.txt
-        ? await contents.txtChapterSource(bookId, currentChapter)
+    final sections = !_mode.isOriginal
+        ? await contents.chapterSectionsForLayout(
+            bookId,
+            currentChapter,
+            book.format,
+          )
         : null;
-    final first = indexedTxt != null
+    final first = sections != null
         ? null
         : await traceTurnStep(
             'load current-content',

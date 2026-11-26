@@ -40,9 +40,13 @@ class FlutterReaderEngine extends ReaderEngine {
   Future<int?> Function(int, int, int)? _knownWindows(LayoutRequest request) {
     final book = request.book, options = request.options, lookup = lookupPages;
     final chapter = request.chapter.ordinal;
-    if (book?.format != BookFormat.txt || lookup == null) return null;
+    if (book == null ||
+        lookup == null ||
+        (book.format != BookFormat.txt && request.sections == null)) {
+      return null;
+    }
     return (window, offset, windows) =>
-        lookup(book!, options, chapter, window, offset, windows);
+        lookup(book, options, chapter, window, offset, windows);
   }
 
   void Function(ExactPageCount)? _reporter(LayoutRequest request) {
@@ -86,7 +90,7 @@ class FlutterReaderEngine extends ReaderEngine {
     bool atEnd = false,
     LayoutToken? token,
   }) async {
-    if (!ReaderDeliveryExperiments.incremental && request.txtSections == null) {
+    if (!ReaderDeliveryExperiments.incremental && request.sections == null) {
       return layoutChapter(request, token: token);
     }
     final task = await _taskFor(request);
@@ -102,9 +106,19 @@ class FlutterReaderEngine extends ReaderEngine {
     );
   }
 
+  @override
+  Future<int?> verifiedChapterTail(
+    LayoutRequest request,
+    String blockId, {
+    LayoutToken? token,
+  }) async {
+    final task = await _taskFor(request);
+    return task.verifiedChapterTail(blockId, token);
+  }
+
   Future<ChapterLayoutTask> _taskFor(LayoutRequest request) async {
     final revision = (_allInvalidation, _bookInvalidation[request.bookId] ?? 0);
-    final sections = request.txtSections;
+    final sections = request.sections;
     final preparation = sections == null ? _fontPreparation(request) : null;
     final options = preparation == null ? request.options : await preparation;
     final digest = sections == null
@@ -112,7 +126,7 @@ class FlutterReaderEngine extends ReaderEngine {
             'layout.content_identity',
             () => ContentFingerprint.of(request.content),
           )
-        : ('txt-sections', sections.identity);
+        : ('chapter-sections', sections.identity);
     // 核对实际正文摘要与所有使用字号的精确缩放值，相同正文重新解码仍命中。
     final key = (
       revision,
@@ -155,7 +169,7 @@ class FlutterReaderEngine extends ReaderEngine {
     LayoutRequest request,
     LayoutOptions options,
   ) async {
-    final sections = request.txtSections;
+    final sections = request.sections;
     if (sections != null) {
       return ChapterLayoutTask(
         bookId: request.bookId,
@@ -163,7 +177,11 @@ class FlutterReaderEngine extends ReaderEngine {
         chapter: request.chapter,
         content: null,
         options: options,
-        indexedTxt: sections,
+        indexedSections: sections,
+        prepareSectionOptions:
+            prepareFonts == null || !options.settings.useBookFontsInSimplified
+            ? null
+            : (body) => prepareFonts!(request.bookId, body, options),
         onExactPages: _reporter(request),
         knownWindow: _knownWindows(request),
         measurementCache: _measurements,
@@ -246,7 +264,7 @@ class FlutterReaderEngine extends ReaderEngine {
     LayoutRequest request, {
     LayoutToken? token,
   }) async {
-    if (request.txtSections != null) {
+    if (request.sections != null) {
       return layoutWindow(request, token: token);
     }
     final trace = ReaderWorkTrace.start('layout.request', {

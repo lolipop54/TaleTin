@@ -403,7 +403,7 @@ bool _isBefore(
     }
   }
   if (layout.precedesWindow(locator)) return (blockIndex: -1, offset: 0);
-  if (layout.followsTxtWindow(locator)) {
+  if (layout.followsWindow(locator)) {
     return (blockIndex: layout.blocks.length, offset: 0);
   }
   return null;

@@ -4,6 +4,7 @@
 #include "read.h"
 #include "index.h"
 #include "memory.h"
+#include "opf.h"
 #include "util.h"
 #include <stdlib.h>
 #include <string.h>
@@ -15,15 +16,15 @@ static uint32_t be32(const unsigned char *p) {
     return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
 }
 
-static int load_index(gt_mobi_book *b, MOBIIndx **target, uint32_t *index) {
+static int load_index(gt_mobi_session *s, MOBIIndx **target, uint32_t *index, bool multiple_titles) {
     if (!index || *index == UINT32_MAX) return 0;
-    gt_mobi_session *s = b->session;
     size_t first = *index + mobi_get_kf8offset(s->m);
     if (gt_load(s, first)) return 1;
     MOBIPdbRecord *record = s->records[first];
     if (record->size < 56 || memcmp(record->data, "INDX", 4)) return 1;
     uint32_t count = be32(record->data + 24), cncx = be32(record->data + 52);
     if (count > 20000 || cncx > 15 || count + cncx >= s->count - first) return 4;
+    if (multiple_titles && cncx < 2) return 0;
     for (size_t i = 1; i <= count + cncx; i++) if (gt_load(s, first + i)) return 1;
     MOBIIndx *parsed = mobi_init_indx();
     if (!parsed) return 5;
@@ -31,6 +32,21 @@ static int load_index(gt_mobi_book *b, MOBIIndx **target, uint32_t *index) {
     if (mobi_parse_index(s->m, parsed, first) != MOBI_SUCCESS) return 1;
     *target = parsed;
     return 0;
+}
+
+int gt_mobi_navigation_titles(gt_mobi_session *s) {
+    if (!s) return 1;
+    MOBIIndx *index = NULL;
+    const MOBIMobiHeader *header = s->m->mh;
+    int status = header ? load_index(s, &index, header->ncx_index, true) : 0;
+    if (status) return status;
+    free(s->result);
+    s->result = NULL;
+    s->result_size = 0;
+    if (!index) return 0;
+    MOBI_RET result = mobi_ncx_title_xml(index, &s->result, &s->result_size);
+    mobi_free_indx(index);
+    return result == MOBI_SUCCESS ? 0 : 1;
 }
 
 static GTEntry *entry_add(gt_mobi_book *b, MOBIPart *part, int kind, const char *prefix) {
@@ -172,10 +188,10 @@ int gt_book_structure(gt_mobi_book *b) {
     raw->position_context = b; raw->position_id = gt_position_id;
     const MOBIMobiHeader *h = s->m->mh;
     if (h) {
-        int status = load_index(b, &raw->skel, h->skeleton_index);
-        if (!status) status = load_index(b, &raw->frag, h->fragment_index);
-        if (!status) status = load_index(b, &raw->guide, h->guide_index);
-        if (!status) status = load_index(b, &raw->ncx, h->ncx_index);
+        int status = load_index(s, &raw->skel, h->skeleton_index, false);
+        if (!status) status = load_index(s, &raw->frag, h->fragment_index, false);
+        if (!status) status = load_index(s, &raw->guide, h->guide_index, false);
+        if (!status) status = load_index(s, &raw->ncx, h->ncx_index, false);
         if (status) return status;
     }
     if (mobi_exists_fdst(s->m) && h->fdst_section_count && *h->fdst_section_count > 1) {

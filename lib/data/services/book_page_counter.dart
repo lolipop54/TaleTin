@@ -41,7 +41,7 @@ class BookPageCounter extends ChangeNotifier {
 
   int? number(int chapter, ChapterLayout layout, int page) {
     if (chapter < 0 || chapter >= _starts.length) return null;
-    final window = layout.txtWindowIndex;
+    final window = layout.sectionIndex;
     if (window == null) return _starts[chapter] + page + 1;
     // 长 TXT 的同一章可能分成许多小节，翻到后面的小节也能在整章结束前显示页号。
     final starts = chapter < _sections.length
@@ -224,6 +224,15 @@ class BookPageCounter extends ChangeNotifier {
             try {
               final event = jsonDecode(line) as List;
               switch (event.first) {
+                case 'formula':
+                  unawaited(
+                    _renderWorkerFormula(
+                      socket,
+                      event[1] as int,
+                      event[2] as String,
+                    ),
+                  );
+                  return;
                 case 'windows':
                   for (final row in event[1] as List) {
                     _session?.remember(decodeExactPageCount(row));
@@ -274,6 +283,25 @@ class BookPageCounter extends ChangeNotifier {
             socket.destroy();
           },
         );
+  }
+
+  Future<void> _renderWorkerFormula(Socket socket, int id, String xml) async {
+    List<Object?>? metrics;
+    String? failure;
+    try {
+      final formula = await MathTypesetting.renderer!.render(xml);
+      metrics = [
+        formula.resource,
+        formula.width,
+        formula.height,
+        formula.baseline,
+      ];
+    } on Object catch (error) {
+      failure = '$error';
+    }
+    if (identical(socket, _peer)) {
+      socket.writeln(jsonEncode(['formula', id, metrics, failure]));
+    }
   }
 
   void _fail(Object error, StackTrace stack) {

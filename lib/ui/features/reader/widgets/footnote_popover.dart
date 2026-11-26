@@ -13,13 +13,13 @@ import 'package:html/parser.dart' as html_parser;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../domain/models/book_document.dart';
+import '../../../../domain/models/footnote_markers.dart';
 import '../../../../engine/parsers/epub/html_anchor_index.dart';
 
 import '../../../core/theme/reading_theme.dart';
 import '../view_models/original_layout_controller.dart';
 import '../view_models/reader_session_view_model.dart';
 import 'thought_popover.dart';
-import 'footnote_markers.dart';
 
 export 'reader_link_hit.dart';
 
@@ -174,7 +174,7 @@ String? footnoteTextFromHtml(
   var text = buffer.toString().replaceAll(RegExp(r'\s+'), ' ').trim();
   if (markerAnchor != null) {
     // 编号链接已被跳过，同时去掉留在外面的空括号。
-    text = text.replaceFirst(RegExp(r'^[\[（(【\s]*[\]）)】]+\s*'), '');
+    text = text.replaceFirst(RegExp(r'^[\[（(【〔\s]*[\]）)】〕]+\s*'), '');
   }
   // 常见脚注以序号开头（“[1] ……”），气泡里不需要重复
   text = stripLeadingBracketedNoteMarker(text);

@@ -178,7 +178,7 @@ extension _ReaderProgressNavigation on ReaderSessionNotifier {
         if (!ReaderDeliveryExperiments.contentTarget &&
             i == session.chapterIndex &&
             session.layout != null &&
-            !session.layout!.readsTxtBySection) {
+            !session.layout!.readsBySection) {
           // 章内按同口径换算到页
           final page = _pageForChapterOffset(session.layout!, within);
           _publishScan(session.copyWith(pageIndex: page));

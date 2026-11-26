@@ -107,12 +107,14 @@ class MobiPublicationSource
     required bool Function() isCancelled,
     void Function(double)? onProgress,
     void Function(String)? onStage,
+    bool legacyNavigationTitles = false,
   }) async {
     final native = DirectMobi(source, sequentialRead: true);
     try {
       await native.buildIndex(
         isCancelled: isCancelled,
         onProgress: (value) => onProgress?.call(.55 * value),
+        legacyNavigationTitles: legacyNavigationTitles,
       );
       onStage?.call('native_index');
       final entries = {for (final entry in native.entries) entry.name: entry};

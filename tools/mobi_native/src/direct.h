@@ -33,6 +33,10 @@ GT_EXPORT uint32_t gt_mobi_entries(gt_mobi_session *session);
 GT_EXPORT int gt_mobi_anchors(gt_mobi_session *session, uint32_t entry);
 GT_EXPORT int gt_mobi_links(gt_mobi_session *session, uint32_t entry);
 GT_EXPORT int gt_mobi_metadata(gt_mobi_session *session);
+/* Replay old index bytes only when verifying backups made before the CNCX fix. */
+GT_EXPORT int gt_mobi_legacy_metadata(gt_mobi_session *session);
+/* Read multi-record NCX titles and navPoint IDs, without decoding the body. */
+GT_EXPORT int gt_mobi_navigation_titles(gt_mobi_session *session);
 GT_EXPORT int gt_mobi_entry_info(gt_mobi_session *session, uint32_t entry);
 GT_EXPORT int gt_mobi_entry_read(gt_mobi_session *session, uint32_t entry,
                                 uint32_t offset, uint32_t length, int patched);

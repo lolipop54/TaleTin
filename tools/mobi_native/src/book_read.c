@@ -115,10 +115,10 @@ int gt_mobi_links(gt_mobi_session *s, uint32_t entry) {
         ? gt_entry_patch(s->book, &s->book->entries[entry]) : 1;
 }
 
-int gt_mobi_metadata(gt_mobi_session *s) {
+static int gt_metadata(gt_mobi_session *s, bool legacy_titles) {
     if (!s || !s->book || !s->book->raw) return 1;
     gt_mobi_book *b = s->book;
-    if (mobi_build_opf(b->raw, s->m) != MOBI_SUCCESS) return 1;
+    if (mobi_build_opf_with_toc(b->raw, s->m, legacy_titles) != MOBI_SUCCESS) return 1;
     for (MOBIPart *p = b->raw->resources; p; p = p->next) {
         if (p->type != T_OPF && p->type != T_NCX) continue;
         if (b->entry_count >= 20000) return 4;
@@ -129,6 +129,9 @@ int gt_mobi_metadata(gt_mobi_session *s) {
     }
     return 0;
 }
+
+int gt_mobi_metadata(gt_mobi_session *s) { return gt_metadata(s, false); }
+int gt_mobi_legacy_metadata(gt_mobi_session *s) { return gt_metadata(s, true); }
 
 int gt_mobi_entry_info(gt_mobi_session *s, uint32_t number) {
     if (!s || !s->book || number >= s->book->entry_count) return 1;

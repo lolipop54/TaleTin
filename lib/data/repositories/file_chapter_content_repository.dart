@@ -16,6 +16,7 @@ import '../../core/diagnostics/reader_work_trace.dart';
 import '../../core/io/publication_cache_path.dart';
 
 import '../../domain/models/book_document.dart';
+import '../../domain/models/book.dart';
 import '../../domain/models/locator.dart';
 import '../../engine/normalization/source_position_matcher.dart';
 import '../../engine/styles/chapter_styler.dart';
@@ -32,34 +33,17 @@ import '../services/toc_progress_cache.dart';
 import '../services/chapter_content_worker.dart';
 import '../services/chapter_manifest.dart';
 import '../services/publication_cache.dart';
+import '../../engine/parsers/epub/publication_spread_chapters.dart';
 import '../../engine/parsers/pdf/pdf_file.dart';
 import '../../engine/parsers/pdf/pdf_page_pictures.dart';
 import '../../domain/services/toc_entry_index.dart';
 import '../../domain/services/txt_chapter_sections.dart';
+import '../../domain/services/chapter_sections.dart';
+import '../../engine/parsers/epub/publication_section_store.dart';
 
 part '../services/pdf_chapter_reading.dart';
-
-// 独立入口只捕获路径与快照；不能把持有连接/在途任务的正文仓库发送出去。
-typedef _PositionWork = (String, String?, String, List<Chapter>, List<Locator>);
-Future<Map<String, Locator?>> _matchInBackground(_PositionWork input) =>
-    Isolate.run(() => _matchPositions(input));
-Future<Map<String, Locator?>> _matchPositions(_PositionWork input) async {
-  final (library, cache, bookId, chapters, anchors) = input;
-  final contents = FileChapterContentRepository(
-    libraryRoot: library,
-    cacheRoot: cache,
-  );
-  try {
-    final matcher = SourcePositionMatcher(anchors);
-    for (final chapter in chapters) {
-      final content = await contents.chapter(bookId, chapter, textOnly: true);
-      matcher.add(chapter.id, content.blocks);
-    }
-    return matcher.finish();
-  } finally {
-    await contents.close();
-  }
-}
+part '../services/chapter_position_lookup.dart';
+part '../services/chapter_toc_reading.dart';
 
 class FileChapterContentRepository implements ChapterContentRepository {
   @override
@@ -189,6 +173,9 @@ class FileChapterContentRepository implements ChapterContentRepository {
   final _chapters = <String, ChapterContent>{};
   final _pending = <String, Set<Future<void>>>{};
   final _changing = <String>{};
+  final _draftBooks = <String>{};
+  Timer? _draftWriteTimer;
+  (String, Chapter)? _draftToWrite;
   bool _closed = false;
   String? _tocKey;
   List<TocNode>? _toc;
@@ -222,6 +209,120 @@ class FileChapterContentRepository implements ChapterContentRepository {
     String bookId,
     Chapter chapter,
   ) => _requestChapter(bookId, chapter, prepareLayoutDigest: true);
+
+  @override
+  Future<ChapterSections?> chapterSections(
+    String bookId,
+    Chapter chapter,
+    BookFormat format,
+  ) => _chapterSections(bookId, chapter, format, prioritizeLayout: false);
+
+  @override
+  Future<ChapterSections?> chapterSectionsForLayout(
+    String bookId,
+    Chapter chapter,
+    BookFormat format,
+  ) {
+    _delayPublicationDraftSave();
+    return _chapterSections(bookId, chapter, format, prioritizeLayout: true);
+  }
+
+  Future<ChapterSections?> _chapterSections(
+    String bookId,
+    Chapter chapter,
+    BookFormat format, {
+    required bool prioritizeLayout,
+  }) async {
+    if (format == BookFormat.txt) return txtChapterSource(bookId, chapter);
+    if (!format.usesOriginalWebView) return null;
+    return _read(bookId, () async {
+      if (!await _indexed(bookId, chapter)) return null;
+      final worker = await _contentWorker();
+      final plan = await worker.publicationPlan(
+        bookId,
+        chapter,
+        prioritizeLayout: prioritizeLayout,
+      );
+      if (plan == null || plan.rows.isEmpty) return null;
+      if (plan.inMemory) _draftBooks.add(bookId);
+      return PublicationChapterSections(
+        plan.layoutIdentity,
+        plan,
+        (section) {
+          if (prioritizeLayout) _delayPublicationDraftSave();
+          return _read(
+            bookId,
+            () => worker.publicationSection(
+              bookId,
+              chapter,
+              section,
+              prioritizeLayout: prioritizeLayout,
+            ),
+          );
+        },
+        readForCount: (section) {
+          _delayPublicationDraftSave();
+          return _read(
+            bookId,
+            () => worker.publicationSection(
+              bookId,
+              chapter,
+              section,
+              prioritizeLayout: true,
+              countOnly: true,
+            ),
+          );
+        },
+      );
+    });
+  }
+
+  @override
+  void queuePublicationDraftSave(String bookId, Chapter chapter) {
+    if (_closed ||
+        _changing.contains(bookId) ||
+        !_draftBooks.contains(bookId)) {
+      return;
+    }
+    _draftToWrite = (bookId, chapter);
+    _delayPublicationDraftSave();
+  }
+
+  void _delayPublicationDraftSave() {
+    final draft = _draftToWrite;
+    if (draft == null) return;
+    _draftWriteTimer?.cancel();
+    // Give a second jump or turn priority over writing the reusable disk index.
+    _draftWriteTimer = Timer(const Duration(milliseconds: 900), () async {
+      final (bookId, chapter) = draft;
+      if (_pending.isNotEmpty) {
+        _delayPublicationDraftSave();
+        return;
+      }
+      _draftToWrite = null;
+      try {
+        final hasMore = await _read(
+          bookId,
+          () async =>
+              (await _contentWorker()).savePublicationDraft(bookId, chapter),
+        );
+        if (!hasMore) _draftBooks.remove(bookId);
+      } on Exception {
+        // This index is optional and can be rebuilt on the next read.
+      } on StateError {
+        // The book may have been closed or replaced while the timer ran.
+      }
+    });
+  }
+
+  @override
+  Future<List<SpreadChapterStart>?> indexedSpreadStarts(
+    String bookId,
+    Chapter chapter,
+  ) => _read(bookId, () async {
+    if (!await _indexed(bookId, chapter)) return null;
+    return (await _contentWorker()).indexedSpreadStarts(bookId, chapter);
+  });
 
   @override
   Future<TxtChapterSource?> txtChapterSource(
@@ -434,11 +535,40 @@ class FileChapterContentRepository implements ChapterContentRepository {
         () => enrichEpubContent(raw, chapter, directory, source),
       );
     }
+    final href = chapter.href;
+    if (href != null && content.pdfPage == null) {
+      final manifest = await _manifest(
+        p.dirname(chapterAbsolutePath(bookId, chapter)),
+      );
+      content = withPublicationSpreadChapters(
+        content,
+        manifest?.spreadTitles[chapter.id] ?? const [],
+        continuation:
+            isKindleContinuation(href) &&
+            await _legacyKindleSource(bookId, content),
+      );
+    }
     _chapters[key] = content;
     while (_chapters.length > cacheCapacity) {
       _chapters.remove(_chapters.keys.first);
     }
     return content;
+  }
+
+  Future<bool> _legacyKindleSource(
+    String bookId,
+    ChapterContent content,
+  ) async {
+    if (content.displaySourceJson?['legacyMobi'] == true) return true;
+    final directory = p.join(libraryRoot, bookId);
+    for (final kind in ['mobi', 'azw3']) {
+      final source = bookSourcePath(directory, kind);
+      if (p.extension(source).toLowerCase() == '.$kind' &&
+          await File(source).exists()) {
+        return true;
+      }
+    }
+    return false;
   }
 
   Future<ChapterContent> _readChapterFile(
@@ -534,119 +664,6 @@ class FileChapterContentRepository implements ChapterContentRepository {
     };
   }
 
-  Future<List<TocNode>> _readToc(String bookId, int contentVersion) async {
-    final key = '$bookId/$contentVersion';
-    if (_tocKey == key && _toc != null) return _toc!;
-    final file = File(
-      p.join(
-        libraryRoot,
-        bookId,
-        'content',
-        '$contentVersion',
-        'manifest.json',
-      ),
-    );
-    var nodes = const <TocNode>[];
-    var chapters = const <Chapter>[];
-    var encoding = '';
-    Map<String, dynamic>? manifest;
-    TocLocations? locations;
-    if (await file.exists()) {
-      try {
-        final snapshot = await _manifest(p.dirname(file.path));
-        final decoded = snapshot?.data;
-        if (decoded != null) {
-          manifest = decoded;
-          if (snapshot!.sourceIndex case final index?) {
-            locations = (
-              anchors: index.tocPositions,
-              headings: index.tocHeadings,
-            );
-          }
-          encoding = decoded['encoding'] as String? ?? '';
-          final rawToc = decoded['toc'];
-          if (rawToc is List) {
-            nodes = [
-              for (final raw in rawToc)
-                if (raw is Map) TocNode.fromJson(raw.cast<String, Object?>()),
-            ];
-          }
-          final rawChapters = decoded['chapters'];
-          if (rawChapters is List) {
-            chapters = [
-              for (final raw in rawChapters)
-                if (raw is Map)
-                  Chapter(
-                    id: raw['id'] as String? ?? '',
-                    ordinal: (raw['ordinal'] as num?)?.toInt() ?? 0,
-                    title: raw['title'] as String? ?? '',
-                    contentPath: raw['path'] as String? ?? '',
-                    textLength: (raw['textLength'] as num?)?.toInt() ?? 0,
-                    href: raw['href'] as String?,
-                  ),
-            ];
-          }
-        }
-      } on FormatException {
-        // 目录读不出来不阻断阅读：界面降级为章节平铺
-        nodes = const [];
-      }
-    }
-    // 新导入已生成完整目录。只有没有规则标记的旧书才修复，且按真实章节
-    // 格式分支；本地 TXT 的 source.path 不能拿去尝试打开 EPUB 归档。
-    if (chapters.isNotEmpty && manifest != null && needsTocRecovery(manifest)) {
-      final epub = chapters.any((chapter) => chapter.href != null);
-      final directory = p.join(libraryRoot, bookId);
-      final rawIndex = manifest['sourceIndex'];
-      final index = rawIndex is Map
-          ? SourceContentIndex.fromJson(rawIndex.cast<String, dynamic>())
-          : null;
-      final source = File(
-        bookSourcePath(directory, index?.format ?? (epub ? 'epub' : 'txt')),
-      );
-      if (await source.exists()) {
-        try {
-          if (epub) {
-            final recovered = await recoverPublicationToc(
-              sourcePath: source.path,
-              bookDirectory: directory,
-              contentDirectory: file.parent.path,
-              chapters: chapters,
-              index: index,
-            );
-            if (recovered.isNotEmpty) nodes = recovered;
-          } else {
-            nodes = await recoverTxtToc(
-              bookDirectory: directory,
-              chapters: chapters,
-              nodes: nodes,
-              encoding: encoding,
-              preparation: textPreparation,
-            );
-          }
-          // 只保存补齐的目录与完成标记，不重写正文、块号或阅读位置。
-          final next = File('${file.path}.next');
-          await next.writeAsString(
-            jsonEncode({
-              ...manifest,
-              'toc': nodes.map((node) => node.toJson()).toList(),
-              'tocRevision': kTocRevision,
-            }),
-            flush: true,
-          );
-          await next.rename(file.path);
-          _manifests.remove(p.dirname(file.path));
-        } on Object {
-          // 原文件或修复保存失败时仍可用旧目录，下次读取可以继续尝试。
-        }
-      }
-    }
-    _tocKey = key;
-    _toc = nodes;
-    _tocLocations = locations;
-    return nodes;
-  }
-
   @override
   Future<TocLocations?> tocLocations(String bookId, int contentVersion) async {
     await toc(bookId, contentVersion);
@@ -684,6 +701,15 @@ class FileChapterContentRepository implements ChapterContentRepository {
 
   @override
   void invalidate([String? bookId]) {
+    if (bookId == null || _draftToWrite?.$1 == bookId) {
+      _draftWriteTimer?.cancel();
+      _draftToWrite = null;
+    }
+    if (bookId == null) {
+      _draftBooks.clear();
+    } else {
+      _draftBooks.remove(bookId);
+    }
     unawaited(_closePdfReaders(bookId));
     if (bookId == null) {
       _pdfBooks.clear();

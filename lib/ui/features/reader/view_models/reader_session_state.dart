@@ -87,7 +87,9 @@ class ReaderSession {
   bool get isOriginal => originalAnchor != null;
 
   bool get usesSimplifiedSpread =>
-      !scrolling && !isOriginal && layout?.options.settings.spreadEnabled == true;
+      !scrolling &&
+      !isOriginal &&
+      layout?.options.settings.spreadEnabled == true;
 
   Chapter get chapter => chapters[chapterIndex];
 
@@ -172,7 +174,7 @@ class ReaderSession {
   /// 与原书模式「按标题落点」后的上报位置正好对上（两边都是同一块的位置）。
   double get contentProgress {
     // 长 TXT 窗口已按真实段落累计字数，直接复用，避免首次绘制再扫整章。
-    if (!scrolling && !isOriginal && layout?.paginatesTxtInWindows == true) {
+    if (!scrolling && !isOriginal && layout?.paginatesInWindows == true) {
       return bookProgress;
     }
     if (scrolling && scrollSectionOffset != null) return bookProgress;
@@ -281,7 +283,7 @@ class ReaderSession {
             : this.pdfAtEnd),
     content:
         !(scrolling ?? this.scrolling) &&
-            (layout?.readsTxtBySection == true ||
+            (layout?.readsBySection == true ||
                 (this.scrollSectionOffset != null && content == null))
         ? null
         : content ?? this.content,

@@ -46,8 +46,10 @@ class ChapterAnchorMap {
     required int contentVersion,
     required String chapterId,
     Set<String>? availableImages,
+    bool legacyMobi = false,
   }) {
     final builder = XhtmlBlockBuilder(
+      legacyMobi: legacyMobi,
       basePath: resourceHref,
       resolveImage: (entryPath) =>
           availableImages != null && !availableImages.contains(entryPath)

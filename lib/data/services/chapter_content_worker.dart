@@ -16,6 +16,7 @@ import '../../domain/repositories/chapter_content_repository.dart';
 import '../../domain/services/text_preparation.dart';
 import '../../domain/services/txt_chapter_sections.dart';
 import '../../engine/normalization/content_fingerprint.dart';
+import '../../engine/parsers/epub/publication_section_store.dart';
 import 'chapter_disk_cache.dart';
 import 'chapter_manifest.dart';
 import 'indexed_chapter_reader.dart';
@@ -34,6 +35,37 @@ typedef _TxtCacheRoom = ({int chapters, int units, int blocks});
 /// 共用后台任务负责索引核验、ZIP 和磁盘缓存，超长 TXT 正文单独解码。
 /// 正文仓库合并重复请求，清缓存或换源时等待在途读取结束。
 class ChapterContentWorker {
+  Future<List<SpreadChapterStart>?> indexedSpreadStarts(
+    String bookId,
+    Chapter chapter,
+  ) async =>
+      await _request('indexedSpreadStarts', (bookId, chapter))
+          as List<SpreadChapterStart>?;
+
+  Future<PublicationSectionPlan?> publicationPlan(
+    String bookId,
+    Chapter chapter, {
+    bool prioritizeLayout = false,
+  }) async =>
+      await _request('publicationPlan', (bookId, chapter, prioritizeLayout))
+          as PublicationSectionPlan?;
+
+  Future<ChapterContent> publicationSection(
+    String bookId,
+    Chapter chapter,
+    int section, {
+    bool prioritizeLayout = false,
+    bool countOnly = false,
+  }) async => await _request('publicationSection', (
+    bookId,
+    chapter,
+    section,
+    prioritizeLayout,
+    countOnly,
+  )) as ChapterContent;
+
+  Future<bool> savePublicationDraft(String bookId, Chapter chapter) async =>
+      await _request('savePublicationDraft', (bookId, chapter)) as bool;
   ChapterContentWorker._(this.preparation, this._libraryRoot, this._cacheRoot);
   final TextPreparationService? preparation;
   final String _libraryRoot;
@@ -398,6 +430,7 @@ Future<void> _run(
           p.join(bookDirectory, directory),
           cacheRoot: cacheRoot,
           cacheEpoch: cacheEpoch,
+          sectionReadRoot: pageCountReadCache,
         );
     readers[key] = reader;
     while (readers.length > 2) {
@@ -469,7 +502,7 @@ Future<void> _run(
                         p.join(libraryRoot, bookId, directory),
                         cacheRoot: cacheRoot,
                         cacheEpoch: cacheEpoch,
-                        preparedIndex: (kContentVersion, index),
+                        preparedManifest: ChapterManifest(manifest, index),
                       );
                   readers[key] = reader;
                   while (readers.length > 2) {
@@ -539,6 +572,34 @@ Future<void> _run(
             'paragraphs': content.blocks.length,
           });
           result = content;
+        case 'publicationPlan':
+          final (bookId, chapter, prioritizeLayout) =
+              argument as (String, Chapter, bool);
+          final reader = await readerFor(bookId, chapter);
+          result = await reader.publicationSectionPlan(
+            chapter,
+            decode,
+            prioritizeLayout: prioritizeLayout,
+          );
+        case 'savePublicationDraft':
+          final (bookId, chapter) = argument as (String, Chapter);
+          final reader = await readerFor(bookId, chapter);
+          result = await reader.savePublicationDraft(chapter);
+        case 'indexedSpreadStarts':
+          final (bookId, chapter) = argument as (String, Chapter);
+          final reader = await readerFor(bookId, chapter);
+          result = await reader.indexedSpreadStarts(chapter, decode);
+        case 'publicationSection':
+          final (bookId, chapter, section, prioritizeLayout, countOnly) =
+              argument as (String, Chapter, int, bool, bool);
+          final reader = await readerFor(bookId, chapter);
+          result = await reader.readPublicationSection(
+            chapter,
+            section,
+            decode,
+            prioritizeLayout: prioritizeLayout,
+            countOnly: countOnly,
+          );
         case 'chapter':
           final (bookId, chapter, textOnly, prepareLayoutDigest, knownDigest) =
               argument as (String, Chapter, bool, bool, String?);
@@ -611,6 +672,14 @@ Future<void> _run(
                   trace?.details['cacheWriteFailed'] = true;
                 }
                 trace?.mark('cache_write');
+              }
+            }
+            if (!textOnly) {
+              final prepared = reader.prepareSpreadChapters(content);
+              if (!identical(prepared, content)) encoded = null;
+              content = prepared;
+              if (pageCountReadCache == null) {
+                reader.rememberSpreadStarts(content);
               }
             }
             String? layoutDigest;

@@ -10,6 +10,8 @@ import 'dart:typed_data';
 
 import '../models/book_document.dart';
 import '../models/locator.dart';
+import '../models/book.dart';
+import '../services/chapter_sections.dart';
 import '../services/toc_entry_index.dart';
 import '../services/txt_chapter_sections.dart';
 
@@ -17,6 +19,8 @@ typedef TocLocations = ({
   Map<String, Map<String, double?>> anchors,
   Map<String, Map<String, double>> headings,
 });
+
+typedef SpreadChapterStart = ({String blockId, int textOffset});
 
 /// 正文读取失败。
 ///
@@ -53,6 +57,12 @@ abstract class ChapterContentRepository {
   Future<String?> spreadSourceDigest(String bookId, Chapter chapter) async =>
       null;
 
+  /// MOBI 续段已核实的章首。空表表示本段已核实，null 表示应沿用正文判断。
+  Future<List<SpreadChapterStart>?> indexedSpreadStarts(
+    String bookId,
+    Chapter chapter,
+  ) async => null;
+
   /// 读取单章正文。实现内部有小容量缓存，按需读取，不整本进内存。
   Future<ChapterContent> chapter(
     String bookId,
@@ -82,6 +92,23 @@ abstract class ChapterContentRepository {
     String bookId,
     Chapter chapter,
   ) async => null;
+
+  Future<ChapterSections?> chapterSections(
+    String bookId,
+    Chapter chapter,
+    BookFormat format,
+  ) async =>
+      format == BookFormat.txt ? txtChapterSource(bookId, chapter) : null;
+
+  /// 只需要正文和位置边界的分页请求，不必先准备目录锚点与磁盘小节。
+  Future<ChapterSections?> chapterSectionsForLayout(
+    String bookId,
+    Chapter chapter,
+    BookFormat format,
+  ) => chapterSections(bookId, chapter, format);
+
+  /// 阅读画面完成交接后才安排分段缓存写入。
+  void queuePublicationDraftSave(String bookId, Chapter chapter) {}
 
   /// 阅读窗口持有的章节不参与图片回收；空列表释放该窗口的保护。
   /// 文件仓库只登记已有/即将生成的资料，不在这里渲染邻页。

@@ -3,6 +3,8 @@ import 'dart:io';
 
 import 'package:path/path.dart' as p;
 
+import '../../engine/parsers/epub/publication_section_store.dart';
+
 /// 各格式、两种排版共用的可重建正文与资源。当前章及近期所需文件先登记
 /// 再回收，另一后台任务不能删掉仍在显示的图片。
 class PublicationCache {
@@ -168,8 +170,20 @@ class PublicationCache {
 
   void _trimChapters() {
     final held = _readingChapters.values.expand((ids) => ids).toSet();
+    // 长章读过的段落可以很多，只保留近期图片供相邻页和滚动窗口使用。
+    final recent = <String, int>{};
+    for (final key in _chapters.keys.toList().reversed) {
+      final separator = key.indexOf('@');
+      if (separator < 0) continue;
+      final chapter = key.substring(0, separator);
+      if (recent.update(chapter, (n) => n + 1, ifAbsent: () => 1) > 8) {
+        _chapters.remove(key);
+      }
+    }
     while (_chapters.length > 4) {
-      final idle = _chapters.keys.where((id) => !held.contains(id)).firstOrNull;
+      final idle = _chapters.keys
+          .where((id) => !held.contains(id.split('@').first))
+          .firstOrNull;
       if (idle == null) break;
       _chapters.remove(idle);
     }
@@ -238,8 +252,13 @@ class PublicationCache {
         for (final entry
             in source.listSync(followLinks: false).whereType<Directory>()) {
           if (!p.basename(entry.path).startsWith('content')) continue;
-          final chapters = Directory(p.join(entry.path, 'chapters'));
-          if (chapters.existsSync()) chapters.deleteSync(recursive: true);
+          for (final name in [
+            'chapters',
+            ...PublicationSectionStore.derivedFolders,
+          ]) {
+            final chapters = Directory(p.join(entry.path, name));
+            if (chapters.existsSync()) chapters.deleteSync(recursive: true);
+          }
         }
       }
     }

@@ -7,6 +7,7 @@
 library;
 
 import 'dart:async';
+import 'dart:isolate';
 import 'dart:ui' show Size, VoidCallback;
 
 import '../../core/diagnostics/reader_work_trace.dart';
@@ -17,6 +18,7 @@ import '../../domain/models/content_table.dart';
 import '../../domain/models/locator.dart';
 import '../../domain/services/layout_checkpoint_store.dart';
 import '../../domain/services/txt_chapter_sections.dart';
+import '../../domain/services/chapter_sections.dart';
 import '../normalization/locator_mapper.dart';
 import '../normalization/text_anchor.dart';
 import '../styles/chapter_styler.dart';
@@ -38,6 +40,7 @@ import 'measured_block_codec.dart';
 
 part 'chapter_layout_task.dart';
 part 'chapter_page_count.dart';
+part 'chapter_tail_count.dart';
 part 'lazy_measured_blocks.dart';
 part 'spread_chapter_boundaries.dart';
 
@@ -111,10 +114,10 @@ class ChapterLayout {
   final int firstPage;
   final int consumedBeforeWindow;
   final int? _txtWindow;
-  int? get txtWindowIndex => _txtWindow;
-  bool get paginatesTxtInWindows => _txtWindow != null;
-  bool get readsTxtBySection => task?._indexedTxt != null;
-  bool get hasLaterTxtWindow =>
+  int? get sectionIndex => _txtWindow;
+  bool get paginatesInWindows => _txtWindow != null;
+  bool get readsBySection => task?._indexedSections != null;
+  bool get hasLaterWindow =>
       _txtWindow != null && _txtWindow! + 1 < task!._txtWindowCount;
   final List<int>? _consumedBefore;
   Object get identity => task ?? this;
@@ -146,16 +149,24 @@ class ChapterLayout {
           return (layout: current, pageIndex: next);
         }
       }
-      if (forward ? !hasLaterTxtWindow : window == 0) return null;
-      final adjacent = await task!.ensure(
-        txtWindow: window + (forward ? 1 : -1),
-        atEnd: !forward,
-        lookAhead: lookAhead,
-      );
-      return (
-        layout: adjacent,
-        pageIndex: forward ? adjacent.firstPage : adjacent.pageCount - 1,
-      );
+      final step = forward ? 1 : -1;
+      for (
+        var i = window + step;
+        i >= 0 && i < task!._txtWindowCount;
+        i += step
+      ) {
+        final adjacent = await task!.ensure(
+          txtWindow: i,
+          atEnd: !forward,
+          lookAhead: lookAhead,
+        );
+        if (adjacent.isEmpty) continue;
+        return (
+          layout: adjacent,
+          pageIndex: forward ? adjacent.firstPage : adjacent.pageCount - 1,
+        );
+      }
+      return null;
     }
     if (forward && isComplete) return null;
     final prepared = await ensurePage(next, lookAhead: lookAhead);
@@ -210,13 +221,18 @@ class ChapterLayout {
     if (firstPage == 0) {
       return beginLocatorOf(pages.isEmpty ? null : pages.first);
     }
-    if (readsTxtBySection) {
-      return _locatorFor(PageAnchor(blockId: 'b1', utf16Offset: 0));
+    if (readsBySection) {
+      return _locatorFor(
+        PageAnchor(
+          blockId: task!._indexedSections!.firstBlockId,
+          utf16Offset: 0,
+        ),
+      );
     }
     return mapper.chapterStart(content.blocks);
   }
 
-  Locator? txtLocatorAtOffset(int offset) {
+  Locator? locatorAtChapterOffset(int offset) {
     final length = content.textLength;
     return locatorForFraction(
       content: content,
@@ -232,9 +248,9 @@ class ChapterLayout {
     if (firstPage == 0 || pages.isEmpty || locator.chapterId != chapterId) {
       return false;
     }
-    if (readsTxtBySection) {
-      final target = TxtChapterSource.paragraphOf(locator.blockId);
-      final first = TxtChapterSource.paragraphOf(content.blocks.first.id)!;
+    if (readsBySection) {
+      final target = task!._indexedSections!.orderOf(locator.blockId);
+      final first = task!._indexedSections!.orderOf(content.blocks.first.id)!;
       return target != null && target < first;
     }
     if (task case final layoutTask?) {
@@ -251,12 +267,12 @@ class ChapterLayout {
   }
 
   /// 选区的结束端还在后面的节或未测量的段落时，当前已绘制部分仍应高亮。
-  bool followsTxtWindow(Locator locator) {
-    if (!readsTxtBySection || locator.chapterId != chapterId || pages.isEmpty) {
+  bool followsWindow(Locator locator) {
+    if (!readsBySection || locator.chapterId != chapterId || pages.isEmpty) {
       return false;
     }
-    final target = TxtChapterSource.paragraphOf(locator.blockId);
-    final last = TxtChapterSource.paragraphOf(pages.last.end.blockId);
+    final target = task!._indexedSections!.orderOf(locator.blockId);
+    final last = task!._indexedSections!.orderOf(pages.last.end.blockId);
     return target != null && last != null && target > last;
   }
 
@@ -363,7 +379,7 @@ class ChapterLayout {
 
   ContentBlock? _contentBlockOf(String blockId) {
     // 旧页保留自己的节正文，任务换节之后不能查询任务的新段落表。
-    if (readsTxtBySection) return _contentBlocks[blockId];
+    if (readsBySection) return _contentBlocks[blockId];
     if (task case final layoutTask?) {
       final index = layoutTask._displayTree.blockIndexById[blockId];
       return index == null ? null : content.blocks[index];

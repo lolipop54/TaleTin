@@ -1,5 +1,6 @@
 import '../models/book_document.dart';
 import '../models/source_content_index.dart';
+import 'chapter_sections.dart';
 
 /// TXT 以原段落为界分组。字数包含每个段落的一个位置权重。
 class TxtChapterSections {
@@ -62,16 +63,37 @@ class TxtChapterSections {
 typedef TxtTocSection = ({String blockId, int offset});
 
 /// 核对过的来源索引与按节读取入口。正文段落仍使用整章里的编号。
-class TxtChapterSource {
+class TxtChapterSource implements ChapterSections {
+  @override
+  Future<ChapterContent> readSectionForCount(int section) =>
+      readSection(section);
   const TxtChapterSource({
     required this.identity,
     required this.starts,
-    required this.readSection,
+    required this._readSection,
   });
 
+  @override
   final String identity;
   final List<TxtSectionStart> starts;
-  final Future<ChapterContent> Function(int section) readSection;
+  final Future<ChapterContent> Function(int section) _readSection;
+  @override
+  Future<ChapterContent> readSection(int section) => _readSection(section);
+
+  @override
+  int get count => starts.length;
+  @override
+  String get firstBlockId => 'b1';
+  @override
+  int offsetOf(int section) => starts[section].textOffset;
+  @override
+  int? orderOf(String blockId) => paragraphOf(blockId);
+  @override
+  int forBlock(String blockId) => forParagraph(paragraphOf(blockId) ?? 0);
+  @override
+  String? chapterStartFor(String blockId) => null;
+  @override
+  String? get lastChapterStart => null;
 
   static int? paragraphOf(String blockId) {
     if (!blockId.startsWith('b')) return null;
@@ -81,6 +103,7 @@ class TxtChapterSource {
 
   int forParagraph(int paragraph) =>
       _find(paragraph, (start) => start.paragraph);
+  @override
   int forOffset(int offset) => _find(offset, (start) => start.textOffset);
 
   int _find(int value, int Function(TxtSectionStart) position) {

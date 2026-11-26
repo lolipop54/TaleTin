@@ -1,6 +1,7 @@
 import 'package:html/dom.dart';
 import 'package:html/parser.dart' as html;
 
+import '../../../domain/models/book_document.dart';
 import '../epub/epub_archive.dart';
 import '../epub/epub_package.dart';
 
@@ -12,16 +13,7 @@ List<RawTocEntry>? mobiHtmlToc(EpubArchive archive, EpubPackage package) {
   final cache = <String, List<RawTocEntry>>{};
   List<RawTocEntry> read(String path) => cache.putIfAbsent(path, () {
     if (!archive.contains(path)) return const [];
-    final text = archive.readText(path);
-    // 快速排除普通正文，避免为每个候选再建立 DOM。
-    if (!text.contains('sgc-toc-title') &&
-        !RegExp(
-          r'<title>\s*目录\s*</title>',
-          caseSensitive: false,
-        ).hasMatch(text)) {
-      return const [];
-    }
-    return _parse(text, path);
+    return _parseMarkedToc(archive.readText(path), path);
   });
 
   final roots = read(paths.first);
@@ -66,6 +58,207 @@ List<RawTocEntry>? mobiHtmlToc(EpubArchive archive, EpubPackage package) {
     );
   }
   return result;
+}
+
+/// 先核对原书尚未过滤的目录树，再用已有条目确认文章链接。
+/// 只插入已确认的卷首和卷内标题，旧书也沿用每篇文章保存的锚点。
+List<TocNode> restoreMobiTocVolumes(
+  EpubArchive archive,
+  EpubPackage package,
+  List<TocNode> toc,
+  List<Chapter> chapters, {
+  bool restoreChildTargets = true,
+}) {
+  final first = package.spine.firstOrNull?.entryPath;
+  final ncx = package.ncxItem?.entryPath;
+  if (first == null ||
+      first != 'part00000.html' ||
+      ncx == null ||
+      !archive.contains(ncx) ||
+      toc.isEmpty) {
+    return toc;
+  }
+  final source = archive.readText(first);
+  if (!source.contains('XXXX')) return toc;
+  final missing = _parseMarkedToc(source, first)
+      .where(
+        (entry) =>
+            entry.children.isNotEmpty &&
+            _placeholderTarget.hasMatch(entry.href ?? ''),
+      )
+      .toList();
+  if (missing.isEmpty) return toc;
+  final navigation = parseNcxDocument(archive.readText(ncx), ncx);
+  final chaptersByHref = {for (final c in chapters) c.href: c.id};
+  final idsByPath = {
+    for (final item in package.spine)
+      item.entryPath: ?chaptersByHref[item.href],
+  };
+  final restored = [...toc];
+  var changed = false;
+  for (final volume in missing) {
+    final title = _headingKey(volume.title);
+    if (restored.any((node) => _headingKey(node.title) == title)) continue;
+    final matches = <RawTocEntry, Map<RawTocEntry, RawTocEntry>>{};
+    for (final candidate in navigation) {
+      if (_headingKey(candidate.title) != title ||
+          !idsByPath.containsKey(candidate.href)) {
+        continue;
+      }
+      final targets = <RawTocEntry, RawTocEntry>{};
+      if (_matchVolumeChildren(
+        volume.children,
+        candidate.children,
+        idsByPath,
+        restoreChildTargets ? targets : null,
+      )) {
+        matches[candidate] = targets;
+      }
+    }
+    if (matches.length != 1) continue;
+    final MapEntry(key: original, value: targets) = matches.entries.single;
+    // 旧目录中过滤掉的占位标题本身不会出现，已有文章仍须连续且位置相同。
+    final survivors = availableTocEntries(
+      volume.children,
+      idsByPath.containsKey,
+    );
+    final count = survivors.length;
+    if (count == 0) continue;
+    int? start;
+    for (var i = 0; i + count <= restored.length; i++) {
+      if (!_sameSavedChildren(survivors, restored, idsByPath, i)) {
+        continue;
+      }
+      if (start != null) {
+        start = null;
+        break;
+      }
+      start = i;
+    }
+    if (start == null) continue;
+    restored.replaceRange(start, start + count, [
+      TocNode(
+        title: volume.title,
+        chapterId: idsByPath[original.href],
+        fragment: original.fragment,
+        children: _restoreVolumeChildren(
+          volume.children,
+          restored.getRange(start, start + count).iterator,
+          targets,
+          idsByPath,
+        ),
+      ),
+    ]);
+    changed = true;
+  }
+  return changed ? restored : toc;
+}
+
+final _placeholderTarget = RegExp(r'^X{4,}$');
+
+bool _matchVolumeChildren(
+  List<RawTocEntry> html,
+  List<RawTocEntry> ncx,
+  Map<String, String> idsByPath,
+  Map<RawTocEntry, RawTocEntry>? targets,
+) {
+  if (html.length != ncx.length) return false;
+  for (var i = 0; i < html.length; i++) {
+    final a = html[i], b = ncx[i];
+    if (_headingKey(a.title) != _headingKey(b.title) ||
+        !idsByPath.containsKey(b.href)) {
+      return false;
+    }
+    if (targets != null && _placeholderTarget.hasMatch(a.href ?? '')) {
+      targets[a] = b;
+    } else if (a.href != b.href ||
+        (b.fragment?.isNotEmpty == true && a.fragment != b.fragment)) {
+      return false;
+    }
+    if (!_matchVolumeChildren(a.children, b.children, idsByPath, targets)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+List<TocNode> _restoreVolumeChildren(
+  List<RawTocEntry> raw,
+  Iterator<TocNode> saved,
+  Map<RawTocEntry, RawTocEntry> targets,
+  Map<String, String> idsByPath,
+) => [
+  for (final entry in raw)
+    if (targets[entry] case final target?)
+      TocNode(
+        title: entry.title,
+        chapterId: idsByPath[target.href],
+        fragment: target.fragment,
+        // 旧目录已把这个标题的有效子项提升到它所在的位置。
+        children: _restoreVolumeChildren(
+          entry.children,
+          saved,
+          targets,
+          idsByPath,
+        ),
+      )
+    else
+      _restoreSavedVolumeChild(entry, saved, targets, idsByPath),
+];
+
+TocNode _restoreSavedVolumeChild(
+  RawTocEntry entry,
+  Iterator<TocNode> saved,
+  Map<RawTocEntry, RawTocEntry> targets,
+  Map<String, String> idsByPath,
+) {
+  saved.moveNext();
+  final node = saved.current;
+  if (entry.children.isEmpty) return node;
+  return TocNode(
+    title: node.title,
+    chapterId: node.chapterId,
+    fragment: node.fragment,
+    children: _restoreVolumeChildren(
+      entry.children,
+      node.children.iterator,
+      targets,
+      idsByPath,
+    ),
+  );
+}
+
+bool _sameSavedChildren(
+  List<RawTocEntry> entries,
+  List<TocNode> saved,
+  Map<String, String> idsByPath, [
+  int start = 0,
+]) {
+  for (var i = 0; i < entries.length; i++) {
+    final source = entries[i], node = saved[start + i];
+    final id = idsByPath[source.href];
+    if (id == null ||
+        node.chapterId != id ||
+        _headingKey(source.title) != _headingKey(node.title) ||
+        (source.fragment ?? '') != (node.fragment ?? '') ||
+        source.children.length != node.children.length ||
+        !_sameSavedChildren(source.children, node.children, idsByPath)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+List<RawTocEntry> _parseMarkedToc(String text, String path) {
+  // 快速排除普通正文，避免为每个候选再建立 DOM。
+  if (!text.contains('sgc-toc-title') &&
+      !RegExp(
+        r'<title>\s*目录\s*</title>',
+        caseSensitive: false,
+      ).hasMatch(text)) {
+    return const [];
+  }
+  return _parse(text, path);
 }
 
 String _headingKey(String title) =>
